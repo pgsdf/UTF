@@ -1,4 +1,4 @@
-# semainput v40
+# semainput
 
 This version fixes three-finger arbitration anchor timing and lowers activation conservatism.
 
