@@ -5,19 +5,6 @@ const surfaces = @import("surfaces.zig");
 
 const TEST_TARGET = "__phase12_test";
 
-fn writePolicyFile(dir: []const u8, content: []const u8) !void {
-    try std.fs.cwd().makePath(dir);
-    const path = try std.fmt.allocPrint(
-        std.testing.allocator,
-        "{s}/policy",
-        .{dir},
-    );
-    defer std.testing.allocator.free(path);
-    var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
-    defer file.close();
-    try file.writeAll(content);
-}
-
 fn readSurface(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     return std.fs.cwd().readFileAlloc(allocator, path, 64 * 1024);
 }

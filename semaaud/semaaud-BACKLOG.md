@@ -24,8 +24,8 @@ ZIP (`README-PRESERVED-BASE.txt`) is the Phase 11 checkpoint.
 
 ### Tasks
 
-- [x] Confirm `policy-valid` is written correctly: `"true"` when `isValid()`
-      returns true, `"false"` otherwise — `state.zig:writePolicyValidationFiles`
+- [x] Confirm `policy-valid` is written correctly: `"true\n"` when `isValid()`
+      returns true, `"false\n"` otherwise — `state.zig:writePolicyValidationFiles`
 - [x] Confirm `policy-errors` lists each error from `loaded.errors.items` one
       per line — switched from JSON array to LF-terminated lines so the surface
       is trivially greppable and matches the spec
