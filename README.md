@@ -153,7 +153,7 @@ cd semainput && zig build
 | drawfs     | Phase 1 complete. Phase 2 (DRM/KMS) planned. |
 | semadraw   | Protocol fixes complete. drawfs backend integration in progress. |
 | semaaud    | Phase 12 (durable policy) in progress.      |
-| semainput  | v40. Stable for pointer and touch hardware. |
+| semainput  | Stable for pointer and touch hardware. |
 | shared/    | Protocol constants defined. Generator and schema planned. |
 | chronofs   | Design complete. Implementation not started. |
 
