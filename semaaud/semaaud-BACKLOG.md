@@ -2,61 +2,25 @@
 
 `semaaud` is the audio daemon: OSS output on FreeBSD, two named targets
 (`default` and `alt`), a policy engine with allow/deny/override/group
-semantics, preemption, fallback routing, and filesystem-backed state. Phase 12
-(durable policy validation surfaces) is the current active phase.
+semantics, preemption, fallback routing, and filesystem-backed state.
 
----
-
-## A-1 — Complete Phase 12 Durable Policy Validation
-
-**Status**: Done
-**Effort**: Small
-**Depends on**: Nothing (self-contained)
-
-### Background
-
-Phase 12 adds `policy-valid` and `policy-errors` surface files to the
-filesystem state layout (implemented in `state.zig` as
-`writePolicyValidationFiles`). The spec document
-(`docs/SemaAud-Phase12-DurablePolicy-Spec.md`) describes versioned grammar,
-comments in policy files, and persistent validation surfaces. The preserved base
-ZIP (`README-PRESERVED-BASE.txt`) is the Phase 11 checkpoint.
-
-### Tasks
-
-- [x] Confirm `policy-valid` is written correctly: `"true\n"` when `isValid()`
-      returns true, `"false\n"` otherwise — `state.zig:writePolicyValidationFiles`
-- [x] Confirm `policy-errors` lists each error from `loaded.errors.items` one
-      per line — switched from JSON array to LF-terminated lines so the surface
-      is trivially greppable and matches the spec
-- [x] Add support for `# comment` lines in policy files — the parser already
-      skipped `#`-prefixed lines; tests in `src/policy_test.zig` now cover
-      both comment-only and mixed comment/directive files
-- [x] Add `version=1` as a recognized and validated grammar element — errors
-      on `version=2` (`unsupported policy version`) and on non-numeric values
-      (`invalid version field`)
-- [x] Write a test matrix: policy files with various combinations of valid/
-      invalid directives, confirm `policy-valid` and `policy-errors` reflect
-      each case accurately — see `src/policy_test.zig`, wired to
-      `zig build test`
-- [x] Update `docs/SemaAud-Phase12-DurablePolicy-Spec.md` with the final
-      grammar description and the list of recognized directives
-
-### Acceptance Criteria
-
-- [x] A policy file with an unknown directive produces `policy-valid=false` and
-  `policy-errors` containing the unknown directive message
-- [x] A policy file with `version=2` produces an unsupported version error
-- [x] A valid policy file with comments produces `policy-valid=true` and empty
-  `policy-errors`
+**Phase status**: Phase 12 (durable policy validation) complete and verified
+against the live daemon — merged in pgsdf/UTF#1. See completed section
+below.
+**Next active work**: A-2 (audio sample position counter) — the foundational
+piece for the chronofs hardware-driven clock. A-3 (unified event log
+`ts_audio_samples` field) and A-4 (sample-rate negotiation) both depend on
+it, so A-2 unblocks the rest of the open queue.
 
 ---
 
 ## A-2 — Audio Sample Position Counter
 
-**Status**: Open
+**Status**: Open (next)
 **Effort**: Small
-**Blocks**: shared/S-4 (clock publication), chronofs C-1
+**Blocks**: A-3 (needs `samples_written` for `ts_audio_samples`),
+A-4 (needs negotiated `sample_rate`/`channels` to compute the divisor),
+shared/S-4 (clock publication), chronofs C-1
 
 ### Background
 
@@ -100,7 +64,8 @@ to a 48kHz stereo s16le stream advances the position by `n / 4` samples.
 
 **Status**: Open
 **Effort**: Medium
-**Depends on**: shared/S-2 (schema), shared/S-3 (session identity)
+**Depends on**: A-2 (for `ts_audio_samples`), shared/S-2 (schema),
+shared/S-3 (session identity)
 
 ### Background
 
@@ -173,3 +138,45 @@ nanoseconds — which `shared/clock.zig` (S-4) will do via
   rejected with a clear error if not
 - `samples_written` remains accurate after negotiation (division uses actual
   `channels` and `format` from the negotiated descriptor)
+
+---
+
+## Completed
+
+### A-1 — Phase 12 Durable Policy Validation
+
+**Status**: Done — merged in pgsdf/UTF#1, verified live against running daemon.
+
+**What shipped**:
+
+- `state.zig:writePolicyValidationFiles` writes `policy-valid` as `"true\n"`
+  or `"false\n"`, and `policy-errors` as one LF-terminated diagnostic per
+  line (empty file when the policy is clean).
+- Policy grammar pinned at `version=1`. Diagnostics:
+  - `invalid version field` — non-numeric `version=` value
+  - `unsupported policy version` — `version=N` with `N != 1`
+  - `unknown directive: <line>` — any line not matching a known key
+- `#`-prefixed comment lines and blank lines are skipped by the parser.
+- Full grammar, directive table, precedence rules, and reload semantics
+  documented in `docs/SemaAud-Phase12-DurablePolicy-Spec.md`.
+- Policy is reloaded at daemon startup and on every stream accept, so
+  operator edits to `/tmp/draw/audio/<target>/policy` take effect
+  immediately on the next connection.
+
+**Verification**:
+
+- `zig build test` runs the nine-case matrix in `src/policy_test.zig`
+  (empty file, comments-only, full valid policy, `version=2`,
+  non-numeric version, unknown directive, multi-error assertion, and
+  round-trip of parsed fields).
+- Live acceptance harness against the running daemon confirmed all three
+  spec-level acceptance criteria:
+  - unknown directive → `policy-valid=false` + matching
+    `unknown directive:` line in `policy-errors`
+  - `version=2` → `policy-valid=false` + `unsupported policy version`
+  - valid policy with comments → `policy-valid=true` + empty
+    `policy-errors`
+
+**Follow-ups**: None — Phase 12 is closed. Potential future grammar
+extensions (e.g. inline trailing comments, multi-version migration rules)
+would warrant a new spec revision and backlog item.
