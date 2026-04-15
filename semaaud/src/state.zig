@@ -228,16 +228,10 @@ pub fn writePolicyValidationFiles(
     var out = std.ArrayListUnmanaged(u8){};
     defer out.deinit(allocator);
 
-    try out.appendSlice(allocator, "[");
-
-    for (loaded_policy.errors.items, 0..) |item, idx| {
-        if (idx != 0) try out.appendSlice(allocator, ",");
-        const enc = try std.fmt.allocPrint(allocator, "\"{s}\"", .{item});
-        defer allocator.free(enc);
-        try out.appendSlice(allocator, enc);
+    for (loaded_policy.errors.items) |item| {
+        try out.appendSlice(allocator, item);
+        try out.append(allocator, '\n');
     }
-
-    try out.appendSlice(allocator, "]\n");
 
     const body = try out.toOwnedSlice(allocator);
     defer allocator.free(body);
