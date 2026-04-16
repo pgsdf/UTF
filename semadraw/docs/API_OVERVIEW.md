@@ -84,6 +84,63 @@ SDCS data is passed via shared memory buffers:
 4. Daemon maps and validates the SDCS data
 5. Daemon renders to its output
 
+## TCP Transport (Remote Connections)
+
+semadrawd optionally listens on a TCP port (default `7234`) for remote clients.
+The TCP transport uses the same 8-byte message header and protocol as the Unix
+socket, with one difference: shared memory and `SCM_RIGHTS` FD passing are not
+available over the network, so SDCS data is sent inline using the
+`ATTACH_BUFFER_INLINE` message type.
+
+### Enabling the TCP transport
+
+Pass `--tcp-port <port>` (or configure `tcp_port` in the daemon config) to
+enable the listener. By default it binds to all interfaces (`0.0.0.0`); use
+`--tcp-addr` to restrict to a specific address.
+
+### Remote client IDs
+
+Remote clients are assigned IDs starting at `0x80000000` to prevent collision
+with local Unix socket client IDs, which start at `0`.
+
+### Connection sequence (remote)
+
+```
+client                          semadrawd
+  |--- TCP connect ------------>|
+  |--- HELLO ------------------>|
+  |<-- HELLO_REPLY (client_id) -|
+  |--- CREATE_SURFACE ---------->|
+  |<-- SURFACE_CREATED ----------|
+  |--- ATTACH_BUFFER_INLINE ----->|  (SDCS data in message payload)
+  |--- COMMIT ------------------->|
+  |<-- FRAME_COMPLETE ------------|
+  |--- DISCONNECT --------------->|
+  |    TCP close               |
+```
+
+### Read timeout
+
+Each accepted TCP connection has `SO_RCVTIMEO` set to 30 seconds. A client
+that sends a partial message and stalls for longer than this is disconnected.
+An idle client that sends no data at all is not affected — the timeout only
+fires when a read is blocking mid-message.
+
+### Inline buffer transfer
+
+Because FD passing is unavailable, SDCS data is embedded in the message payload:
+
+```
+ATTACH_BUFFER_INLINE payload:
+  surface_id   u32
+  sdcs_length  u64    (bytes of SDCS data that follow)
+  flags        u32    (reserved, must be 0)
+  [sdcs_data]  sdcs_length bytes
+```
+
+The `RemoteConnection` client library handles this automatically via
+`attachBufferInline()`.
+
 ## Backend Interface
 
 Backends implement a vtable interface:

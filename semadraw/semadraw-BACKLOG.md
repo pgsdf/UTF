@@ -161,7 +161,7 @@ primary text-output application in the NDE stack, this is a meaningful gap.
 
 ## D-5 — Remote Transport Hardening
 
-**Status**: Open
+**Status**: Done
 **Effort**: Small
 **Depends on**: Nothing
 
