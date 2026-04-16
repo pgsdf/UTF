@@ -129,7 +129,7 @@ relying on wall-clock correlation.
 
 ## I-4 — Gesture Tuning: Pinch Scale Factor
 
-**Status**: Open
+**Status**: Done
 **Effort**: Small
 **Depends on**: Nothing
 

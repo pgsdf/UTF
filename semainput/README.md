@@ -1,10 +1,12 @@
-# semainput
+# semainput v41
 
-This version fixes three-finger arbitration anchor timing and lowers activation conservatism.
+This version adds a calibrated `scale_factor` field to pinch gestures.
 
 ## Improvements
 
-- arbitration anchor is captured at three-finger arbitration start
-- lazy anchor initialization removed from update path
-- lower cumulative three-finger activation threshold
-- retained cumulative activation, post-lock clamp, smoothing, confidence, and axis lock
+- `scale_factor` field added to `pinch_begin` and `pinch` events: ratio of
+  current to previous finger separation, suitable for direct use in
+  pinch-to-zoom (`zoom *= event.scale_factor`)
+- `delta` field recalibrated to pixel-distance difference (`sqrt(cur) -
+  sqrt(prev)`) rather than the previous scaled squared-distance approximation
+- `scale_hint` and `delta` retained for backward compatibility

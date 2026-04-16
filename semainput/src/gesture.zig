@@ -530,14 +530,33 @@ pub const GestureRecognizer = struct {
 
         const cur = pinchDistanceSquared(contacts[0], contacts[1]);
         const prev = pinchPrevDistanceSquared(contacts[0], contacts[1]);
-        const delta: i32 = @intCast(@divTrunc(cur - prev, 128));
+
+        // Calibrated pixel-distance delta: difference of Euclidean distances.
+        // More accurate than the previous (cur - prev) / 128 approximation.
+        const cur_dist: f64 = @sqrt(@as(f64, @floatFromInt(cur)));
+        const prev_dist: f64 = @sqrt(@as(f64, @floatFromInt(prev)));
+        const delta: i32 = @intFromFloat(cur_dist - prev_dist);
+
+        // scale_factor: ratio of current to previous finger separation.
+        // 1.0 = no change, >1.0 = spreading (zoom in), <1.0 = pinching (zoom out).
+        // Clamped to [0.01, 99.99] to guarantee finite, positive output.
+        const scale_factor: f64 = if (prev_dist > 0.0)
+            std.math.clamp(cur_dist / prev_dist, 0.01, 99.99)
+        else
+            1.0;
+        // Render as fixed-point with 4 decimal places to avoid locale issues.
+        const sf_int: i64 = @intFromFloat(scale_factor * 10000.0);
+        const sf_whole: i64 = @divTrunc(sf_int, 10000);
+        const sf_frac: i64 = @mod(sf_int, 10000);
 
         if (!state.pinch_locked) {
             if (absDiff(delta, 0) >= PinchActivateThreshold) {
                 state.pinch_locked = true;
                 state.last_pinch_delta = delta;
-                var fields_buf: [64]u8 = undefined;
-                const fields = try std.fmt.bufPrint(&fields_buf, ",\"delta\":{d}", .{delta});
+                var fields_buf: [128]u8 = undefined;
+                const fields = try std.fmt.bufPrint(&fields_buf,
+                    ",\"delta\":{d},\"scale_factor\":{d}.{d:0>4}",
+                    .{ delta, sf_whole, sf_frac });
                 try self.emitGestureEvent(device_name, "pinch_begin", fields);
                 try self.emitIntentHook(device_name, "pinch", if (delta > 0) "out" else "in", @min(100, @as(u8, @intCast(60 + absDiff(delta, 0)))));
             }
@@ -548,8 +567,10 @@ pub const GestureRecognizer = struct {
         if (absDiff(delta, 0) < PinchEmitThreshold) return;
 
         state.last_pinch_delta = delta;
-        var fields_buf: [64]u8 = undefined;
-        const fields = try std.fmt.bufPrint(&fields_buf, ",\"delta\":{d},\"scale_hint\":\"{s}\"", .{ delta, if (delta > 0) "out" else "in" });
+        var fields_buf: [128]u8 = undefined;
+        const fields = try std.fmt.bufPrint(&fields_buf,
+            ",\"delta\":{d},\"scale_hint\":\"{s}\",\"scale_factor\":{d}.{d:0>4}",
+            .{ delta, if (delta > 0) "out" else "in", sf_whole, sf_frac });
         try self.emitGestureEvent(device_name, "pinch", fields);
     }
 
