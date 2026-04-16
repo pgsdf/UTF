@@ -24,37 +24,33 @@ ZIP (`README-PRESERVED-BASE.txt`) is the Phase 11 checkpoint.
 
 ### Tasks
 
-- [x] Confirm `policy-valid` is written correctly: `"true\n"` when `isValid()`
-      returns true, `"false\n"` otherwise — `state.zig:writePolicyValidationFiles`
-- [x] Confirm `policy-errors` lists each error from `loaded.errors.items` one
-      per line — switched from JSON array to LF-terminated lines so the surface
-      is trivially greppable and matches the spec
-- [x] Add support for `# comment` lines in policy files — the parser already
-      skipped `#`-prefixed lines; tests in `src/policy_test.zig` now cover
-      both comment-only and mixed comment/directive files
-- [x] Add `version=1` as a recognized and validated grammar element — errors
-      on `version=2` (`unsupported policy version`) and on non-numeric values
-      (`invalid version field`)
-- [x] Write a test matrix: policy files with various combinations of valid/
+- [ ] Confirm `policy-valid` is written correctly: `"true"` when `isValid()`
+      returns true, `"false"` otherwise
+- [ ] Confirm `policy-errors` lists each error from `loaded.errors.items` one
+      per line
+- [ ] Add support for `# comment` lines in policy files — the parser already
+      skips `#`-prefixed lines, but confirm this is tested
+- [ ] Add `version=1` as a recognized and validated grammar element — already
+      partially implemented, confirm error on version ≠ 1
+- [ ] Write a test matrix: policy files with various combinations of valid/
       invalid directives, confirm `policy-valid` and `policy-errors` reflect
-      each case accurately — see `src/policy_test.zig`, wired to
-      `zig build test`
-- [x] Update `docs/SemaAud-Phase12-DurablePolicy-Spec.md` with the final
+      each case accurately
+- [ ] Update `docs/SemaAud-Phase12-DurablePolicy-Spec.md` with the final
       grammar description and the list of recognized directives
 
 ### Acceptance Criteria
 
-- [x] A policy file with an unknown directive produces `policy-valid=false` and
+- A policy file with an unknown directive produces `policy-valid=false` and
   `policy-errors` containing the unknown directive message
-- [x] A policy file with `version=2` produces an unsupported version error
-- [x] A valid policy file with comments produces `policy-valid=true` and empty
+- A policy file with `version=2` produces an unsupported version error
+- A valid policy file with comments produces `policy-valid=true` and empty
   `policy-errors`
 
 ---
 
 ## A-2 — Audio Sample Position Counter
 
-**Status**: Open
+**Status**: Done
 **Effort**: Small
 **Blocks**: shared/S-4 (clock publication), chronofs C-1
 

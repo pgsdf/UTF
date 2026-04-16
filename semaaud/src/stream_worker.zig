@@ -11,6 +11,11 @@ pub const Shared = struct {
     runtime_state: state_mod.RuntimeState,
     event_ctx: state_mod.EventContext = .{},
     next_client_id: u64 = 1,
+    /// Monotonic count of PCM sample frames written to the audio device.
+    /// Written atomically by the stream worker; read atomically by any thread.
+    /// Never resets between streams — monotonically increasing for the lifetime
+    /// of the daemon. This is the audio clock source for chronofs.
+    samples_written: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
 
     pub fn snapshot(self: *Shared) state_mod.RuntimeState {
         self.mutex.lock();
@@ -106,6 +111,9 @@ fn run(args: WorkerArgs) !void {
 
     try persistBegin(args.allocator, args.shared, stream_id, desc);
 
+    // Bytes per sample frame: channels × 2 (s16le = 2 bytes per channel).
+    const bytes_per_frame: u64 = @as(u64, desc.channels) * 2;
+
     var buf: [4096]u8 = undefined;
     var stopped_by_control = false;
     var flushed_by_control = false;
@@ -127,6 +135,13 @@ fn run(args: WorkerArgs) !void {
         const n = posix.read(args.conn, &buf) catch break;
         if (n == 0) break;
         _ = try posix.write(args.audio_fd, buf[0..n]);
+
+        // Advance the monotonic sample counter. Integer division truncates any
+        // partial frame, which is correct — we only count fully written frames.
+        const frames: u64 = @as(u64, n) / bytes_per_frame;
+        if (frames > 0) {
+            _ = args.shared.samples_written.fetchAdd(frames, .monotonic);
+        }
     }
 
     if (stopped_by_control) {
@@ -178,9 +193,13 @@ fn run(args: WorkerArgs) !void {
         args.shared.runtime_state.active_uid = null;
         args.shared.runtime_state.active_gid = null;
         args.shared.runtime_state.active_authenticated = false;
-        const end_state = args.shared.runtime_state;
+        var end_state = args.shared.runtime_state;
         const meta = args.shared.event_ctx.allocEventMeta();
         args.shared.mutex.unlock();
+
+        // Snapshot the final sample count and clear the active rate.
+        end_state.samples_written = args.shared.samples_written.load(.monotonic);
+        end_state.active_sample_rate = 0;
 
         try persistState(args.allocator, end_state);
         try state_mod.appendStreamEndEvent(args.allocator, end_state, meta, stream_id);
@@ -191,9 +210,12 @@ fn run(args: WorkerArgs) !void {
 
 fn persistBegin(allocator: std.mem.Allocator, shared: *Shared, stream_id: u64, desc: types.StreamDescriptor) !void {
     shared.mutex.lock();
-    const state = shared.runtime_state;
+    var state = shared.runtime_state;
     const meta = shared.event_ctx.allocEventMeta();
     shared.mutex.unlock();
+    // Snapshot the current sample counter and rate into the state copy.
+    state.samples_written = shared.samples_written.load(.monotonic);
+    state.active_sample_rate = desc.sample_rate;
     try persistState(allocator, state);
     try state_mod.appendStreamBeginEvent(allocator, state, meta, stream_id, desc);
 }

@@ -46,6 +46,12 @@ pub const RuntimeState = struct {
     pending_preempt_client_class: ?[]const u8 = null,
     pending_preempt_client_origin: ?[]const u8 = null,
     pending_preempt_conn: ?std.posix.socket_t = null,
+    /// Monotonic PCM sample frame count snapshotted from Shared.samples_written
+    /// at the time this RuntimeState was captured. Used in event log output and
+    /// by the clock publication layer (S-4 / chronofs).
+    samples_written: u64 = 0,
+    /// Sample rate of the active stream (0 when no stream is active).
+    active_sample_rate: u32 = 0,
 
     pub fn renderJson(self: RuntimeState, allocator: std.mem.Allocator) ![]const u8 {
         const stream_json = try renderCurrentStreamJson(
@@ -93,7 +99,27 @@ pub const RuntimeState = struct {
 
         return std.fmt.allocPrint(
             allocator,
-            "{{\n  \"type\": \"semaud_state\",\n  \"target\": \"{s}\",\n  \"default_pcm\": \"{s}\",\n  \"audiodev\": \"{s}\",\n  \"mixerdev\": \"{s}\",\n  \"stream_active\": {s},\n  \"stop_requested\": {s},\n  \"flush_requested\": {s},\n  \"preempt_requested\": {s},\n  \"active_client_id\": {s},\n  \"active_client_label\": {s},\n  \"active_client_class\": {s},\n  \"active_client_origin\": {s},\n  \"active_uid\": {s},\n  \"active_gid\": {s},\n  \"active_authenticated\": {s},\n  \"current_stream\": {s}\n}}\n",
+            "{{\n" ++
+            "  \"type\": \"semaud_state\",\n" ++
+            "  \"target\": \"{s}\",\n" ++
+            "  \"default_pcm\": \"{s}\",\n" ++
+            "  \"audiodev\": \"{s}\",\n" ++
+            "  \"mixerdev\": \"{s}\",\n" ++
+            "  \"stream_active\": {s},\n" ++
+            "  \"stop_requested\": {s},\n" ++
+            "  \"flush_requested\": {s},\n" ++
+            "  \"preempt_requested\": {s},\n" ++
+            "  \"active_client_id\": {s},\n" ++
+            "  \"active_client_label\": {s},\n" ++
+            "  \"active_client_class\": {s},\n" ++
+            "  \"active_client_origin\": {s},\n" ++
+            "  \"active_uid\": {s},\n" ++
+            "  \"active_gid\": {s},\n" ++
+            "  \"active_authenticated\": {s},\n" ++
+            "  \"samples_written\": {},\n" ++
+            "  \"sample_rate\": {},\n" ++
+            "  \"current_stream\": {s}\n" ++
+            "}}\n",
             .{
                 self.target_name,
                 self.selection.default_pcm,
@@ -110,10 +136,13 @@ pub const RuntimeState = struct {
                 uid_json,
                 gid_json,
                 if (self.active_authenticated) "true" else "false",
+                self.samples_written,
+                self.active_sample_rate,
                 stream_json,
             },
         );
     }
+
 
     pub fn writeJsonFile(self: RuntimeState, allocator: std.mem.Allocator) !void {
         const path = try surfaces.statePath(allocator, self.target_name);
