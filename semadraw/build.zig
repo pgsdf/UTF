@@ -330,6 +330,23 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // shared/src/session.zig — session identity for unified event log.
+    const session_mod = b.createModule(.{
+        .root_source_file = b.path("../shared/src/session.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // Daemon event emitter module.
+    const events_mod = b.createModule(.{
+        .root_source_file = b.path("src/daemon/events.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "session", .module = session_mod },
+        },
+    });
+
     const ipc_socket_mod = b.createModule(.{
         .root_source_file = b.path("src/ipc/socket_server.zig"),
         .target = target,
@@ -568,6 +585,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "backend", .module = backend_mod },
                 .{ .name = "backend_process", .module = backend_process_mod },
                 .{ .name = "compositor", .module = compositor_mod },
+                .{ .name = "events", .module = events_mod },
             },
         }),
     });

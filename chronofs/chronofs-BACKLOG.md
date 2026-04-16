@@ -65,7 +65,7 @@ foundation everything else in chronofs builds on.
 
 ## C-2 — Event Stream Buffers
 
-**Status**: Open
+**Status**: Done
 **Effort**: Medium
 **Depends on**: C-1
 
@@ -116,7 +116,7 @@ where each entry is a time-stamped event from one of the four domains.
 
 ## C-3 — Resolver
 
-**Status**: Open
+**Status**: Done
 **Effort**: Medium
 **Depends on**: C-2
 

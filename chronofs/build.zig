@@ -23,6 +23,34 @@ pub fn build(b: *std.Build) void {
         .root_module = clock_mod,
     });
 
+    // C-2: chronofs event stream ring buffers.
+    const stream_mod = b.createModule(.{
+        .root_source_file = b.path("src/stream.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const stream_tests = b.addTest(.{
+        .root_module = stream_mod,
+    });
+
+    // C-3: chronofs resolver.
+    const resolver_mod = b.createModule(.{
+        .root_source_file = b.path("src/resolver.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "stream", .module = stream_mod },
+            .{ .name = "clock",  .module = clock_mod  },
+        },
+    });
+
+    const resolver_tests = b.addTest(.{
+        .root_module = resolver_mod,
+    });
+
     const test_step = b.step("test", "Run chronofs tests");
     test_step.dependOn(&b.addRunArtifact(clock_tests).step);
+    test_step.dependOn(&b.addRunArtifact(stream_tests).step);
+    test_step.dependOn(&b.addRunArtifact(resolver_tests).step);
 }

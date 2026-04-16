@@ -9,6 +9,7 @@ const shm = @import("shm");
 const sdcs_validator = @import("sdcs_validator");
 const compositor = @import("compositor");
 const backend = @import("backend");
+const events = @import("events");
 
 const log = std.log.scoped(.semadrawd);
 
@@ -340,6 +341,7 @@ pub const Daemon = struct {
 
         session.state = .connected;
         log.info("remote client {} completed handshake", .{session.id});
+        events.emitClientConnected(session.id, hello.version_major, hello.version_minor);
     }
 
     fn handleRemoteRequest(self: *Daemon, session: *RemoteSession, msg_type: protocol.MsgType, payload: ?[]u8) !void {
@@ -383,6 +385,7 @@ pub const Daemon = struct {
         try session.client.sendMessage(.surface_created, &reply_buf);
 
         log.debug("remote client {} created surface {}", .{ session.id, surface.id });
+        events.emitSurfaceCreated(session.id, surface.id, msg.logical_width, msg.logical_height);
     }
 
     fn handleRemoteDestroySurface(self: *Daemon, session: *RemoteSession, payload: ?[]u8) !void {
@@ -401,6 +404,7 @@ pub const Daemon = struct {
         self.comp.onSurfaceDestroyed(msg.surface_id);
         self.surfaces.destroySurface(msg.surface_id);
         log.debug("remote client {} destroyed surface {}", .{ session.id, msg.surface_id });
+        events.emitSurfaceDestroyed(session.id, msg.surface_id);
     }
 
     fn handleRemoteAttachBufferInline(self: *Daemon, session: *RemoteSession, payload: ?[]u8) !void {
@@ -475,6 +479,7 @@ pub const Daemon = struct {
         try session.client.sendMessage(.frame_complete, &reply_buf);
 
         log.debug("remote client {} committed surface {} frame {}", .{ session.id, msg.surface_id, frame_number });
+        events.emitFrameComplete(msg.surface_id, frame_number, "software");
     }
 
     fn handleRemoteSetVisible(self: *Daemon, session: *RemoteSession, payload: ?[]u8) !void {
@@ -561,6 +566,7 @@ pub const Daemon = struct {
     }
 
     fn disconnectRemoteClient(self: *Daemon, client_id: protocol.ClientId) void {
+        events.emitClientDisconnected(client_id, "disconnect");
         if (self.remote_clients.fetchRemove(client_id)) |entry| {
             const session = entry.value;
             self.surfaces.removeClientSurfaces(client_id);
@@ -631,6 +637,7 @@ pub const Daemon = struct {
 
         session.state = .connected;
         log.info("client {} completed handshake", .{session.id});
+        events.emitClientConnected(session.id, hello.version_major, hello.version_minor);
     }
 
     fn handleRequest(self: *Daemon, session: *client_session.ClientSession, msg_type: protocol.MsgType, payload: ?[]u8) !void {
@@ -686,6 +693,7 @@ pub const Daemon = struct {
         try session.send(.surface_created, &reply_buf);
 
         log.debug("client {} created surface {}", .{ session.id, surface.id });
+        events.emitSurfaceCreated(session.id, surface.id, msg.logical_width, msg.logical_height);
     }
 
     fn handleDestroySurface(self: *Daemon, session: *client_session.ClientSession, payload: ?[]u8) !void {
@@ -712,6 +720,7 @@ pub const Daemon = struct {
 
         self.surfaces.destroySurface(msg.surface_id);
         log.debug("client {} destroyed surface {}", .{ session.id, msg.surface_id });
+        events.emitSurfaceDestroyed(session.id, msg.surface_id);
     }
 
     fn handleAttachBufferInline(self: *Daemon, session: *client_session.ClientSession, payload: ?[]u8) !void {
@@ -788,6 +797,7 @@ pub const Daemon = struct {
         try session.send(.frame_complete, &reply_buf);
 
         log.debug("client {} committed surface {} frame {}", .{ session.id, msg.surface_id, frame_number });
+        events.emitFrameComplete(msg.surface_id, frame_number, "software");
     }
 
     fn handleSetVisible(self: *Daemon, session: *client_session.ClientSession, payload: ?[]u8) !void {
@@ -969,6 +979,7 @@ pub const Daemon = struct {
     }
 
     fn disconnectClient(self: *Daemon, client_id: protocol.ClientId) void {
+        events.emitClientDisconnected(client_id, "disconnect");
         // Clean up surfaces owned by this client
         self.surfaces.removeClientSurfaces(client_id);
         self.clients.destroySession(client_id);
@@ -1218,6 +1229,9 @@ pub fn main() !void {
 
     var daemon = try Daemon.init(allocator, config);
     defer daemon.deinit();
+
+    // Initialise session token for unified event log emission.
+    events.initSession();
 
     try daemon.initCompositor();
 

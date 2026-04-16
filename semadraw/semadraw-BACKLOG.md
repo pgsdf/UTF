@@ -9,7 +9,7 @@ complete (see `semadraw/BACKLOG.md`, all items marked done).
 
 ## D-1 — Event Emission in Unified Schema
 
-**Status**: Open
+**Status**: Done
 **Effort**: Small–Medium
 **Depends on**: shared/S-2 (schema), shared/S-3 (session identity)
 
