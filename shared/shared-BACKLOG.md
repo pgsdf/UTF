@@ -97,7 +97,7 @@ through C-4) requires a unified timestamped event format across all domains.
 
 ## S-3 — Session Identity
 
-**Status**: Open
+**Status**: Done
 **Effort**: Small
 **Blocks**: S-2 (schema `session` field), all subsystem event log convergence
   items
