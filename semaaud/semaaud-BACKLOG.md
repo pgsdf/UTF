@@ -94,7 +94,7 @@ to a 48kHz stereo s16le stream advances the position by `n / 4` samples.
 
 ## A-3 — Unified Event Log Schema Adoption
 
-**Status**: Open
+**Status**: Done
 **Effort**: Medium
 **Depends on**: shared/S-2 (schema), shared/S-3 (session identity)
 
@@ -137,7 +137,7 @@ by the control server for introspection, not for chronofs.
 
 ## A-4 — Sample Rate Negotiation
 
-**Status**: Open
+**Status**: Done
 **Effort**: Small
 **Depends on**: A-2
 

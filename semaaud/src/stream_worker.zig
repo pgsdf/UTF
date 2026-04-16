@@ -5,6 +5,7 @@ const state_mod = @import("state.zig");
 const policy_mod = @import("policy.zig");
 const policy_state_mod = @import("policy_state.zig");
 const surfaces = @import("surfaces.zig");
+const oss = @import("oss_output.zig");
 
 pub const Shared = struct {
     mutex: std.Thread.Mutex = .{},
@@ -86,7 +87,20 @@ fn spawnPendingOverrideIfAny(allocator: std.mem.Allocator, shared: *Shared, audi
 fn run(args: WorkerArgs) !void {
     defer posix.close(args.conn);
 
-    const desc = try readHeader(args.conn);
+    // Parse the client's requested stream descriptor.
+    var desc = try readHeader(args.conn);
+
+    // Negotiate format, channels, and sample rate with the OSS device.
+    // This updates desc with the actual values the hardware accepted.
+    oss.negotiate(args.audio_fd, &desc) catch |err| {
+        const msg = switch (err) {
+            error.UnsupportedFormat      => "error: unsupported sample format\n",
+            error.SampleRateMismatch     => "error: sample rate not supported by hardware\n",
+            else                         => "error: OSS negotiation failed\n",
+        };
+        _ = posix.write(args.conn, msg) catch {};
+        return err;
+    };
     var stream_id: u64 = 0;
 
     {
@@ -111,8 +125,8 @@ fn run(args: WorkerArgs) !void {
 
     try persistBegin(args.allocator, args.shared, stream_id, desc);
 
-    // Bytes per sample frame: channels × 2 (s16le = 2 bytes per channel).
-    const bytes_per_frame: u64 = @as(u64, desc.channels) * 2;
+    // Bytes per sample frame: channels × bytes_per_sample.
+    const bytes_per_frame: u64 = @as(u64, desc.channels) * @as(u64, desc.format.bytesPerSample());
 
     var buf: [4096]u8 = undefined;
     var stopped_by_control = false;
@@ -147,7 +161,7 @@ fn run(args: WorkerArgs) !void {
     if (stopped_by_control) {
         args.shared.mutex.lock();
         const stop_state = args.shared.runtime_state;
-        const meta = args.shared.event_ctx.allocEventMeta();
+        const meta = args.shared.event_ctx.allocEventMeta(args.shared.samples_written.load(.monotonic));
         args.shared.runtime_state.stop_requested = false;
         args.shared.mutex.unlock();
         try state_mod.appendStreamStopEvent(args.allocator, stop_state, meta, stream_id);
@@ -156,7 +170,7 @@ fn run(args: WorkerArgs) !void {
     if (flushed_by_control) {
         args.shared.mutex.lock();
         const flush_state = args.shared.runtime_state;
-        const meta = args.shared.event_ctx.allocEventMeta();
+        const meta = args.shared.event_ctx.allocEventMeta(args.shared.samples_written.load(.monotonic));
         args.shared.runtime_state.flush_requested = false;
         args.shared.mutex.unlock();
         try state_mod.appendStreamFlushEvent(args.allocator, flush_state, meta, stream_id);
@@ -164,7 +178,7 @@ fn run(args: WorkerArgs) !void {
 
     if (preempted) {
         args.shared.mutex.lock();
-        const meta = args.shared.event_ctx.allocEventMeta();
+        const meta = args.shared.event_ctx.allocEventMeta(args.shared.samples_written.load(.monotonic));
         const snap = args.shared.runtime_state;
         const old_stream_id = stream_id;
         const old_client_id = snap.active_client_id orelse "unknown";
@@ -194,7 +208,7 @@ fn run(args: WorkerArgs) !void {
         args.shared.runtime_state.active_gid = null;
         args.shared.runtime_state.active_authenticated = false;
         var end_state = args.shared.runtime_state;
-        const meta = args.shared.event_ctx.allocEventMeta();
+        const meta = args.shared.event_ctx.allocEventMeta(args.shared.samples_written.load(.monotonic));
         args.shared.mutex.unlock();
 
         // Snapshot the final sample count and clear the active rate.
@@ -211,7 +225,7 @@ fn run(args: WorkerArgs) !void {
 fn persistBegin(allocator: std.mem.Allocator, shared: *Shared, stream_id: u64, desc: types.StreamDescriptor) !void {
     shared.mutex.lock();
     var state = shared.runtime_state;
-    const meta = shared.event_ctx.allocEventMeta();
+    const meta = shared.event_ctx.allocEventMeta(shared.samples_written.load(.monotonic));
     shared.mutex.unlock();
     // Snapshot the current sample counter and rate into the state copy.
     state.samples_written = shared.samples_written.load(.monotonic);
@@ -250,8 +264,11 @@ fn parseHeader(line: []const u8) !types.StreamDescriptor {
     const channels_u64 = try parseUnsignedField(line, "channels");
     const format = try parseFormatField(line, "sample_format");
 
-    if (sample_rate_u64 != 48_000) return error.UnsupportedSampleRate;
-    if (channels_u64 != 2) return error.UnsupportedChannelCount;
+    // Validate ranges before attempting OSS negotiation.
+    if (sample_rate_u64 < 8_000 or sample_rate_u64 > 384_000)
+        return error.UnsupportedSampleRate;
+    if (channels_u64 < 1 or channels_u64 > 2)
+        return error.UnsupportedChannelCount;
 
     return .{
         .sample_rate = @intCast(sample_rate_u64),
@@ -283,5 +300,6 @@ fn parseFormatField(line: []const u8, key: []const u8) !types.StreamFormat {
     const end = std.mem.indexOfScalarPos(u8, line, i, '"') orelse return error.InvalidFormat;
     const value = line[i..end];
     if (std.mem.eql(u8, value, "s16le")) return .s16le;
+    if (std.mem.eql(u8, value, "s32le")) return .s32le;
     return error.UnsupportedFormat;
 }

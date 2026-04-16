@@ -1,16 +1,32 @@
 const std = @import("std");
 const types = @import("types.zig");
 const surfaces = @import("surfaces.zig");
+const session_mod = @import("session");
 
 pub const CONTROL_SOCKET_PATH = "/tmp/semaud-control.sock";
 
 pub const EventContext = struct {
     next_seq: u64 = 1,
+    /// 16-character lowercase hex session token, cached at startup.
+    session_hex: [16]u8 = [_]u8{'0'} ** 16,
 
-    pub fn allocEventMeta(self: *EventContext) EventMeta {
+    /// Initialise session_hex from the shared session file. Call once at startup.
+    pub fn initSession(self: *EventContext) void {
+        const token = session_mod.readOrCreate(session_mod.DEFAULT_SESSION_PATH) catch 0;
+        _ = session_mod.format(token, &self.session_hex);
+    }
+
+    /// Allocate an EventMeta with the current seq, wall-clock timestamp,
+    /// and an optional audio sample position.
+    ///
+    /// Pass `samples` from Shared.samples_written.load(.monotonic) when a
+    /// stream is active; pass null when no stream is running.
+    pub fn allocEventMeta(self: *EventContext, samples: ?u64) EventMeta {
         const meta = EventMeta{
             .seq = self.next_seq,
-            .ts_mono_ns = std.time.nanoTimestamp(),
+            .ts_wall_ns = @as(i64, @intCast(std.time.nanoTimestamp())),
+            .ts_audio_samples = samples,
+            .session_hex = self.session_hex,
         };
         self.next_seq += 1;
         return meta;
@@ -19,7 +35,13 @@ pub const EventContext = struct {
 
 pub const EventMeta = struct {
     seq: u64,
-    ts_mono_ns: i128,
+    /// Wall-clock nanoseconds at event creation (i64 — fits until year 2262).
+    ts_wall_ns: i64,
+    /// Audio clock position in PCM sample frames at event creation.
+    /// Null when no audio stream is active.
+    ts_audio_samples: ?u64,
+    /// Session token hex string, copied from EventContext at allocation time.
+    session_hex: [16]u8,
 };
 
 pub const RuntimeState = struct {
@@ -409,6 +431,49 @@ fn renderCurrentStreamJson(
     return allocator.dupe(u8, "null");
 }
 
+// ============================================================================
+// Unified event log — stdout emission
+// ============================================================================
+
+/// Write one unified-schema JSON line to stdout.
+/// Fields are emitted field-by-field to avoid format-string escaping issues.
+/// `fields_json` is a pre-rendered fragment starting with a comma, e.g.:
+///   `,"target":"default","stream_id":1`
+fn emitStdoutLine(meta: EventMeta, event_type: []const u8, fields_json: []const u8) void {
+    var line_buf: [4096]u8 = undefined;
+    var stream = std.io.fixedBufferStream(&line_buf);
+    const w = stream.writer();
+
+    w.writeAll("{\"type\":\"") catch return;
+    w.writeAll(event_type) catch return;
+    w.writeAll("\",\"subsystem\":\"semaaud\",\"session\":\"") catch return;
+    w.writeAll(&meta.session_hex) catch return;
+    w.writeByte('"') catch return;
+
+    var tmp: [80]u8 = undefined;
+    const seqts = std.fmt.bufPrint(&tmp,
+        ",\"seq\":{d},\"ts_wall_ns\":{d},\"ts_audio_samples\":",
+        .{ meta.seq, meta.ts_wall_ns }) catch return;
+    w.writeAll(seqts) catch return;
+
+    if (meta.ts_audio_samples) |samples| {
+        var ntmp: [24]u8 = undefined;
+        const ns = std.fmt.bufPrint(&ntmp, "{d}", .{samples}) catch return;
+        w.writeAll(ns) catch return;
+    } else {
+        w.writeAll("null") catch return;
+    }
+
+    w.writeAll(fields_json) catch return;
+    w.writeAll("}\n") catch return;
+
+    var file = std.fs.File.stdout();
+    var out_buf: [4096]u8 = undefined;
+    var out = file.writer(&out_buf);
+    out.interface.writeAll(stream.getWritten()) catch return;
+    out.interface.flush() catch return;
+}
+
 pub fn appendStreamBeginEvent(
     allocator: std.mem.Allocator,
     state: RuntimeState,
@@ -430,10 +495,10 @@ pub fn appendStreamBeginEvent(
 
     const line = try std.fmt.allocPrint(
         allocator,
-        "{{\"seq\":{},\"ts_mono_ns\":{},\"type\":\"stream_begin\",\"target\":\"{s}\",\"stream_id\":{},\"client_id\":\"{s}\",\"client_label\":\"{s}\",\"client_class\":\"{s}\",\"client_origin\":\"{s}\",\"uid\":{s},\"gid\":{s},\"authenticated\":{s},\"policy\":\"allow\",\"default_pcm\":\"{s}\",\"audiodev\":\"{s}\",\"mixerdev\":\"{s}\",\"sample_rate\":{},\"channels\":{},\"sample_format\":\"{s}\"}}\n",
+        "{{\"seq\":{},\"ts_wall_ns\":{},\"type\":\"stream_begin\",\"target\":\"{s}\",\"stream_id\":{},\"client_id\":\"{s}\",\"client_label\":\"{s}\",\"client_class\":\"{s}\",\"client_origin\":\"{s}\",\"uid\":{s},\"gid\":{s},\"authenticated\":{s},\"policy\":\"allow\",\"default_pcm\":\"{s}\",\"audiodev\":\"{s}\",\"mixerdev\":\"{s}\",\"sample_rate\":{},\"channels\":{},\"sample_format\":\"{s}\"}}\n",
         .{
             meta.seq,
-            meta.ts_mono_ns,
+            meta.ts_wall_ns,
             state.target_name,
             stream_id,
             client_id,
@@ -455,6 +520,17 @@ pub fn appendStreamBeginEvent(
 
     try appendLine(path, line);
     try writeLastEvent(allocator, state.target_name, line);
+    // Unified event log: stdout emission.
+    {
+        const fields = std.fmt.allocPrint(allocator,
+            ",\"target\":\"{s}\",\"stream_id\":{d},\"client_id\":\"{s}\",\"client_label\":\"{s}\",\"client_class\":\"{s}\",\"sample_rate\":{d},\"channels\":{d}",
+            .{ state.target_name, stream_id, client_id, client_label, client_class, desc.sample_rate, desc.channels },
+        ) catch null;
+        if (fields) |f| {
+            defer allocator.free(f);
+            emitStdoutLine(meta, "stream_begin", f);
+        }
+    }
 }
 
 pub fn appendStreamEndEvent(
@@ -468,10 +544,10 @@ pub fn appendStreamEndEvent(
 
     const line = try std.fmt.allocPrint(
         allocator,
-        "{{\"seq\":{},\"ts_mono_ns\":{},\"type\":\"stream_end\",\"target\":\"{s}\",\"stream_id\":{},\"default_pcm\":\"{s}\",\"audiodev\":\"{s}\",\"mixerdev\":\"{s}\"}}\n",
+        "{{\"seq\":{},\"ts_wall_ns\":{},\"type\":\"stream_end\",\"target\":\"{s}\",\"stream_id\":{},\"default_pcm\":\"{s}\",\"audiodev\":\"{s}\",\"mixerdev\":\"{s}\"}}\n",
         .{
             meta.seq,
-            meta.ts_mono_ns,
+            meta.ts_wall_ns,
             state.target_name,
             stream_id,
             state.selection.default_pcm,
@@ -483,6 +559,17 @@ pub fn appendStreamEndEvent(
 
     try appendLine(path, line);
     try writeLastEvent(allocator, state.target_name, line);
+    // Unified event log: stdout emission.
+    {
+        const fields = std.fmt.allocPrint(allocator,
+            ",\"target\":\"{s}\",\"stream_id\":{d}",
+            .{ state.target_name, stream_id },
+        ) catch null;
+        if (fields) |f| {
+            defer allocator.free(f);
+            emitStdoutLine(meta, "stream_end", f);
+        }
+    }
 }
 
 pub fn appendStreamStopEvent(
@@ -496,10 +583,10 @@ pub fn appendStreamStopEvent(
 
     const line = try std.fmt.allocPrint(
         allocator,
-        "{{\"seq\":{},\"ts_mono_ns\":{},\"type\":\"stream_stop\",\"target\":\"{s}\",\"stream_id\":{},\"default_pcm\":\"{s}\",\"audiodev\":\"{s}\",\"mixerdev\":\"{s}\"}}\n",
+        "{{\"seq\":{},\"ts_wall_ns\":{},\"type\":\"stream_stop\",\"target\":\"{s}\",\"stream_id\":{},\"default_pcm\":\"{s}\",\"audiodev\":\"{s}\",\"mixerdev\":\"{s}\"}}\n",
         .{
             meta.seq,
-            meta.ts_mono_ns,
+            meta.ts_wall_ns,
             state.target_name,
             stream_id,
             state.selection.default_pcm,
@@ -511,6 +598,17 @@ pub fn appendStreamStopEvent(
 
     try appendLine(path, line);
     try writeLastEvent(allocator, state.target_name, line);
+    // Unified event log: stdout emission.
+    {
+        const fields = std.fmt.allocPrint(allocator,
+            ",\"target\":\"{s}\",\"stream_id\":{d}",
+            .{ state.target_name, stream_id },
+        ) catch null;
+        if (fields) |f| {
+            defer allocator.free(f);
+            emitStdoutLine(meta, "stream_stop", f);
+        }
+    }
 }
 
 pub fn appendStreamFlushEvent(
@@ -524,10 +622,10 @@ pub fn appendStreamFlushEvent(
 
     const line = try std.fmt.allocPrint(
         allocator,
-        "{{\"seq\":{},\"ts_mono_ns\":{},\"type\":\"stream_flush\",\"target\":\"{s}\",\"stream_id\":{},\"default_pcm\":\"{s}\",\"audiodev\":\"{s}\",\"mixerdev\":\"{s}\"}}\n",
+        "{{\"seq\":{},\"ts_wall_ns\":{},\"type\":\"stream_flush\",\"target\":\"{s}\",\"stream_id\":{},\"default_pcm\":\"{s}\",\"audiodev\":\"{s}\",\"mixerdev\":\"{s}\"}}\n",
         .{
             meta.seq,
-            meta.ts_mono_ns,
+            meta.ts_wall_ns,
             state.target_name,
             stream_id,
             state.selection.default_pcm,
@@ -539,6 +637,17 @@ pub fn appendStreamFlushEvent(
 
     try appendLine(path, line);
     try writeLastEvent(allocator, state.target_name, line);
+    // Unified event log: stdout emission.
+    {
+        const fields = std.fmt.allocPrint(allocator,
+            ",\"target\":\"{s}\",\"stream_id\":{d}",
+            .{ state.target_name, stream_id },
+        ) catch null;
+        if (fields) |f| {
+            defer allocator.free(f);
+            emitStdoutLine(meta, "stream_flush", f);
+        }
+    }
 }
 
 pub fn appendStreamPreemptEvent(
@@ -558,10 +667,10 @@ pub fn appendStreamPreemptEvent(
 
     const line = try std.fmt.allocPrint(
         allocator,
-        "{{\"seq\":{},\"ts_mono_ns\":{},\"type\":\"stream_preempt\",\"target\":\"{s}\",\"old_stream_id\":{},\"old_client_id\":\"{s}\",\"old_client_label\":\"{s}\",\"new_client_id\":\"{s}\",\"new_client_label\":\"{s}\",\"new_client_class\":\"{s}\",\"new_client_origin\":\"{s}\",\"policy\":\"override\"}}\n",
+        "{{\"seq\":{},\"ts_wall_ns\":{},\"type\":\"stream_preempt\",\"target\":\"{s}\",\"old_stream_id\":{},\"old_client_id\":\"{s}\",\"old_client_label\":\"{s}\",\"new_client_id\":\"{s}\",\"new_client_label\":\"{s}\",\"new_client_class\":\"{s}\",\"new_client_origin\":\"{s}\",\"policy\":\"override\"}}\n",
         .{
             meta.seq,
-            meta.ts_mono_ns,
+            meta.ts_wall_ns,
             state.target_name,
             old_stream_id,
             old_client_id,
@@ -576,6 +685,17 @@ pub fn appendStreamPreemptEvent(
 
     try appendLine(path, line);
     try writeLastEvent(allocator, state.target_name, line);
+    // Unified event log: stdout emission.
+    {
+        const fields = std.fmt.allocPrint(allocator,
+            ",\"target\":\"{s}\",\"old_stream_id\":{d},\"old_client_id\":\"{s}\",\"new_client_id\":\"{s}\",\"policy\":\"override\"",
+            .{ state.target_name, old_stream_id, old_client_id, new_client_id },
+        ) catch null;
+        if (fields) |f| {
+            defer allocator.free(f);
+            emitStdoutLine(meta, "stream_preempt", f);
+        }
+    }
 }
 
 pub fn appendStreamRejectEvent(
@@ -601,10 +721,10 @@ pub fn appendStreamRejectEvent(
 
     const line = try std.fmt.allocPrint(
         allocator,
-        "{{\"seq\":{},\"ts_mono_ns\":{},\"type\":\"stream_reject\",\"target\":\"{s}\",\"client_id\":\"{s}\",\"client_label\":\"{s}\",\"client_class\":\"{s}\",\"client_origin\":\"{s}\",\"uid\":{s},\"gid\":{s},\"authenticated\":{s},\"policy\":\"{s}\",\"default_pcm\":\"{s}\",\"audiodev\":\"{s}\",\"mixerdev\":\"{s}\"}}\n",
+        "{{\"seq\":{},\"ts_wall_ns\":{},\"type\":\"stream_reject\",\"target\":\"{s}\",\"client_id\":\"{s}\",\"client_label\":\"{s}\",\"client_class\":\"{s}\",\"client_origin\":\"{s}\",\"uid\":{s},\"gid\":{s},\"authenticated\":{s},\"policy\":\"{s}\",\"default_pcm\":\"{s}\",\"audiodev\":\"{s}\",\"mixerdev\":\"{s}\"}}\n",
         .{
             meta.seq,
-            meta.ts_mono_ns,
+            meta.ts_wall_ns,
             state.target_name,
             client_id,
             client_label,
@@ -623,6 +743,17 @@ pub fn appendStreamRejectEvent(
 
     try appendLine(path, line);
     try writeLastEvent(allocator, state.target_name, line);
+    // Unified event log: stdout emission.
+    {
+        const fields = std.fmt.allocPrint(allocator,
+            ",\"target\":\"{s}\",\"client_id\":\"{s}\",\"client_label\":\"{s}\",\"policy\":\"{s}\"",
+            .{ state.target_name, client_id, client_label, reason },
+        ) catch null;
+        if (fields) |f| {
+            defer allocator.free(f);
+            emitStdoutLine(meta, "stream_reject", f);
+        }
+    }
 }
 
 pub fn appendStreamRerouteEvent(
@@ -649,10 +780,10 @@ pub fn appendStreamRerouteEvent(
 
     const line = try std.fmt.allocPrint(
         allocator,
-        "{{\"seq\":{},\"ts_mono_ns\":{},\"type\":\"stream_reroute\",\"from_target\":\"{s}\",\"to_target\":\"{s}\",\"client_id\":\"{s}\",\"client_label\":\"{s}\",\"client_class\":\"{s}\",\"client_origin\":\"{s}\",\"uid\":{s},\"gid\":{s},\"authenticated\":{s},\"reason\":\"{s}\"}}\n",
+        "{{\"seq\":{},\"ts_wall_ns\":{},\"type\":\"stream_reroute\",\"from_target\":\"{s}\",\"to_target\":\"{s}\",\"client_id\":\"{s}\",\"client_label\":\"{s}\",\"client_class\":\"{s}\",\"client_origin\":\"{s}\",\"uid\":{s},\"gid\":{s},\"authenticated\":{s},\"reason\":\"{s}\"}}\n",
         .{
             meta.seq,
-            meta.ts_mono_ns,
+            meta.ts_wall_ns,
             from_target,
             to_target,
             client_id,
@@ -669,6 +800,17 @@ pub fn appendStreamRerouteEvent(
 
     try appendLine(path, line);
     try writeLastEvent(allocator, from_target, line);
+    // Unified event log: stdout emission.
+    {
+        const fields = std.fmt.allocPrint(allocator,
+            ",\"from_target\":\"{s}\",\"to_target\":\"{s}\",\"client_id\":\"{s}\",\"reason\":\"{s}\"",
+            .{ from_target, to_target, client_id, reason },
+        ) catch null;
+        if (fields) |f| {
+            defer allocator.free(f);
+            emitStdoutLine(meta, "stream_reroute", f);
+        }
+    }
 }
 
 pub fn appendStreamGroupBlockEvent(
@@ -696,10 +838,10 @@ pub fn appendStreamGroupBlockEvent(
 
     const line = try std.fmt.allocPrint(
         allocator,
-        "{{\"seq\":{},\"ts_mono_ns\":{},\"type\":\"stream_group_block\",\"target\":\"{s}\",\"group\":\"{s}\",\"blocking_target\":\"{s}\",\"client_id\":\"{s}\",\"client_label\":\"{s}\",\"client_class\":\"{s}\",\"client_origin\":\"{s}\",\"uid\":{s},\"gid\":{s},\"authenticated\":{s},\"reason\":\"{s}\"}}\n",
+        "{{\"seq\":{},\"ts_wall_ns\":{},\"type\":\"stream_group_block\",\"target\":\"{s}\",\"group\":\"{s}\",\"blocking_target\":\"{s}\",\"client_id\":\"{s}\",\"client_label\":\"{s}\",\"client_class\":\"{s}\",\"client_origin\":\"{s}\",\"uid\":{s},\"gid\":{s},\"authenticated\":{s},\"reason\":\"{s}\"}}\n",
         .{
             meta.seq,
-            meta.ts_mono_ns,
+            meta.ts_wall_ns,
             target,
             group_name,
             blocking_target,
@@ -717,6 +859,17 @@ pub fn appendStreamGroupBlockEvent(
 
     try appendLine(path, line);
     try writeLastEvent(allocator, target, line);
+    // Unified event log: stdout emission.
+    {
+        const fields = std.fmt.allocPrint(allocator,
+            ",\"target\":\"{s}\",\"group\":\"{s}\",\"blocking_target\":\"{s}\",\"client_id\":\"{s}\",\"reason\":\"{s}\"",
+            .{ target, group_name, blocking_target, client_id, reason },
+        ) catch null;
+        if (fields) |f| {
+            defer allocator.free(f);
+            emitStdoutLine(meta, "stream_group_block", f);
+        }
+    }
 }
 
 pub fn appendStreamGroupPreemptEvent(
@@ -744,10 +897,10 @@ pub fn appendStreamGroupPreemptEvent(
 
     const line = try std.fmt.allocPrint(
         allocator,
-        "{{\"seq\":{},\"ts_mono_ns\":{},\"type\":\"stream_group_preempt\",\"target\":\"{s}\",\"group\":\"{s}\",\"preempted_target\":\"{s}\",\"client_id\":\"{s}\",\"client_label\":\"{s}\",\"client_class\":\"{s}\",\"client_origin\":\"{s}\",\"uid\":{s},\"gid\":{s},\"authenticated\":{s},\"reason\":\"{s}\"}}\n",
+        "{{\"seq\":{},\"ts_wall_ns\":{},\"type\":\"stream_group_preempt\",\"target\":\"{s}\",\"group\":\"{s}\",\"preempted_target\":\"{s}\",\"client_id\":\"{s}\",\"client_label\":\"{s}\",\"client_class\":\"{s}\",\"client_origin\":\"{s}\",\"uid\":{s},\"gid\":{s},\"authenticated\":{s},\"reason\":\"{s}\"}}\n",
         .{
             meta.seq,
-            meta.ts_mono_ns,
+            meta.ts_wall_ns,
             target,
             group_name,
             preempted_target,
@@ -765,6 +918,17 @@ pub fn appendStreamGroupPreemptEvent(
 
     try appendLine(path, line);
     try writeLastEvent(allocator, target, line);
+    // Unified event log: stdout emission.
+    {
+        const fields = std.fmt.allocPrint(allocator,
+            ",\"target\":\"{s}\",\"group\":\"{s}\",\"preempted_target\":\"{s}\",\"client_id\":\"{s}\",\"reason\":\"{s}\"",
+            .{ target, group_name, preempted_target, client_id, reason },
+        ) catch null;
+        if (fields) |f| {
+            defer allocator.free(f);
+            emitStdoutLine(meta, "stream_group_preempt", f);
+        }
+    }
 }
 
 pub fn parseRetargetSelection(

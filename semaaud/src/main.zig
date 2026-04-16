@@ -130,6 +130,10 @@ pub fn main() !void {
         alt_selection,
     );
 
+    // Initialise session token for event log emission.
+    default_shared.event_ctx.initSession();
+    alt_shared.event_ctx.initSession();
+
     var ctl_server = try control_server.ControlServer.init(.{
         .socket_path = state_mod.CONTROL_SOCKET_PATH,
     });
@@ -199,7 +203,7 @@ pub fn main() !void {
             shared.mutex.lock();
             const busy = shared.runtime_state.stream_active;
             const reject_state = shared.runtime_state;
-            const reject_meta = shared.event_ctx.allocEventMeta();
+            const reject_meta = shared.event_ctx.allocEventMeta(null);
             const client_num = shared.next_client_id;
             shared.next_client_id += 1;
             shared.mutex.unlock();
@@ -286,7 +290,7 @@ pub fn main() !void {
                                         client_authenticated,
                                     );
 
-                                    const group_meta = shared.event_ctx.allocEventMeta();
+                                    const group_meta = shared.event_ctx.allocEventMeta(null);
                                     try state_mod.appendStreamGroupPreemptEvent(
                                         allocator,
                                         shared.runtime_state.target_name,
@@ -320,7 +324,7 @@ pub fn main() !void {
                                         defer posix.close(conn);
                                         _ = try posix.write(conn, "error: group override timeout\n");
 
-                                        const reject_group_meta = shared.event_ctx.allocEventMeta();
+                                        const reject_group_meta = shared.event_ctx.allocEventMeta(null);
                                         try state_mod.appendStreamRejectEvent(
                                             allocator,
                                             reject_state,
@@ -381,7 +385,7 @@ pub fn main() !void {
                                     client_authenticated,
                                 );
 
-                                const group_meta = shared.event_ctx.allocEventMeta();
+                                const group_meta = shared.event_ctx.allocEventMeta(null);
                                 try state_mod.appendStreamGroupBlockEvent(
                                     allocator,
                                     shared.runtime_state.target_name,
@@ -398,7 +402,7 @@ pub fn main() !void {
                                     "group_busy",
                                 );
 
-                                const reject_group_meta = shared.event_ctx.allocEventMeta();
+                                const reject_group_meta = shared.event_ctx.allocEventMeta(null);
                                 try state_mod.appendStreamRejectEvent(
                                     allocator,
                                     reject_state,
@@ -494,7 +498,7 @@ pub fn main() !void {
 
                 var route_buf: ?[]const u8 = null;
                 if (loaded_policy.fallback_target) |fallback| {
-                    const reroute_meta = shared.event_ctx.allocEventMeta();
+                    const reroute_meta = shared.event_ctx.allocEventMeta(null);
                     try state_mod.appendStreamRerouteEvent(
                         allocator,
                         shared.runtime_state.target_name,
@@ -635,7 +639,7 @@ pub fn main() !void {
                     client_authenticated,
                 );
 
-                const reject_event_meta = shared.event_ctx.allocEventMeta();
+                const reject_event_meta = shared.event_ctx.allocEventMeta(null);
                 try state_mod.appendStreamRejectEvent(
                     allocator,
                     reject_state,

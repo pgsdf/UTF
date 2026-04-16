@@ -1,5 +1,22 @@
 pub const StreamFormat = enum {
     s16le,
+    s32le,
+
+    /// Bytes per sample per channel.
+    pub fn bytesPerSample(self: StreamFormat) u32 {
+        return switch (self) {
+            .s16le => 2,
+            .s32le => 4,
+        };
+    }
+
+    /// OSS AFMT_* constant for this format.
+    pub fn ossAfmt(self: StreamFormat) u32 {
+        return switch (self) {
+            .s16le => 0x00000010, // AFMT_S16_LE
+            .s32le => 0x00001000, // AFMT_S32_LE
+        };
+    }
 };
 
 pub const StreamDescriptor = struct {
