@@ -50,7 +50,7 @@ output).
 
 ## I-2 — Keyboard Event Passthrough
 
-**Status**: Open
+**Status**: Done
 **Effort**: Small
 **Depends on**: I-1 (schema adoption, so keyboard events have correct schema)
 

@@ -259,11 +259,14 @@ pub fn readerMain(ctx: ReaderContext) !void {
                     } else if (isTouchMarker(ev.code)) {
                         // Touch marker keys are intentionally absorbed here.
                     } else {
-                        const event: semantic.SemanticEvent = if (ev.value != 0)
-                            .{ .key_down = .{ .path = ctx.path, .code = ev.code } }
-                        else
-                            .{ .key_up = .{ .path = ctx.path, .code = ev.code } };
-                        try ctx.queue.push(event);
+                        // ev.value: 1=press, 0=release, 2=repeat (autorepeat).
+                        // Suppress repeats — emit key_down only on initial press.
+                        if (ev.value == 1) {
+                            try ctx.queue.push(.{ .key_down = .{ .path = ctx.path, .code = ev.code } });
+                        } else if (ev.value == 0) {
+                            try ctx.queue.push(.{ .key_up = .{ .path = ctx.path, .code = ev.code } });
+                        }
+                        // ev.value == 2 (repeat) is intentionally ignored.
                     }
                 },
                 EV_SYN => {

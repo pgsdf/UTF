@@ -96,8 +96,9 @@ fn rebuildMappings(
         try outbuf.appendSlice(allocator, "\",\"logical_kind\":\"");
         try outbuf.appendSlice(allocator, m.kind.asString());
         var tmp: [192]u8 = undefined;
-        const rest = try std.fmt.bufPrint(&tmp, "\",\"logical_id\":{d},\"stable\":\"{s}\",\"fingerprint\":\"0x{x}\"",
-            .{ m.logical_id, m.stable_name, m.fingerprint });
+        const rest = try std.fmt.bufPrint(&tmp, "\",\"logical_id\":{d},\"stable\":\"{s}\",\"fingerprint\":\"0x{x}\",\"has_keyboard\":{s}",
+            .{ m.logical_id, m.stable_name, m.fingerprint,
+               if (m.kind == .keyboard) "true" else "false" });
         try outbuf.appendSlice(allocator, rest);
         try outbuf.appendSlice(allocator, "}");
     }
