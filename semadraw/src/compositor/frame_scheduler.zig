@@ -1,4 +1,5 @@
 const std = @import("std");
+const shared_clock = @import("shared_clock");
 
 // ============================================================================
 // Clock abstraction
@@ -89,6 +90,86 @@ pub const MockClockSource = struct {
         return self.time_ns;
     }
 };
+
+// ============================================================================
+// ChronofsClockSource — audio-hardware-clock driven scheduling
+// ============================================================================
+
+/// Clock source that delegates to the shared audio hardware clock.
+///
+/// `now()` returns the current audio sample position converted to nanoseconds
+/// via `ClockReader.toNs()`.  This keeps the frame scheduler in lockstep with
+/// the audio clock so `frame_complete` events and audio stream events share the
+/// same timeline.
+///
+/// When the clock is invalid (semaaud not running), `now()` falls back to
+/// std.time.nanoTimestamp() so the compositor keeps rendering at wall rate.
+pub const ChronofsClockSource = struct {
+    reader: shared_clock.ClockReader,
+    _wall_fallback: WallClockSource,
+
+    pub fn init(clock_path: []const u8) ChronofsClockSource {
+        return .{
+            .reader = shared_clock.ClockReader.init(clock_path),
+            ._wall_fallback = WallClockSource.init(),
+        };
+    }
+
+    pub fn deinit(self: ChronofsClockSource) void {
+        self.reader.deinit();
+    }
+
+    pub fn isValid(self: *const ChronofsClockSource) bool {
+        return self.reader.isValid();
+    }
+
+    pub fn source(self: *ChronofsClockSource) ClockSource {
+        return .{
+            .context = @ptrCast(self),
+            .nowFn = nowImpl,
+        };
+    }
+
+    /// Current sample position in nanoseconds.
+    /// Falls back to wall clock if audio clock is not yet valid.
+    pub fn nowNs(self: *const ChronofsClockSource) i128 {
+        if (self.reader.isValid()) {
+            const samples = self.reader.read();
+            const rate = self.reader.sampleRate();
+            return @intCast(shared_clock.toNanoseconds(samples, rate));
+        }
+        return std.time.nanoTimestamp();
+    }
+
+    /// Current audio sample position (for embedding in events).
+    /// Returns null if clock is not valid.
+    pub fn samplePosition(self: *const ChronofsClockSource) ?u64 {
+        if (!self.reader.isValid()) return null;
+        return self.reader.read();
+    }
+
+    fn nowImpl(ctx: *anyopaque) i128 {
+        const self: *ChronofsClockSource = @ptrCast(@alignCast(ctx));
+        return self.nowNs();
+    }
+};
+
+/// Return the next frame boundary in audio sample frames above `clock.now()`.
+///
+/// Formula: `((samples_now / spf) + 1) * spf`
+/// where `spf = sample_rate / refresh_hz`.
+///
+/// At 48kHz / 60Hz: spf = 800, so frames land on multiples of 800 samples.
+/// Returns 0 if the clock is not valid (caller should fall back to wall time).
+pub fn nextFrameTarget(reader: shared_clock.ClockReader, refresh_hz: u32) u64 {
+    if (!reader.isValid()) return 0;
+    const sample_rate = reader.sampleRate();
+    if (sample_rate == 0 or refresh_hz == 0) return 0;
+    const spf: u64 = sample_rate / refresh_hz;
+    if (spf == 0) return 0;
+    const now = reader.read();
+    return ((now / spf) + 1) * spf;
+}
 
 // ============================================================================
 // FrameStats
@@ -445,4 +526,36 @@ test "AdaptiveScheduler init with MockClock" {
     try std.testing.expectEqual(@as(u32, 30), adaptive.min_hz);
     try std.testing.expectEqual(@as(u32, 60), adaptive.max_hz);
     try std.testing.expectEqual(@as(u32, 60), adaptive.scheduler.target_hz);
+}
+
+test "nextFrameTarget with MockClock via shared_clock.ClockWriter" {
+    // Write a clock region to a temp file, read it back, verify nextFrameTarget.
+    const tmp_path = "/tmp/sema_c4_test_clock";
+    {
+        var writer = try shared_clock.ClockWriter.init(tmp_path);
+        defer writer.deinit();
+        // Simulate: 48kHz, 1200 samples written (1.5 frames into 60Hz session).
+        writer.write(48_000, 1200);
+    }
+    var reader = shared_clock.ClockReader.init(tmp_path);
+    defer reader.deinit();
+
+    try std.testing.expect(reader.isValid());
+    try std.testing.expectEqual(@as(u32, 48_000), reader.sampleRate());
+
+    // spf = 48000 / 60 = 800. now = 1200.
+    // nextFrameTarget = ((1200 / 800) + 1) * 800 = (1 + 1) * 800 = 1600.
+    const target = nextFrameTarget(reader, 60);
+    try std.testing.expectEqual(@as(u64, 1600), target);
+
+    // At exactly a boundary (now = 800): next = ((800/800)+1)*800 = 1600.
+    writer: {
+        var w = shared_clock.ClockWriter.init(tmp_path) catch break :writer;
+        defer w.deinit();
+        w.write(48_000, 800);
+    }
+    var reader2 = shared_clock.ClockReader.init(tmp_path);
+    defer reader2.deinit();
+    const target2 = nextFrameTarget(reader2, 60);
+    try std.testing.expectEqual(@as(u64, 1600), target2);
 }

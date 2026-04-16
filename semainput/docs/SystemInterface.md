@@ -64,3 +64,30 @@ sudo ./zig-out/bin/semainputd | jq 'select(.type == "identity_snapshot") | .mapp
 evdev key codes follow the Linux input event codes standard.
 Common codes: KEY_A=30, KEY_ENTER=28, KEY_ESC=1, KEY_SPACE=57, KEY_LEFT=105,
 KEY_RIGHT=106, KEY_UP=103, KEY_DOWN=108.
+
+## Audio clock timestamping (I-3)
+
+`ts_audio_samples` is the audio sample position at the moment of event
+emission, read from the shared clock region at `/var/run/sema/clock` (S-4).
+
+- **Non-null**: semaaud is running and at least one PCM stream has started.
+  The value is the monotonic PCM sample frame count from semaaud's stream
+  worker — never resets between streams.
+- **null**: semaaud is not running, the clock file is absent, or no audio
+  stream has started yet (`clock_valid == 0`).
+
+The clock is opened non-fatally at startup. If semaaud starts after
+semainput, subsequent events will carry non-null `ts_audio_samples` once
+the clock region becomes valid — no restart of semainput is needed.
+
+### Correlation with audio events
+
+To correlate an input event with audio position, use `ts_audio_samples` as
+the timeline index for the chronofs resolver:
+
+```sh
+# Show input events with their audio sample position
+sudo ./zig-out/bin/semainputd | jq '{type, ts_audio_samples, device}'
+```
+
+At 48kHz, `ts_audio_samples / 48000` gives elapsed seconds of audio.

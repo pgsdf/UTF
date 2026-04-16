@@ -94,7 +94,15 @@ pub const GestureRecognizer = struct {
         try w.writeAll(gesture_type);
         try w.writeAll("\",\"subsystem\":\"semainput\",\"session\":\"");
         try w.writeAll(&globals.session_hex);
-        try w.print("\",\"seq\":{d},\"ts_wall_ns\":{d},\"ts_audio_samples\":null,\"device\":\"", .{ s, ts });
+        try w.print("\",\"seq\":{d},\"ts_wall_ns\":{d},\"ts_audio_samples\":", .{ s, ts });
+        if (globals.readAudioSamples()) |samples| {
+            var ntmp: [24]u8 = undefined;
+            const ns = std.fmt.bufPrint(&ntmp, "{d}", .{samples}) catch "null";
+            w.writeAll(ns) catch return;
+        } else {
+            w.writeAll("null") catch return;
+        }
+        try w.writeAll(",\"device\":\"");
         try w.writeAll(device_name);
         try w.writeAll("\"");
         try w.writeAll(fields_json);

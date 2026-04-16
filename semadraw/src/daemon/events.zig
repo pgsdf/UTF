@@ -37,7 +37,7 @@ fn nextSeq() u64 {
 /// `fields_json` — event-specific JSON fragment starting with a comma,
 ///                 e.g. `,"client_id":1,"surface_id":2`
 ///                 Pass empty slice for lifecycle events with no extra fields.
-fn emit(event_type: []const u8, fields_json: []const u8) void {
+fn emitWithSamples(event_type: []const u8, fields_json: []const u8, ts_audio_samples: ?u64) void {
     const ts: i64 = @intCast(std.time.nanoTimestamp());
     const s = nextSeq();
 
@@ -53,9 +53,18 @@ fn emit(event_type: []const u8, fields_json: []const u8) void {
 
     var tmp: [64]u8 = undefined;
     const seqts = std.fmt.bufPrint(&tmp,
-        ",\"seq\":{d},\"ts_wall_ns\":{d},\"ts_audio_samples\":null",
+        ",\"seq\":{d},\"ts_wall_ns\":{d},\"ts_audio_samples\":",
         .{ s, ts }) catch return;
     w.writeAll(seqts) catch return;
+
+    if (ts_audio_samples) |samples| {
+        var ntmp: [24]u8 = undefined;
+        const ns = std.fmt.bufPrint(&ntmp, "{d}", .{samples}) catch "null";
+        w.writeAll(ns) catch return;
+    } else {
+        w.writeAll("null") catch return;
+    }
+
     w.writeAll(fields_json) catch return;
     w.writeAll("}\n") catch return;
 
@@ -64,6 +73,10 @@ fn emit(event_type: []const u8, fields_json: []const u8) void {
     var out = file.writer(&out_buf);
     out.interface.writeAll(stream.getWritten()) catch return;
     out.interface.flush() catch return;
+}
+
+fn emit(event_type: []const u8, fields_json: []const u8) void {
+    emitWithSamples(event_type, fields_json, null);
 }
 
 // ============================================================================
@@ -106,11 +119,13 @@ pub fn emitSurfaceDestroyed(client_id: u64, surface_id: u32) void {
     emit("surface_destroyed", fields);
 }
 
-/// Emitted once per rendered frame (on COMMIT reply).
-pub fn emitFrameComplete(surface_id: u32, frame_number: u64, backend_name: []const u8) void {
+/// Emitted once per rendered frame (on COMMIT reply or compositor cycle).
+/// `ts_audio_samples` carries the audio clock position of this frame boundary
+/// when the chronofs clock is driving the scheduler; null otherwise.
+pub fn emitFrameComplete(surface_id: u32, frame_number: u64, backend_name: []const u8, ts_audio_samples: ?u64) void {
     var buf: [128]u8 = undefined;
     const fields = std.fmt.bufPrint(&buf,
         ",\"surface_id\":{d},\"frame_number\":{d},\"backend\":\"{s}\"",
         .{ surface_id, frame_number, backend_name }) catch return;
-    emit("frame_complete", fields);
+    emitWithSamples("frame_complete", fields, ts_audio_samples);
 }

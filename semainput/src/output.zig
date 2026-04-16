@@ -34,7 +34,14 @@ fn writeEnvelope(writer: anytype, event_type: []const u8) !void {
     try writer.print(",\"session\":\"{s}\"", .{globals.session_hex});
     try writer.print(",\"seq\":{d}", .{s});
     try writer.print(",\"ts_wall_ns\":{d}", .{ts});
-    try writer.writeAll(",\"ts_audio_samples\":null");
+    try writer.writeAll(",\"ts_audio_samples\":");
+    if (globals.readAudioSamples()) |samples| {
+        var ntmp: [24]u8 = undefined;
+        const ns = std.fmt.bufPrint(&ntmp, "{d}", .{samples}) catch "null";
+        try writer.writeAll(ns);
+    } else {
+        try writer.writeAll("null");
+    }
 }
 
 /// Write the mandatory envelope followed by device and source fields.

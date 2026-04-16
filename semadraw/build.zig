@@ -549,10 +549,20 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // shared/src/clock.zig — audio hardware clock reader for C-4.
+    const shared_clock_mod = b.createModule(.{
+        .root_source_file = b.path("../shared/src/clock.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const frame_scheduler_mod = b.createModule(.{
         .root_source_file = b.path("src/compositor/frame_scheduler.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{
+            .{ .name = "shared_clock", .module = shared_clock_mod },
+        },
     });
 
     const compositor_mod = b.createModule(.{
@@ -564,6 +574,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "frame_scheduler", .module = frame_scheduler_mod },
             .{ .name = "backend", .module = backend_mod },
             .{ .name = "surface_registry", .module = surface_registry_mod },
+            .{ .name = "shared_clock", .module = shared_clock_mod },
         },
     });
 

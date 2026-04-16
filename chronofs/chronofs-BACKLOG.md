@@ -163,7 +163,7 @@ this concrete for each domain.
 
 ## C-4 — Audio-Driven Frame Scheduler Integration
 
-**Status**: Open
+**Status**: Done
 **Effort**: Medium
 **Depends on**: C-3, semadraw/D-3 (clock abstraction in frame scheduler)
 

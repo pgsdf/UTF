@@ -39,8 +39,8 @@ fn rebuildMappings(
     try outbuf.appendSlice(allocator, &globals.session_hex);
     {
         var tmp: [128]u8 = undefined;
-        const seqts = try std.fmt.bufPrint(&tmp, "\",\"seq\":{d},\"ts_wall_ns\":{d},\"ts_audio_samples\":null,\"devices\":[",
-            .{ globals.nextSeq(), @as(i64, @intCast(std.time.nanoTimestamp())) });
+        const seqts = try std.fmt.bufPrint(&tmp, "\",\"seq\":{d},\"ts_wall_ns\":{d},\"ts_audio_samples\":{s},\"devices\":[",
+            .{ globals.nextSeq(), @as(i64, @intCast(std.time.nanoTimestamp())), globals.audioSamplesJson() });
         try outbuf.appendSlice(allocator, seqts);
     }
     for (snapshot.items, 0..) |d, i| {
@@ -85,8 +85,8 @@ fn rebuildMappings(
     try outbuf.appendSlice(allocator, &globals.session_hex);
     {
         var tmp: [128]u8 = undefined;
-        const seqts = try std.fmt.bufPrint(&tmp, "\",\"seq\":{d},\"ts_wall_ns\":{d},\"ts_audio_samples\":null,\"mappings\":[",
-            .{ globals.nextSeq(), @as(i64, @intCast(std.time.nanoTimestamp())) });
+        const seqts = try std.fmt.bufPrint(&tmp, "\",\"seq\":{d},\"ts_wall_ns\":{d},\"ts_audio_samples\":{s},\"mappings\":[",
+            .{ globals.nextSeq(), @as(i64, @intCast(std.time.nanoTimestamp())), globals.audioSamplesJson() });
         try outbuf.appendSlice(allocator, seqts);
     }
     for (mapping_snapshot.items, 0..) |m, i| {
@@ -115,8 +115,8 @@ pub fn main() !void {
     globals.initGlobals();
 
     const daemon_start = try std.fmt.allocPrint(allocator,
-        "{{\"type\":\"daemon_start\",\"subsystem\":\"semainput\",\"session\":\"{s}\",\"seq\":{d},\"ts_wall_ns\":{d},\"ts_audio_samples\":null,\"name\":\"semainputd\",\"version\":\"v41\"}}\n",
-        .{ globals.session_hex, globals.nextSeq(), @as(i64, @intCast(std.time.nanoTimestamp())) },
+        "{{\"type\":\"daemon_start\",\"subsystem\":\"semainput\",\"session\":\"{s}\",\"seq\":{d},\"ts_wall_ns\":{d},\"ts_audio_samples\":{s},\"name\":\"semainputd\",\"version\":\"v41\"}}\n",
+        .{ globals.session_hex, globals.nextSeq(), @as(i64, @intCast(std.time.nanoTimestamp())), globals.audioSamplesJson() },
     );
     defer allocator.free(daemon_start);
     try writeStdout(daemon_start);
@@ -138,8 +138,8 @@ pub fn main() !void {
     defer smoother.deinit();
 
     const daemon_state = try std.fmt.allocPrint(allocator,
-        "{{\"type\":\"daemon_state\",\"subsystem\":\"semainput\",\"session\":\"{s}\",\"seq\":{d},\"ts_wall_ns\":{d},\"ts_audio_samples\":null,\"message\":\"spawning readers\",\"device_count\":{d}}}\n",
-        .{ globals.session_hex, globals.nextSeq(), @as(i64, @intCast(std.time.nanoTimestamp())), devices.items.items.len },
+        "{{\"type\":\"daemon_state\",\"subsystem\":\"semainput\",\"session\":\"{s}\",\"seq\":{d},\"ts_wall_ns\":{d},\"ts_audio_samples\":{s},\"message\":\"spawning readers\",\"device_count\":{d}}}\n",
+        .{ globals.session_hex, globals.nextSeq(), @as(i64, @intCast(std.time.nanoTimestamp())), globals.audioSamplesJson(), devices.items.items.len },
     );
     defer allocator.free(daemon_state);
     try writeStdout(daemon_state);

@@ -95,6 +95,11 @@ pub const Daemon = struct {
     pub fn initCompositor(self: *Daemon) !void {
         self.comp = compositor.Compositor.init(self.allocator, &self.surfaces);
 
+        // Install the audio hardware clock for drift-free scheduling.
+        // Non-fatal: if semaaud is not running the compositor falls back to
+        // the wall clock automatically.
+        self.comp.setChronofsClockPath("/var/run/sema/clock");
+
         // Initialize output with configured resolution
         try self.comp.initOutput(0, .{
             .width = self.config.width,
@@ -253,9 +258,16 @@ pub const Daemon = struct {
 
             // Perform composition if needed (always check, regardless of socket events)
             if (self.comp.needsComposite()) {
-                _ = self.comp.composite() catch |err| {
+                if (self.comp.composite()) |result| {
+                    events.emitFrameComplete(
+                        0, // compositor-driven frames are not surface-specific
+                        result.frame_number,
+                        "software",
+                        result.target_audio_samples,
+                    );
+                } else |err| {
                     log.warn("composite failed: {}", .{err});
-                };
+                }
             }
         }
 
@@ -479,7 +491,7 @@ pub const Daemon = struct {
         try session.client.sendMessage(.frame_complete, &reply_buf);
 
         log.debug("remote client {} committed surface {} frame {}", .{ session.id, msg.surface_id, frame_number });
-        events.emitFrameComplete(msg.surface_id, frame_number, "software");
+        events.emitFrameComplete(msg.surface_id, frame_number, "software", null);
     }
 
     fn handleRemoteSetVisible(self: *Daemon, session: *RemoteSession, payload: ?[]u8) !void {
@@ -797,7 +809,7 @@ pub const Daemon = struct {
         try session.send(.frame_complete, &reply_buf);
 
         log.debug("client {} committed surface {} frame {}", .{ session.id, msg.surface_id, frame_number });
-        events.emitFrameComplete(msg.surface_id, frame_number, "software");
+        events.emitFrameComplete(msg.surface_id, frame_number, "software", null);
     }
 
     fn handleSetVisible(self: *Daemon, session: *client_session.ClientSession, payload: ?[]u8) !void {

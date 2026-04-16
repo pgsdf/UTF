@@ -3,6 +3,7 @@ const damage = @import("damage");
 const frame_scheduler = @import("frame_scheduler");
 const backend_mod = @import("backend");
 const surface_registry = @import("surface_registry");
+const shared_clock = @import("shared_clock");
 
 const log = std.log.scoped(.compositor);
 
@@ -43,6 +44,9 @@ pub const Compositor = struct {
     damage_tracker: damage.DamageTracker,
     /// Wall clock source — owns the memory the ClockSource points into
     wall_clock: frame_scheduler.WallClockSource,
+    /// Audio hardware clock source — when valid, drives the frame scheduler
+    /// instead of the wall clock for drift-free AV synchronisation.
+    chronofs_clock: ?frame_scheduler.ChronofsClockSource,
     /// Frame scheduler
     scheduler: frame_scheduler.FrameScheduler,
     /// Primary output
@@ -71,6 +75,7 @@ pub const Compositor = struct {
             .surfaces = surfaces,
             .damage_tracker = damage.DamageTracker.init(allocator),
             .wall_clock = frame_scheduler.WallClockSource.init(),
+            .chronofs_clock = null,
             .scheduler = frame_scheduler.FrameScheduler.init(60, placeholder_clock),
             .output = null,
             .composing = false,
@@ -116,8 +121,24 @@ pub const Compositor = struct {
         self.damage_tracker.markFullRepaint();
     }
 
+    /// Optionally install an audio hardware clock for drift-free scheduling.
+    /// Call before start(). Non-fatal: if the clock path is invalid the
+    /// compositor falls back to the wall clock.
+    pub fn setChronofsClockPath(self: *Self, path: []const u8) void {
+        self.chronofs_clock = frame_scheduler.ChronofsClockSource.init(path);
+    }
+
     /// Start composition loop
     pub fn start(self: *Self) void {
+        // Prefer the audio hardware clock when valid; fall back to wall clock.
+        if (self.chronofs_clock) |*cc| {
+            if (cc.isValid()) {
+                self.scheduler.clock = cc.source();
+                self.scheduler.start();
+                self.composing = true;
+                return;
+            }
+        }
         // Rewire the scheduler's clock to point to self.wall_clock now that
         // the Compositor is in its final memory location.
         self.scheduler.clock = self.wall_clock.source();
@@ -234,11 +255,18 @@ pub const Compositor = struct {
         self.total_surfaces_composed += surfaces_rendered;
         output.last_frame = frame.frame_number;
 
+        // Capture the audio sample position for this frame boundary.
+        const target_samples: ?u64 = if (self.chronofs_clock) |*cc|
+            cc.samplePosition()
+        else
+            null;
+
         return .{
             .frame_number = frame.frame_number,
             .surfaces_rendered = surfaces_rendered,
             .total_render_time_ns = total_render_time,
             .frame_time_ns = frame.getElapsed(),
+            .target_audio_samples = target_samples,
         };
     }
 
@@ -366,6 +394,9 @@ pub const CompositeResult = struct {
     surfaces_rendered: u32,
     total_render_time_ns: u64,
     frame_time_ns: u64,
+    /// Audio sample position of this frame's target boundary.
+    /// Non-null when the chronofs clock is driving the scheduler.
+    target_audio_samples: ?u64,
 };
 
 /// Compositor statistics

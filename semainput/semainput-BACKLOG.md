@@ -87,7 +87,7 @@ structurally present but less exercised.
 
 ## I-3 — Audio Clock Timestamping
 
-**Status**: Open
+**Status**: Done
 **Effort**: Small
 **Depends on**: shared/S-4 (clock publication), I-1 (unified schema adopted)
 
