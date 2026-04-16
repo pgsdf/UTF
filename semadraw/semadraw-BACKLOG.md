@@ -86,7 +86,7 @@ through when constructing drawfs surface operations.
 
 ## D-3 — Frame Scheduler Clock Abstraction
 
-**Status**: Open
+**Status**: Done
 **Effort**: Small
 **Depends on**: Nothing (preparatory refactor)
 **Blocks**: chronofs C-4 (audio-driven scheduling)

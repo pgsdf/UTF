@@ -41,6 +41,8 @@ pub const Compositor = struct {
     surfaces: *surface_registry.SurfaceRegistry,
     /// Damage tracker
     damage_tracker: damage.DamageTracker,
+    /// Wall clock source — owns the memory the ClockSource points into
+    wall_clock: frame_scheduler.WallClockSource,
     /// Frame scheduler
     scheduler: frame_scheduler.FrameScheduler,
     /// Primary output
@@ -57,16 +59,30 @@ pub const Compositor = struct {
         allocator: std.mem.Allocator,
         surfaces: *surface_registry.SurfaceRegistry,
     ) Self {
+        // The scheduler's ClockSource is wired to self.wall_clock in start()
+        // once the Compositor is in its final memory location. We pass a
+        // placeholder here; no clock call is made before start() is called.
+        const placeholder_clock = frame_scheduler.ClockSource{
+            .context = @ptrFromInt(1), // non-null sentinel, never dereferenced
+            .nowFn = &placeholderNow,
+        };
         return .{
             .allocator = allocator,
             .surfaces = surfaces,
             .damage_tracker = damage.DamageTracker.init(allocator),
-            .scheduler = frame_scheduler.FrameScheduler.init(60),
+            .wall_clock = frame_scheduler.WallClockSource.init(),
+            .scheduler = frame_scheduler.FrameScheduler.init(60, placeholder_clock),
             .output = null,
             .composing = false,
             .total_composites = 0,
             .total_surfaces_composed = 0,
         };
+    }
+
+    fn placeholderNow(_: *anyopaque) i128 {
+        // Should never be called — start() rewires the clock before any
+        // scheduling query is made.
+        @panic("FrameScheduler clock used before Compositor.start()");
     }
 
     pub fn deinit(self: *Self) void {
@@ -102,6 +118,9 @@ pub const Compositor = struct {
 
     /// Start composition loop
     pub fn start(self: *Self) void {
+        // Rewire the scheduler's clock to point to self.wall_clock now that
+        // the Compositor is in its final memory location.
+        self.scheduler.clock = self.wall_clock.source();
         self.scheduler.start();
         self.composing = true;
     }

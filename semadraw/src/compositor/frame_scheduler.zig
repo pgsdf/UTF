@@ -1,29 +1,114 @@
 const std = @import("std");
 
+// ============================================================================
+// Clock abstraction
+// ============================================================================
+
+/// A pluggable clock source for the frame scheduler.
+///
+/// The default is WallClockSource, which delegates to std.time.nanoTimestamp().
+/// MockClockSource is provided for deterministic testing.
+/// ChronofsClockSource (defined in the chronofs module) will drive scheduling
+/// from the audio hardware clock for drift-free AV synchronisation.
+pub const ClockSource = struct {
+    context: *anyopaque,
+    nowFn: *const fn (context: *anyopaque) i128,
+
+    /// Return the current time in nanoseconds.
+    pub fn now(self: ClockSource) i128 {
+        return self.nowFn(self.context);
+    }
+};
+
+// ============================================================================
+// WallClockSource — production default
+// ============================================================================
+
+/// Clock source backed by std.time.nanoTimestamp().
+/// Construct with WallClockSource.init(), then call .source() to get a
+/// ClockSource suitable for passing to FrameScheduler.init().
+pub const WallClockSource = struct {
+    _dummy: u8 = 0,
+
+    pub fn init() WallClockSource {
+        return .{};
+    }
+
+    pub fn source(self: *WallClockSource) ClockSource {
+        return .{
+            .context = @ptrCast(self),
+            .nowFn = nowImpl,
+        };
+    }
+
+    fn nowImpl(_: *anyopaque) i128 {
+        return std.time.nanoTimestamp();
+    }
+};
+
+// ============================================================================
+// MockClockSource — deterministic testing
+// ============================================================================
+
+/// A manually-advanced clock for use in tests.
+/// Call advance() to move time forward; the scheduler will see exactly that
+/// value when it next calls clock.now().
+///
+/// Example:
+///   var mock = MockClockSource.init();
+///   var sched = FrameScheduler.init(60, mock.source());
+///   sched.start();
+///   mock.advance(16_666_667); // one frame at 60 Hz
+///   try std.testing.expect(sched.shouldComposite());
+pub const MockClockSource = struct {
+    time_ns: i128,
+
+    pub fn init() MockClockSource {
+        return .{ .time_ns = 0 };
+    }
+
+    /// Advance the clock by delta_ns nanoseconds.
+    pub fn advance(self: *MockClockSource, delta_ns: u64) void {
+        self.time_ns += @as(i128, delta_ns);
+    }
+
+    /// Set the clock to an absolute value.
+    pub fn setTime(self: *MockClockSource, ns: i128) void {
+        self.time_ns = ns;
+    }
+
+    pub fn source(self: *MockClockSource) ClockSource {
+        return .{
+            .context = @ptrCast(self),
+            .nowFn = nowImpl,
+        };
+    }
+
+    fn nowImpl(ctx: *anyopaque) i128 {
+        const self: *MockClockSource = @ptrCast(@alignCast(ctx));
+        return self.time_ns;
+    }
+};
+
+// ============================================================================
+// FrameStats
+// ============================================================================
+
 /// Frame timing statistics
 pub const FrameStats = struct {
-    /// Total frames composed
     total_frames: u64 = 0,
-    /// Frames that missed their deadline
     missed_frames: u64 = 0,
-    /// Last frame duration in nanoseconds
     last_frame_ns: u64 = 0,
-    /// Average frame duration (exponential moving average)
     avg_frame_ns: u64 = 0,
-    /// Maximum frame duration observed
     max_frame_ns: u64 = 0,
-    /// Minimum frame duration observed
     min_frame_ns: u64 = std.math.maxInt(u64),
 
     pub fn update(self: *FrameStats, duration_ns: u64, missed: bool) void {
         self.total_frames += 1;
         if (missed) self.missed_frames += 1;
-
         self.last_frame_ns = duration_ns;
         self.max_frame_ns = @max(self.max_frame_ns, duration_ns);
         self.min_frame_ns = @min(self.min_frame_ns, duration_ns);
-
-        // Exponential moving average (alpha = 0.1)
         if (self.avg_frame_ns == 0) {
             self.avg_frame_ns = duration_ns;
         } else {
@@ -43,29 +128,31 @@ pub const FrameStats = struct {
     }
 };
 
-/// Frame scheduler - manages timing for vsync-aligned composition
+// ============================================================================
+// FrameScheduler
+// ============================================================================
+
+/// Frame scheduler — manages timing for vsync-aligned composition.
+///
+/// Construct with a ClockSource so the time source can be swapped without
+/// changing scheduling logic. Pass WallClockSource.source() for production
+/// and MockClockSource.source() for deterministic tests.
 pub const FrameScheduler = struct {
-    /// Target refresh rate in Hz
+    clock: ClockSource,
     target_hz: u32,
-    /// Target frame interval in nanoseconds
     frame_interval_ns: u64,
-    /// Next frame deadline
     next_deadline_ns: i128,
-    /// Current frame number
     frame_number: u64,
-    /// Whether scheduler is running
     running: bool,
-    /// Frame timing statistics
     stats: FrameStats,
-    /// Callback for frame events
     frame_callback: ?*const fn (frame: u64, deadline_ns: i128) void,
 
     const Self = @This();
 
-    /// Initialize with target refresh rate
-    pub fn init(target_hz: u32) Self {
+    pub fn init(target_hz: u32, clock: ClockSource) Self {
         const interval = @divFloor(1_000_000_000, @as(u64, target_hz));
         return .{
+            .clock = clock,
             .target_hz = target_hz,
             .frame_interval_ns = interval,
             .next_deadline_ns = 0,
@@ -76,57 +163,45 @@ pub const FrameScheduler = struct {
         };
     }
 
-    /// Start the scheduler
     pub fn start(self: *Self) void {
         self.running = true;
-        self.next_deadline_ns = std.time.nanoTimestamp() + @as(i128, self.frame_interval_ns);
+        self.next_deadline_ns = self.clock.now() + @as(i128, self.frame_interval_ns);
         self.frame_number = 0;
     }
 
-    /// Stop the scheduler
     pub fn stop(self: *Self) void {
         self.running = false;
     }
 
-    /// Set frame callback
     pub fn setCallback(self: *Self, callback: *const fn (u64, i128) void) void {
         self.frame_callback = callback;
     }
 
-    /// Get time until next frame deadline
     pub fn getTimeUntilDeadline(self: *const Self) i64 {
-        const now = std.time.nanoTimestamp();
-        const remaining = self.next_deadline_ns - now;
+        const remaining = self.next_deadline_ns - self.clock.now();
         return @intCast(@max(0, remaining));
     }
 
-    /// Check if it's time for a new frame
     pub fn shouldComposite(self: *const Self) bool {
         if (!self.running) return false;
-        const now = std.time.nanoTimestamp();
-        return now >= self.next_deadline_ns;
+        return self.clock.now() >= self.next_deadline_ns;
     }
 
-    /// Begin a new frame (call before compositing)
     pub fn beginFrame(self: *Self) FrameHandle {
-        const start_time = std.time.nanoTimestamp();
         return .{
             .scheduler = self,
-            .start_time = start_time,
+            .start_time = self.clock.now(),
             .frame_number = self.frame_number,
         };
     }
 
-    /// Advance to next frame (called automatically by FrameHandle.end)
     fn advanceFrame(self: *Self, duration_ns: u64) void {
-        const now = std.time.nanoTimestamp();
+        const now = self.clock.now();
         const missed = now > self.next_deadline_ns + @as(i128, self.frame_interval_ns / 2);
 
         self.stats.update(duration_ns, missed);
         self.frame_number += 1;
 
-        // Calculate next deadline
-        // If we're behind, snap to next interval rather than accumulating debt
         if (now > self.next_deadline_ns) {
             const intervals_behind = @divFloor(
                 @as(u128, @intCast(now - self.next_deadline_ns)),
@@ -137,13 +212,14 @@ pub const FrameScheduler = struct {
             self.next_deadline_ns += @as(i128, self.frame_interval_ns);
         }
 
-        // Invoke callback if set
         if (self.frame_callback) |cb| {
             cb(self.frame_number, self.next_deadline_ns);
         }
     }
 
-    /// Wait for next frame deadline (blocking)
+    /// Block until the next frame deadline using wall time.
+    /// When a MockClockSource is in use the clock never advances on its own,
+    /// so this returns immediately — which is the correct behaviour for tests.
     pub fn waitForDeadline(self: *Self) void {
         const wait_ns = self.getTimeUntilDeadline();
         if (wait_ns > 0) {
@@ -151,73 +227,67 @@ pub const FrameScheduler = struct {
         }
     }
 
-    /// Get current frame number
     pub fn getFrameNumber(self: *const Self) u64 {
         return self.frame_number;
     }
 
-    /// Get frame statistics
     pub fn getStats(self: *const Self) FrameStats {
         return self.stats;
     }
 
-    /// Set target refresh rate
     pub fn setTargetHz(self: *Self, hz: u32) void {
         self.target_hz = hz;
         self.frame_interval_ns = @divFloor(1_000_000_000, @as(u64, hz));
     }
 
-    /// Calculate presentation timestamp for a frame
     pub fn getPresentationTime(self: *const Self, frame_offset: u64) i128 {
         return self.next_deadline_ns + @as(i128, frame_offset * self.frame_interval_ns);
     }
 };
 
-/// Handle for an active frame (RAII-style timing)
+// ============================================================================
+// FrameHandle
+// ============================================================================
+
 pub const FrameHandle = struct {
     scheduler: *FrameScheduler,
     start_time: i128,
     frame_number: u64,
 
-    /// End the frame and record timing
     pub fn end(self: *FrameHandle) void {
-        const end_time = std.time.nanoTimestamp();
+        const end_time = self.scheduler.clock.now();
         const duration: u64 = @intCast(end_time - self.start_time);
         self.scheduler.advanceFrame(duration);
     }
 
-    /// Get elapsed time since frame start
     pub fn getElapsed(self: *const FrameHandle) u64 {
-        const now = std.time.nanoTimestamp();
+        const now = self.scheduler.clock.now();
         return @intCast(now - self.start_time);
     }
 
-    /// Get remaining time until deadline
     pub fn getRemaining(self: *const FrameHandle) i64 {
         return self.scheduler.getTimeUntilDeadline();
     }
 };
 
-/// Adaptive frame pacing - adjusts target based on actual performance
+// ============================================================================
+// AdaptiveScheduler
+// ============================================================================
+
 pub const AdaptiveScheduler = struct {
     scheduler: FrameScheduler,
-    /// Minimum acceptable refresh rate
     min_hz: u32,
-    /// Maximum refresh rate (native)
     max_hz: u32,
-    /// Number of frames to sample before adjusting
     sample_window: u32,
-    /// Current sample count
     sample_count: u32,
-    /// Accumulated miss count in window
     window_misses: u32,
 
-    pub fn init(min_hz: u32, max_hz: u32) AdaptiveScheduler {
+    pub fn init(min_hz: u32, max_hz: u32, clock: ClockSource) AdaptiveScheduler {
         return .{
-            .scheduler = FrameScheduler.init(max_hz),
+            .scheduler = FrameScheduler.init(max_hz, clock),
             .min_hz = min_hz,
             .max_hz = max_hz,
-            .sample_window = 60, // Sample every 60 frames
+            .sample_window = 60,
             .sample_count = 0,
             .window_misses = 0,
         };
@@ -237,19 +307,13 @@ pub const AdaptiveScheduler = struct {
         return self.scheduler.beginFrame();
     }
 
-    /// Update adaptive pacing after frame completion
     pub fn endFrame(self: *AdaptiveScheduler, handle: *FrameHandle) void {
         const start_stats = self.scheduler.stats;
         handle.end();
-
-        // Track misses
         if (self.scheduler.stats.missed_frames > start_stats.missed_frames) {
             self.window_misses += 1;
         }
-
         self.sample_count += 1;
-
-        // Check if we should adjust
         if (self.sample_count >= self.sample_window) {
             self.adjustRate();
             self.sample_count = 0;
@@ -260,13 +324,10 @@ pub const AdaptiveScheduler = struct {
     fn adjustRate(self: *AdaptiveScheduler) void {
         const miss_rate = @as(f32, @floatFromInt(self.window_misses)) /
             @as(f32, @floatFromInt(self.sample_window));
-
         if (miss_rate > 0.1 and self.scheduler.target_hz > self.min_hz) {
-            // Too many misses, reduce rate
             const new_hz = @max(self.min_hz, self.scheduler.target_hz - 10);
             self.scheduler.setTargetHz(new_hz);
         } else if (miss_rate < 0.02 and self.scheduler.target_hz < self.max_hz) {
-            // Running smoothly, try increasing
             const new_hz = @min(self.max_hz, self.scheduler.target_hz + 5);
             self.scheduler.setTargetHz(new_hz);
         }
@@ -293,8 +354,28 @@ pub const AdaptiveScheduler = struct {
 // Tests
 // ============================================================================
 
-test "FrameScheduler basic" {
-    var sched = FrameScheduler.init(60);
+test "WallClockSource returns increasing time" {
+    var wall = WallClockSource.init();
+    const clock = wall.source();
+    const t0 = clock.now();
+    std.time.sleep(1_000_000); // 1ms
+    const t1 = clock.now();
+    try std.testing.expect(t1 > t0);
+}
+
+test "MockClockSource advances correctly" {
+    var mock = MockClockSource.init();
+    const clock = mock.source();
+    try std.testing.expectEqual(@as(i128, 0), clock.now());
+    mock.advance(16_666_667);
+    try std.testing.expectEqual(@as(i128, 16_666_667), clock.now());
+    mock.advance(16_666_667);
+    try std.testing.expectEqual(@as(i128, 33_333_334), clock.now());
+}
+
+test "FrameScheduler basic with WallClock" {
+    var wall = WallClockSource.init();
+    var sched = FrameScheduler.init(60, wall.source());
     sched.start();
 
     try std.testing.expect(sched.running);
@@ -308,20 +389,59 @@ test "FrameScheduler basic" {
     try std.testing.expect(sched.stats.last_frame_ns >= 1_000_000);
 }
 
+test "FrameScheduler deterministic with MockClock" {
+    var mock = MockClockSource.init();
+    var sched = FrameScheduler.init(60, mock.source());
+    sched.start();
+
+    try std.testing.expect(!sched.shouldComposite());
+
+    mock.advance(sched.frame_interval_ns);
+    try std.testing.expect(sched.shouldComposite());
+
+    var handle = sched.beginFrame();
+    mock.advance(2_000_000); // 2ms render time
+    handle.end();
+
+    try std.testing.expectEqual(@as(u64, 1), sched.stats.total_frames);
+    try std.testing.expectEqual(@as(u64, 2_000_000), sched.stats.last_frame_ns);
+
+    try std.testing.expect(!sched.shouldComposite());
+
+    mock.advance(sched.frame_interval_ns - 2_000_000);
+    try std.testing.expect(sched.shouldComposite());
+}
+
+test "FrameScheduler missed frame detection with MockClock" {
+    var mock = MockClockSource.init();
+    var sched = FrameScheduler.init(60, mock.source());
+    sched.start();
+
+    mock.advance(sched.frame_interval_ns * 3);
+    try std.testing.expect(sched.shouldComposite());
+
+    var handle = sched.beginFrame();
+    mock.advance(1_000_000);
+    handle.end();
+
+    try std.testing.expectEqual(@as(u64, 1), sched.stats.missed_frames);
+}
+
 test "FrameStats update" {
     var stats = FrameStats{};
 
-    stats.update(16_000_000, false); // 16ms
+    stats.update(16_000_000, false);
     try std.testing.expectEqual(@as(u64, 1), stats.total_frames);
     try std.testing.expectEqual(@as(u64, 0), stats.missed_frames);
 
-    stats.update(20_000_000, true); // 20ms, missed
+    stats.update(20_000_000, true);
     try std.testing.expectEqual(@as(u64, 2), stats.total_frames);
     try std.testing.expectEqual(@as(u64, 1), stats.missed_frames);
 }
 
-test "AdaptiveScheduler init" {
-    const adaptive = AdaptiveScheduler.init(30, 60);
+test "AdaptiveScheduler init with MockClock" {
+    var mock = MockClockSource.init();
+    const adaptive = AdaptiveScheduler.init(30, 60, mock.source());
     try std.testing.expectEqual(@as(u32, 30), adaptive.min_hz);
     try std.testing.expectEqual(@as(u32, 60), adaptive.max_hz);
     try std.testing.expectEqual(@as(u32, 60), adaptive.scheduler.target_hz);
