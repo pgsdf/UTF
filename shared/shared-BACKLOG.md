@@ -50,7 +50,7 @@ doc-vs-implementation drift that a generator would have prevented.
 
 ## S-2 — Unified Event Log Schema
 
-**Status**: Open
+**Status**: Done
 **Effort**: Small
 **Depends on**: S-3 (session identity, for the `session` field)
 **Blocks**: semaaud A-3, semainput I-2, semadraw D-1
