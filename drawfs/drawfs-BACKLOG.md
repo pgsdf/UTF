@@ -90,7 +90,7 @@ framed binary format.
 
 ## DF-3 — DRM/KMS Display Bring-up (Phase 2)
 
-**Status**: Open
+**Status**: Done (skeleton)
 **Effort**: Large
 **Depends on**: DF-1 (baseline integration working)
 
