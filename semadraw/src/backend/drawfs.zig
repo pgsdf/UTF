@@ -186,6 +186,30 @@ fn parseReply(buf: []const u8) struct { msg_type: u16, msg_id: u32, payload: []c
 }
 
 // ============================================================================
+// Render state
+// ============================================================================
+
+/// Per-session render state. Resets to defaults on RESET opcode or new session.
+/// Does not leak between client sessions since each client gets its own backend.
+pub const RenderState = struct {
+    /// Blend mode. 0=SrcOver, 1=Src, 2=Clear, 3=Add.
+    blend_mode: u32 = 0,
+    /// Antialiasing enabled. When true, filled edges use alpha blending
+    /// for sub-pixel coverage on the outer pixel ring.
+    antialias: bool = false,
+    /// Stroke join style. 0=Miter, 1=Bevel, 2=Round.
+    stroke_join: u32 = 0,
+    /// Stroke cap style. 0=Butt, 1=Square, 2=Round.
+    stroke_cap: u32 = 0,
+    /// Miter limit for miter joins (default 4.0).
+    miter_limit: f32 = 4.0,
+
+    pub fn reset(self: *RenderState) void {
+        self.* = .{};
+    }
+};
+
+// ============================================================================
 // DrawfsBackend
 // ============================================================================
 
@@ -211,6 +235,7 @@ pub const DrawfsBackend = struct {
     width: u32,
     height: u32,
     frame_count: u64,
+    render_state: RenderState,
 
     // Read buffer for protocol
     read_buf: [4096]u8,
@@ -240,6 +265,7 @@ pub const DrawfsBackend = struct {
             .width = 0,
             .height = 0,
             .frame_count = 0,
+            .render_state = .{},
             .read_buf = undefined,
             .input = null,
         };
@@ -623,9 +649,34 @@ pub const DrawfsBackend = struct {
 
             // Execute command
             switch (opcode) {
-                0x0001 => {}, // RESET - no-op for stateless renderer
-                0x0004 => {}, // SET_BLEND - stored state, not yet used
-                0x0007 => {}, // SET_ANTIALIAS - stored state, not yet used
+                0x0001 => { // RESET — reset render state and clear any clip
+                    self.render_state.reset();
+                },
+                0x0004 => { // SET_BLEND (4 bytes: u32 blend_mode)
+                    if (payload.len >= 4) {
+                        self.render_state.blend_mode = std.mem.readInt(u32, payload[0..4], .little);
+                    }
+                },
+                0x0007 => { // SET_ANTIALIAS (4 bytes: u32 enabled)
+                    if (payload.len >= 4) {
+                        self.render_state.antialias = std.mem.readInt(u32, payload[0..4], .little) != 0;
+                    }
+                },
+                0x0013 => { // SET_STROKE_JOIN (4 bytes: u32 join)
+                    if (payload.len >= 4) {
+                        self.render_state.stroke_join = std.mem.readInt(u32, payload[0..4], .little);
+                    }
+                },
+                0x0014 => { // SET_STROKE_CAP (4 bytes: u32 cap)
+                    if (payload.len >= 4) {
+                        self.render_state.stroke_cap = std.mem.readInt(u32, payload[0..4], .little);
+                    }
+                },
+                0x0015 => { // SET_MITER_LIMIT (4 bytes: f32 limit)
+                    if (payload.len >= 4) {
+                        self.render_state.miter_limit = readF32(payload[0..4]);
+                    }
+                },
                 0x0010 => { // FILL_RECT (32 bytes: x, y, w, h, r, g, b, a)
                     if (payload.len >= 32) {
                         const x = readF32(payload[0..4]);
@@ -694,34 +745,80 @@ pub const DrawfsBackend = struct {
 
         if (x0 >= x1 or y0 >= y1) return;
 
+        const stride = self.surface_stride;
+
+        // Clear mode: zero out pixels (transparent black).
+        if (self.render_state.blend_mode == 2) {
+            var py: i32 = y0;
+            while (py < y1) : (py += 1) {
+                var px: i32 = x0;
+                while (px < x1) : (px += 1) {
+                    const idx = @as(usize, @intCast(py)) * stride + @as(usize, @intCast(px)) * 4;
+                    if (idx + 3 < fb.len) {
+                        fb[idx] = 0;
+                        fb[idx + 1] = 0;
+                        fb[idx + 2] = 0;
+                        fb[idx + 3] = 0;
+                    }
+                }
+            }
+            return;
+        }
+
         const cr = clampU8(r);
         const cg = clampU8(g);
         const cb = clampU8(b_col);
         const ca = clampU8(a);
 
-        const stride = self.surface_stride;
-
+        // Inner fill (all modes other than Clear).
         var py: i32 = y0;
         while (py < y1) : (py += 1) {
             var px: i32 = x0;
             while (px < x1) : (px += 1) {
                 const idx = @as(usize, @intCast(py)) * stride + @as(usize, @intCast(px)) * 4;
                 if (idx + 3 < fb.len) {
-                    // XRGB8888: B, G, R, X
-                    if (ca == 255) {
-                        fb[idx + 0] = cb;
-                        fb[idx + 1] = cg;
-                        fb[idx + 2] = cr;
-                        fb[idx + 3] = 0xFF;
-                    } else if (ca > 0) {
-                        // Alpha blend
-                        const sa: f32 = @as(f32, @floatFromInt(ca)) / 255.0;
-                        const inv_sa = 1.0 - sa;
-                        fb[idx + 0] = @intFromFloat(@min(255.0, @as(f32, @floatFromInt(cb)) * sa + @as(f32, @floatFromInt(fb[idx + 0])) * inv_sa));
-                        fb[idx + 1] = @intFromFloat(@min(255.0, @as(f32, @floatFromInt(cg)) * sa + @as(f32, @floatFromInt(fb[idx + 1])) * inv_sa));
-                        fb[idx + 2] = @intFromFloat(@min(255.0, @as(f32, @floatFromInt(cr)) * sa + @as(f32, @floatFromInt(fb[idx + 2])) * inv_sa));
-                        fb[idx + 3] = 0xFF;
-                    }
+                    writePixel(fb, idx, cr, cg, cb, ca, self.render_state.blend_mode);
+                }
+            }
+        }
+
+        // Antialias: blend outer edge pixels at half coverage.
+        if (self.render_state.antialias and ca > 0) {
+            const half_ca = ca / 2;
+            // Top edge (row above y0)
+            if (y0 > 0) {
+                var px: i32 = x0;
+                while (px < x1) : (px += 1) {
+                    const idx = @as(usize, @intCast(y0 - 1)) * stride + @as(usize, @intCast(px)) * 4;
+                    if (idx + 3 < fb.len)
+                        writePixel(fb, idx, cr, cg, cb, half_ca, self.render_state.blend_mode);
+                }
+            }
+            // Bottom edge
+            if (y1 < @as(i32, @intCast(fb_h))) {
+                var px: i32 = x0;
+                while (px < x1) : (px += 1) {
+                    const idx = @as(usize, @intCast(y1)) * stride + @as(usize, @intCast(px)) * 4;
+                    if (idx + 3 < fb.len)
+                        writePixel(fb, idx, cr, cg, cb, half_ca, self.render_state.blend_mode);
+                }
+            }
+            // Left edge
+            if (x0 > 0) {
+                var ipy: i32 = y0;
+                while (ipy < y1) : (ipy += 1) {
+                    const idx = @as(usize, @intCast(ipy)) * stride + @as(usize, @intCast(x0 - 1)) * 4;
+                    if (idx + 3 < fb.len)
+                        writePixel(fb, idx, cr, cg, cb, half_ca, self.render_state.blend_mode);
+                }
+            }
+            // Right edge
+            if (x1 < @as(i32, @intCast(fb_w))) {
+                var ipy: i32 = y0;
+                while (ipy < y1) : (ipy += 1) {
+                    const idx = @as(usize, @intCast(ipy)) * stride + @as(usize, @intCast(x1)) * 4;
+                    if (idx + 3 < fb.len)
+                        writePixel(fb, idx, cr, cg, cb, half_ca, self.render_state.blend_mode);
                 }
             }
         }
@@ -793,19 +890,7 @@ pub const DrawfsBackend = struct {
                     {
                         const idx = @as(usize, @intCast(plot_y)) * stride + @as(usize, @intCast(plot_x)) * 4;
                         if (idx + 3 < fb.len) {
-                            if (ca == 255) {
-                                fb[idx + 0] = cb;
-                                fb[idx + 1] = cg;
-                                fb[idx + 2] = cr;
-                                fb[idx + 3] = 0xFF;
-                            } else if (ca > 0) {
-                                const sa: f32 = @as(f32, @floatFromInt(ca)) / 255.0;
-                                const inv_sa = 1.0 - sa;
-                                fb[idx + 0] = @intFromFloat(@min(255.0, @as(f32, @floatFromInt(cb)) * sa + @as(f32, @floatFromInt(fb[idx + 0])) * inv_sa));
-                                fb[idx + 1] = @intFromFloat(@min(255.0, @as(f32, @floatFromInt(cg)) * sa + @as(f32, @floatFromInt(fb[idx + 1])) * inv_sa));
-                                fb[idx + 2] = @intFromFloat(@min(255.0, @as(f32, @floatFromInt(cr)) * sa + @as(f32, @floatFromInt(fb[idx + 2])) * inv_sa));
-                                fb[idx + 3] = 0xFF;
-                            }
+                            writePixel(fb, idx, cr, cg, cb, ca, self.render_state.blend_mode);
                         }
                     }
                 }
@@ -892,6 +977,38 @@ pub const DrawfsBackend = struct {
 // ============================================================================
 // Helper functions
 // ============================================================================
+
+/// Write one XRGB8888 pixel applying the given blend mode.
+/// blend_mode: 0=SrcOver, 1=Src, 2=Clear, 3=Add
+fn writePixel(fb: []u8, idx: usize, r: u8, g: u8, b: u8, a: u8, blend_mode: u32) void {
+    if (idx + 3 >= fb.len) return;
+    switch (blend_mode) {
+        2 => { // Clear
+            fb[idx] = 0; fb[idx+1] = 0; fb[idx+2] = 0; fb[idx+3] = 0;
+        },
+        1 => { // Src — write directly, no blending
+            fb[idx+0] = b; fb[idx+1] = g; fb[idx+2] = r; fb[idx+3] = a;
+        },
+        3 => { // Add — saturating add
+            fb[idx+0] = @intCast(@min(255, @as(u32, fb[idx+0]) + b));
+            fb[idx+1] = @intCast(@min(255, @as(u32, fb[idx+1]) + g));
+            fb[idx+2] = @intCast(@min(255, @as(u32, fb[idx+2]) + r));
+            fb[idx+3] = 0xFF;
+        },
+        else => { // SrcOver (default)
+            if (a == 255) {
+                fb[idx+0] = b; fb[idx+1] = g; fb[idx+2] = r; fb[idx+3] = 0xFF;
+            } else if (a > 0) {
+                const sa: f32 = @as(f32, @floatFromInt(a)) / 255.0;
+                const inv_sa = 1.0 - sa;
+                fb[idx+0] = @intFromFloat(@min(255.0, @as(f32, @floatFromInt(b)) * sa + @as(f32, @floatFromInt(fb[idx+0])) * inv_sa));
+                fb[idx+1] = @intFromFloat(@min(255.0, @as(f32, @floatFromInt(g)) * sa + @as(f32, @floatFromInt(fb[idx+1])) * inv_sa));
+                fb[idx+2] = @intFromFloat(@min(255.0, @as(f32, @floatFromInt(r)) * sa + @as(f32, @floatFromInt(fb[idx+2])) * inv_sa));
+                fb[idx+3] = 0xFF;
+            }
+        },
+    }
+}
 
 fn clampU8(v: f32) u8 {
     var x = v;

@@ -48,7 +48,7 @@ to know when frames are produced), `semadraw` needs to emit JSON-lines events.
 
 ## D-2 — drawfs Backend Render State
 
-**Status**: Open
+**Status**: Done
 **Effort**: Small
 **Depends on**: drawfs DF-1 (integration verified)
 
