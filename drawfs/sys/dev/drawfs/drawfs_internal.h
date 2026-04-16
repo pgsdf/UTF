@@ -65,6 +65,9 @@ struct drawfs_session {
     struct cv cv;
     struct selinfo sel;
 
+    /* Global session registry link (protected by drawfs_global_mtx). */
+    TAILQ_ENTRY(drawfs_session) g_link;
+
     struct drawfs_eventq evq;
     size_t evq_bytes;
     bool closing;

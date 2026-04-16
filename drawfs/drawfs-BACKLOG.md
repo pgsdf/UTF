@@ -10,7 +10,7 @@ display bring-up and the integration surface with semadraw.
 
 ## DF-1 — Verify Integration Against Repaired semadraw drawfs Backend
 
-**Status**: Open
+**Status**: Done
 **Effort**: Small
 **Depends on**: semadraw BACKLOG.md items 1.3 and 1.4 (SDCS opcodes and ioctl
   fix — both already marked done)
@@ -46,7 +46,7 @@ implemented SDCS opcodes produce correct output on a real mapped surface.
 
 ## DF-2 — Input Event Delivery
 
-**Status**: Open
+**Status**: Done
 **Effort**: Medium
 **Depends on**: semainput I-1 (semainput producing stable structured output)
 

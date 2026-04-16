@@ -8,6 +8,7 @@ const activity_mod = @import("device_activity.zig");
 const gesture_mod = @import("gesture.zig");
 const smoother_mod = @import("smoother.zig");
 const output_mod = @import("output.zig");
+const globals = @import("globals.zig");
 
 fn writeStdout(bytes: []const u8) !void {
     var stdout_file = std.fs.File.stdout();
@@ -33,14 +34,44 @@ fn rebuildMappings(
     var outbuf = std.ArrayList(u8){};
     defer outbuf.deinit(allocator);
 
-    try outbuf.appendSlice(allocator, "{\"type\":\"classification_snapshot\",\"devices\":[");
-    for (snapshot.items, 0..) |d, idx| {
-        if (idx != 0) try outbuf.appendSlice(allocator, ",");
-        const part = try std.fmt.allocPrint(allocator,
-            "{{\"source\":\"{s}\",\"role\":\"{s}\",\"rel_x\":{s},\"rel_y\":{s},\"abs_x\":{s},\"abs_y\":{s},\"btn_left\":{s},\"btn_right\":{s},\"btn_middle\":{s},\"touch_btn\":{s},\"touch_tool\":{s},\"mt_tracking\":{s},\"key_other\":{s}}}",
-            .{ d.path, d.role.asString(), if (d.caps.rel_x) "true" else "false", if (d.caps.rel_y) "true" else "false", if (d.caps.abs_x) "true" else "false", if (d.caps.abs_y) "true" else "false", if (d.caps.btn_left) "true" else "false", if (d.caps.btn_right) "true" else "false", if (d.caps.btn_middle) "true" else "false", if (d.caps.btn_touch) "true" else "false", if (d.caps.btn_tool_finger) "true" else "false", if (d.caps.mt_tracking_id) "true" else "false", if (d.caps.key_other) "true" else "false" });
-        defer allocator.free(part);
-        try outbuf.appendSlice(allocator, part);
+    // classification_snapshot — build entirely with appendSlice, no { or } in format strings
+    try outbuf.appendSlice(allocator, "{\"type\":\"classification_snapshot\",\"subsystem\":\"semainput\",\"session\":\"");
+    try outbuf.appendSlice(allocator, &globals.session_hex);
+    {
+        var tmp: [128]u8 = undefined;
+        const seqts = try std.fmt.bufPrint(&tmp, "\",\"seq\":{d},\"ts_wall_ns\":{d},\"ts_audio_samples\":null,\"devices\":[",
+            .{ globals.nextSeq(), @as(i64, @intCast(std.time.nanoTimestamp())) });
+        try outbuf.appendSlice(allocator, seqts);
+    }
+    for (snapshot.items, 0..) |d, i| {
+        if (i != 0) try outbuf.appendSlice(allocator, ",");
+        try outbuf.appendSlice(allocator, "{\"source\":\"");
+        try outbuf.appendSlice(allocator, d.path);
+        try outbuf.appendSlice(allocator, "\",\"role\":\"");
+        try outbuf.appendSlice(allocator, d.role.asString());
+        try outbuf.appendSlice(allocator, "\",\"rel_x\":");
+        try outbuf.appendSlice(allocator, if (d.caps.rel_x) "true" else "false");
+        try outbuf.appendSlice(allocator, ",\"rel_y\":");
+        try outbuf.appendSlice(allocator, if (d.caps.rel_y) "true" else "false");
+        try outbuf.appendSlice(allocator, ",\"abs_x\":");
+        try outbuf.appendSlice(allocator, if (d.caps.abs_x) "true" else "false");
+        try outbuf.appendSlice(allocator, ",\"abs_y\":");
+        try outbuf.appendSlice(allocator, if (d.caps.abs_y) "true" else "false");
+        try outbuf.appendSlice(allocator, ",\"btn_left\":");
+        try outbuf.appendSlice(allocator, if (d.caps.btn_left) "true" else "false");
+        try outbuf.appendSlice(allocator, ",\"btn_right\":");
+        try outbuf.appendSlice(allocator, if (d.caps.btn_right) "true" else "false");
+        try outbuf.appendSlice(allocator, ",\"btn_middle\":");
+        try outbuf.appendSlice(allocator, if (d.caps.btn_middle) "true" else "false");
+        try outbuf.appendSlice(allocator, ",\"touch_btn\":");
+        try outbuf.appendSlice(allocator, if (d.caps.btn_touch) "true" else "false");
+        try outbuf.appendSlice(allocator, ",\"touch_tool\":");
+        try outbuf.appendSlice(allocator, if (d.caps.btn_tool_finger) "true" else "false");
+        try outbuf.appendSlice(allocator, ",\"mt_tracking\":");
+        try outbuf.appendSlice(allocator, if (d.caps.mt_tracking_id) "true" else "false");
+        try outbuf.appendSlice(allocator, ",\"key_other\":");
+        try outbuf.appendSlice(allocator, if (d.caps.key_other) "true" else "false");
+        try outbuf.appendSlice(allocator, "}");
     }
     try outbuf.appendSlice(allocator, "]}\n");
     try writeStdout(outbuf.items);
@@ -48,14 +79,27 @@ fn rebuildMappings(
     outbuf.clearRetainingCapacity();
     try aggregator.snapshot(mapping_snapshot, allocator);
     defer aggregator.freeSnapshot(mapping_snapshot, allocator);
-    try outbuf.appendSlice(allocator, "{\"type\":\"identity_snapshot\",\"mappings\":[");
-    for (mapping_snapshot.items, 0..) |m, idx| {
-        if (idx != 0) try outbuf.appendSlice(allocator, ",");
-        const part = try std.fmt.allocPrint(allocator,
-            "{{\"source\":\"{s}\",\"logical_kind\":\"{s}\",\"logical_id\":{d},\"stable\":\"{s}\",\"fingerprint\":\"0x{x}\"}}",
-            .{ m.path, m.kind.asString(), m.logical_id, m.stable_name, m.fingerprint });
-        defer allocator.free(part);
-        try outbuf.appendSlice(allocator, part);
+
+    // identity_snapshot
+    try outbuf.appendSlice(allocator, "{\"type\":\"identity_snapshot\",\"subsystem\":\"semainput\",\"session\":\"");
+    try outbuf.appendSlice(allocator, &globals.session_hex);
+    {
+        var tmp: [128]u8 = undefined;
+        const seqts = try std.fmt.bufPrint(&tmp, "\",\"seq\":{d},\"ts_wall_ns\":{d},\"ts_audio_samples\":null,\"mappings\":[",
+            .{ globals.nextSeq(), @as(i64, @intCast(std.time.nanoTimestamp())) });
+        try outbuf.appendSlice(allocator, seqts);
+    }
+    for (mapping_snapshot.items, 0..) |m, i| {
+        if (i != 0) try outbuf.appendSlice(allocator, ",");
+        try outbuf.appendSlice(allocator, "{\"source\":\"");
+        try outbuf.appendSlice(allocator, m.path);
+        try outbuf.appendSlice(allocator, "\",\"logical_kind\":\"");
+        try outbuf.appendSlice(allocator, m.kind.asString());
+        var tmp: [192]u8 = undefined;
+        const rest = try std.fmt.bufPrint(&tmp, "\",\"logical_id\":{d},\"stable\":\"{s}\",\"fingerprint\":\"0x{x}\"",
+            .{ m.logical_id, m.stable_name, m.fingerprint });
+        try outbuf.appendSlice(allocator, rest);
+        try outbuf.appendSlice(allocator, "}");
     }
     try outbuf.appendSlice(allocator, "]}\n");
     try writeStdout(outbuf.items);
@@ -66,7 +110,16 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    try writeStdout("{\"type\":\"daemon_start\",\"name\":\"semainputd\",\"version\":\"v28\"}\n");
+    // Initialise session token and sequence counter before any emission.
+    globals.initGlobals();
+
+    const daemon_start = try std.fmt.allocPrint(allocator,
+        "{{\"type\":\"daemon_start\",\"subsystem\":\"semainput\",\"session\":\"{s}\",\"seq\":{d},\"ts_wall_ns\":{d},\"ts_audio_samples\":null,\"name\":\"semainputd\",\"version\":\"v41\"}}\n",
+        .{ globals.session_hex, globals.nextSeq(), @as(i64, @intCast(std.time.nanoTimestamp())) },
+    );
+    defer allocator.free(daemon_start);
+    try writeStdout(daemon_start);
+
     try evdev.discover();
     var devices = try evdev.openAllEventDevices(allocator);
     defer devices.deinit();
@@ -83,10 +136,12 @@ pub fn main() !void {
     var smoother = smoother_mod.PointerSmoothing.init(allocator);
     defer smoother.deinit();
 
-    const daemon_state = try std.fmt.allocPrint(allocator, "{{\"type\":\"daemon_state\",\"message\":\"spawning readers\",\"device_count\":{d}}}\n", .{devices.items.items.len});
+    const daemon_state = try std.fmt.allocPrint(allocator,
+        "{{\"type\":\"daemon_state\",\"subsystem\":\"semainput\",\"session\":\"{s}\",\"seq\":{d},\"ts_wall_ns\":{d},\"ts_audio_samples\":null,\"message\":\"spawning readers\",\"device_count\":{d}}}\n",
+        .{ globals.session_hex, globals.nextSeq(), @as(i64, @intCast(std.time.nanoTimestamp())), devices.items.items.len },
+    );
     defer allocator.free(daemon_state);
     try writeStdout(daemon_state);
-
     var threads = std.ArrayList(std.Thread){};
     defer threads.deinit(allocator);
     var contexts = std.ArrayList(evdev.ReaderContext){};
@@ -109,13 +164,13 @@ pub fn main() !void {
     defer mapping_snapshot.deinit(allocator);
 
     const stabilization_ns: u64 = 2 * std.time.ns_per_s;
-    const start_ns: u64 = @as(u64, @intCast(std.time.nanoTimestamp()));
+    const start_ns: u64 = @as(u64, @intCast(@as(i64, @intCast(std.time.nanoTimestamp()))));
     var stabilized = false;
     var last_summary_ns: u64 = 0;
 
     while (true) {
         try queue.drainTo(&drained, allocator);
-        const now_ns = @as(u64, @intCast(std.time.nanoTimestamp()));
+        const now_ns = @as(u64, @intCast(@as(i64, @intCast(std.time.nanoTimestamp()))));
         for (drained.items) |event| try activity.noteEvent(event.sourcePath(), now_ns);
         if (!stabilized) {
             for (drained.items) |event| try staging.append(allocator, event);

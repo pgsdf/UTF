@@ -155,6 +155,40 @@ static int drawfs_send_reply(struct drawfs_session *s, uint16_t msg_type,
 
 static struct cdev *drawfs_dev;
 
+/*
+ * Global session registry.
+ *
+ * All open sessions are linked here so that DRAWFSGIOC_INJECT_INPUT can
+ * find the session that owns a given surface_id without requiring the
+ * injector to hold the target fd.
+ *
+ * drawfs_global_mtx protects g_sessions. Session-local state is still
+ * protected by the per-session s->lock.
+ */
+static struct mtx drawfs_global_mtx;
+MTX_SYSINIT(drawfs_global, &drawfs_global_mtx, "drawfs_global", MTX_DEF);
+
+static TAILQ_HEAD(, drawfs_session) g_sessions =
+    TAILQ_HEAD_INITIALIZER(g_sessions);
+
+/*
+ * Find the session that owns surface_id.
+ * Caller must hold drawfs_global_mtx.
+ * Returns a session with its lock held, or NULL if not found.
+ */
+static struct drawfs_session *
+drawfs_find_session_for_surface_locked(uint32_t surface_id)
+{
+    struct drawfs_session *s;
+    TAILQ_FOREACH(s, &g_sessions, g_link) {
+        mtx_lock(&s->lock);
+        if (!s->closing && drawfs_surface_lookup(s, surface_id) != NULL)
+            return (s);   /* return with s->lock held */
+        mtx_unlock(&s->lock);
+    }
+    return (NULL);
+}
+
 static struct cdevsw drawfs_cdevsw = {
     .d_version = D_VERSION,
     .d_open = drawfs_open,
@@ -434,6 +468,10 @@ drawfs_open(struct cdev *dev, int oflags, int devtype, struct thread *td)
     s->inbuf = malloc(s->in_cap, M_DRAWFS, M_WAITOK | M_ZERO);
     s->in_len = 0;
 
+    mtx_lock(&drawfs_global_mtx);
+    TAILQ_INSERT_TAIL(&g_sessions, s, g_link);
+    mtx_unlock(&drawfs_global_mtx);
+
     return (devfs_set_cdevpriv(s, drawfs_priv_dtor));
 }
 
@@ -584,6 +622,44 @@ drawfs_ioctl(struct cdev *dev, u_long cmd, caddr_t data, int fflag, struct threa
 
     switch (cmd) {
 
+    case DRAWFSGIOC_INJECT_INPUT: {
+        struct drawfs_inject_input *req;
+        struct drawfs_session *target;
+        uint16_t evt_type;
+        int err;
+
+        req = (struct drawfs_inject_input *)data;
+        evt_type = req->event_type;
+
+        /* Validate event type. */
+        switch (evt_type) {
+        case DRAWFS_EVT_KEY:
+        case DRAWFS_EVT_POINTER:
+        case DRAWFS_EVT_SCROLL:
+        case DRAWFS_EVT_TOUCH:
+            break;
+        default:
+            return (EINVAL);
+        }
+
+        /* Find the session that owns the target surface. */
+        mtx_lock(&drawfs_global_mtx);
+        target = drawfs_find_session_for_surface_locked(req->surface_id);
+        /* target is returned with target->lock held if non-NULL. */
+        mtx_unlock(&drawfs_global_mtx);
+
+        if (target == NULL)
+            return (ENOENT);
+
+        /* target->lock is held — release before calling drawfs_send_reply
+         * which acquires it internally via drawfs_enqueue_event. */
+        mtx_unlock(&target->lock);
+
+        err = drawfs_send_reply(target, evt_type, 0,
+            req->payload, DRAWFS_INPUT_PAYLOAD_MAX);
+        return (err == ENOSPC ? ENOSPC : err);
+    }
+
     case DRAWFSGIOC_MAP_SURFACE: {
         struct drawfs_map_surface *ms;
         int err;
@@ -645,6 +721,11 @@ drawfs_session_free(struct drawfs_session *s)
 
     if (s == NULL)
         return;
+
+    /* Remove from global registry before acquiring session lock. */
+    mtx_lock(&drawfs_global_mtx);
+    TAILQ_REMOVE(&g_sessions, s, g_link);
+    mtx_unlock(&drawfs_global_mtx);
 
     mtx_lock(&s->lock);
     s->closing = true;

@@ -81,17 +81,29 @@ pub const GestureRecognizer = struct {
     }
 
     fn emitGestureEvent(self: *GestureRecognizer, device_name: []const u8, gesture_type: []const u8, fields_json: []const u8) !void {
-        const line = try std.fmt.allocPrint(self.allocator, "{{{{\"type\":\"{s}\",\"device\":\"{s}\"{s}}}}}\n", .{
-            gesture_type,
-            device_name,
-            fields_json,
-        });
-        defer self.allocator.free(line);
+        _ = self.allocator; // no longer needed for line construction
+        const globals = @import("globals.zig");
+        const ts: i64 = @intCast(std.time.nanoTimestamp());
+        const s = globals.nextSeq();
+
+        var line_buf: [2048]u8 = undefined;
+        var stream = std.io.fixedBufferStream(&line_buf);
+        const w = stream.writer();
+
+        try w.writeAll("{\"type\":\"");
+        try w.writeAll(gesture_type);
+        try w.writeAll("\",\"subsystem\":\"semainput\",\"session\":\"");
+        try w.writeAll(&globals.session_hex);
+        try w.print("\",\"seq\":{d},\"ts_wall_ns\":{d},\"ts_audio_samples\":null,\"device\":\"", .{ s, ts });
+        try w.writeAll(device_name);
+        try w.writeAll("\"");
+        try w.writeAll(fields_json);
+        try w.writeAll("}\n");
 
         var file = std.fs.File.stdout();
-        var buf: [1024]u8 = undefined;
-        var out = file.writer(&buf);
-        try out.interface.writeAll(line);
+        var out_buf: [2048]u8 = undefined;
+        var out = file.writer(&out_buf);
+        try out.interface.writeAll(stream.getWritten());
         try out.interface.flush();
     }
 
@@ -544,10 +556,6 @@ pub const GestureRecognizer = struct {
             std.math.clamp(cur_dist / prev_dist, 0.01, 99.99)
         else
             1.0;
-        // Render as fixed-point with 4 decimal places to avoid locale issues.
-        const sf_int: i64 = @intFromFloat(scale_factor * 10000.0);
-        const sf_whole: i64 = @divTrunc(sf_int, 10000);
-        const sf_frac: i64 = @mod(sf_int, 10000);
 
         if (!state.pinch_locked) {
             if (absDiff(delta, 0) >= PinchActivateThreshold) {
@@ -555,8 +563,8 @@ pub const GestureRecognizer = struct {
                 state.last_pinch_delta = delta;
                 var fields_buf: [128]u8 = undefined;
                 const fields = try std.fmt.bufPrint(&fields_buf,
-                    ",\"delta\":{d},\"scale_factor\":{d}.{d:0>4}",
-                    .{ delta, sf_whole, sf_frac });
+                    ",\"delta\":{d},\"scale_factor\":{d:.4}",
+                    .{ delta, scale_factor });
                 try self.emitGestureEvent(device_name, "pinch_begin", fields);
                 try self.emitIntentHook(device_name, "pinch", if (delta > 0) "out" else "in", @min(100, @as(u8, @intCast(60 + absDiff(delta, 0)))));
             }
@@ -569,8 +577,8 @@ pub const GestureRecognizer = struct {
         state.last_pinch_delta = delta;
         var fields_buf: [128]u8 = undefined;
         const fields = try std.fmt.bufPrint(&fields_buf,
-            ",\"delta\":{d},\"scale_hint\":\"{s}\",\"scale_factor\":{d}.{d:0>4}",
-            .{ delta, if (delta > 0) "out" else "in", sf_whole, sf_frac });
+            ",\"delta\":{d},\"scale_hint\":\"{s}\",\"scale_factor\":{d:.4}",
+            .{ delta, if (delta > 0) "out" else "in", scale_factor });
         try self.emitGestureEvent(device_name, "pinch", fields);
     }
 

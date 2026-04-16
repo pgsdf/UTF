@@ -1,12 +1,13 @@
 const std = @import("std");
 const semantic = @import("semantic.zig");
 const aggregate = @import("device_aggregate.zig");
+const globals = @import("globals.zig");
 
 fn writeEscapedString(writer: anytype, value: []const u8) !void {
     try writer.writeByte('"');
     for (value) |c| {
         switch (c) {
-            '"' => try writer.writeAll("\\\""),
+            '"'  => try writer.writeAll("\\\""),
             '\\' => try writer.writeAll("\\\\"),
             '\n' => try writer.writeAll("\\n"),
             '\r' => try writer.writeAll("\\r"),
@@ -17,9 +18,29 @@ fn writeEscapedString(writer: anytype, value: []const u8) !void {
     try writer.writeByte('"');
 }
 
-fn writeHeader(writer: anytype, event_type: []const u8, device: []const u8, source: []const u8) !void {
+/// Write the mandatory unified schema envelope after the opening '{'.
+/// Caller must append event-specific fields and the closing '}\\n' afterward.
+///
+/// Emits (in schema order):
+///   "type": ..., "subsystem": "semainput", "session": ..., "seq": ...,
+///   "ts_wall_ns": ..., "ts_audio_samples": null
+fn writeEnvelope(writer: anytype, event_type: []const u8) !void {
+    const ts: i64 = @intCast(std.time.nanoTimestamp());
+    const s = globals.nextSeq();
+
     try writer.writeAll("{\"type\":");
     try writeEscapedString(writer, event_type);
+    try writer.writeAll(",\"subsystem\":\"semainput\"");
+    try writer.print(",\"session\":\"{s}\"", .{globals.session_hex});
+    try writer.print(",\"seq\":{d}", .{s});
+    try writer.print(",\"ts_wall_ns\":{d}", .{ts});
+    try writer.writeAll(",\"ts_audio_samples\":null");
+}
+
+/// Write the mandatory envelope followed by device and source fields.
+/// Used by semantic input events.
+fn writeHeader(writer: anytype, event_type: []const u8, device: []const u8, source: []const u8) !void {
+    try writeEnvelope(writer, event_type);
     try writer.writeAll(",\"device\":");
     try writeEscapedString(writer, device);
     try writer.writeAll(",\"source\":");
@@ -37,7 +58,8 @@ fn writeStdout(bytes: []const u8) !void {
 pub fn emitSemanticEvent(aggregator: *aggregate.Aggregator, event: semantic.SemanticEvent) !void {
     const mapping = aggregator.findForPath(event.sourcePath()) orelse return;
 
-    var buf: [1024]u8 = undefined;
+    // 1536 bytes: 1024 original payload + ~100 envelope + headroom.
+    var buf: [1536]u8 = undefined;
     var stream = std.io.fixedBufferStream(&buf);
     const writer = stream.writer();
 

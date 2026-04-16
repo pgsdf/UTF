@@ -9,7 +9,7 @@ pinch, three-finger swipe, drag, tap). Currently at v40.
 
 ## I-1 — Unified Event Log Schema Adoption
 
-**Status**: Open
+**Status**: Done
 **Effort**: Small
 **Depends on**: shared/S-2 (schema), shared/S-3 (session identity)
 

@@ -194,6 +194,10 @@ struct drawfs_surface_destroy_rep {
 enum drawfs_event_type {
     /* Events (0x9xxx) */
     DRAWFS_EVT_SURFACE_PRESENTED          = 0x9002,  /* Surface displayed */
+    DRAWFS_EVT_KEY                        = 0x9010,  /* Key press/release */
+    DRAWFS_EVT_POINTER                    = 0x9011,  /* Pointer move + buttons */
+    DRAWFS_EVT_SCROLL                     = 0x9012,  /* Scroll delta */
+    DRAWFS_EVT_TOUCH                      = 0x9013,  /* Touch contact */
 };
 /* END GENERATED CONSTANTS: events */
 
@@ -213,5 +217,65 @@ struct drawfs_evt_surface_presented {
     uint32_t surface_id;
     uint32_t reserved;
     uint64_t cookie;     /* echoed from request */
+} __packed;
+
+/*
+ * EVT_KEY (0x9010) — key press or release.
+ *
+ * state: 1 = pressed, 0 = released.
+ * code:  evdev key code (e.g. KEY_A = 30).
+ * mods:  modifier bitmask (Shift=1, Ctrl=2, Alt=4, Meta=8).
+ */
+struct drawfs_evt_key {
+    uint32_t surface_id;  /* target surface */
+    uint32_t code;        /* evdev key code */
+    uint32_t state;       /* 1=down, 0=up */
+    uint32_t mods;        /* modifier bitmask */
+    int64_t  ts_wall_ns;  /* wall-clock timestamp at injection */
+} __packed;
+
+/*
+ * EVT_POINTER (0x9011) — pointer move and button state.
+ *
+ * x, y:      surface-relative coordinates in pixels (signed, clamped to surface bounds).
+ * buttons:   bitmask of pressed buttons (bit 0=left, bit 1=right, bit 2=middle).
+ * dx, dy:    relative motion delta in raw device units.
+ */
+struct drawfs_evt_pointer {
+    uint32_t surface_id;
+    int32_t  x;
+    int32_t  y;
+    int32_t  dx;
+    int32_t  dy;
+    uint32_t buttons;    /* button bitmask */
+    int64_t  ts_wall_ns;
+} __packed;
+
+/*
+ * EVT_SCROLL (0x9012) — scroll delta.
+ *
+ * dx, dy: scroll deltas in surface pixels (signed).
+ */
+struct drawfs_evt_scroll {
+    uint32_t surface_id;
+    int32_t  dx;
+    int32_t  dy;
+    int64_t  ts_wall_ns;
+} __packed;
+
+/*
+ * EVT_TOUCH (0x9013) — touch contact.
+ *
+ * phase: 0=down, 1=move, 2=up.
+ * contact: contact slot index.
+ * x, y: surface-relative coordinates.
+ */
+struct drawfs_evt_touch {
+    uint32_t surface_id;
+    uint32_t contact;    /* contact slot */
+    uint32_t phase;      /* 0=down, 1=move, 2=up */
+    int32_t  x;
+    int32_t  y;
+    int64_t  ts_wall_ns;
 } __packed;
 #endif
