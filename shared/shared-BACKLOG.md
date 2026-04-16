@@ -136,7 +136,7 @@ and input device state all belong to the same session.
 
 ## S-4 — Clock Publication Interface
 
-**Status**: Open
+**Status**: Done
 **Effort**: Small–Medium
 **Depends on**: semaaud A-2 (audio sample counter must exist before it can be
   published)

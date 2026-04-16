@@ -4,7 +4,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // Session identity module — testable standalone.
+    // Session identity module.
     const session_mod = b.createModule(.{
         .root_source_file = b.path("src/session.zig"),
         .target = target,
@@ -15,6 +15,18 @@ pub fn build(b: *std.Build) void {
         .root_module = session_mod,
     });
 
+    // Clock publication module.
+    const clock_mod = b.createModule(.{
+        .root_source_file = b.path("src/clock.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const clock_tests = b.addTest(.{
+        .root_module = clock_mod,
+    });
+
     const test_step = b.step("test", "Run shared module tests");
     test_step.dependOn(&b.addRunArtifact(session_tests).step);
+    test_step.dependOn(&b.addRunArtifact(clock_tests).step);
 }
