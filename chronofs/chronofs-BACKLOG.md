@@ -14,7 +14,7 @@ abstracted (D-3).
 
 ## C-1 — Clock Module
 
-**Status**: Open
+**Status**: Done
 **Effort**: Small
 **Depends on**: shared/S-4 (clock publication interface exists)
 
