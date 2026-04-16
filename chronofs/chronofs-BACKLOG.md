@@ -210,7 +210,7 @@ multiple of this interval above `clock.now()`.
 
 ## C-5 — chronofs Diagnostic Tool
 
-**Status**: Open
+**Status**: Done
 **Effort**: Small
 **Depends on**: C-3
 
