@@ -25,41 +25,48 @@ struct drawfs_msg_hdr {
     uint32_t reserved;
 } __attribute__((packed));
 
-enum drawfs_msg_type {
-    DRAWFS_RPL_OK           = 0x8000,
-    DRAWFS_RPL_HELLO        = 0x8001,
-    DRAWFS_RPL_DISPLAY_LIST = 0x8010,
-    DRAWFS_RPL_DISPLAY_OPEN  = 0x8011,
-    DRAWFS_RPL_SURFACE_CREATE = 0x8020,
-    DRAWFS_RPL_SURFACE_DESTROY = 0x8021,
-    DRAWFS_RPL_SURFACE_PRESENT = 0x8022,
-    DRAWFS_RPL_ERROR        = 0x8FFF,
+/* BEGIN GENERATED CONSTANTS */
+/* Do not edit. Generated from shared/protocol_constants.json
+ * by shared/tools/gen_constants.py */
 
-    DRAWFS_REQ_HELLO        = 0x0001,
-    DRAWFS_REQ_DISPLAY_LIST = 0x0010,
-    DRAWFS_REQ_DISPLAY_OPEN  = 0x0011,
-    DRAWFS_REQ_SURFACE_CREATE = 0x0020,
-    DRAWFS_REQ_SURFACE_DESTROY = 0x0021,
-    DRAWFS_REQ_SURFACE_PRESENT = 0x0022,
+enum drawfs_msg_type {
+    /* Replies (0x8xxx) */
+    DRAWFS_RPL_OK                         = 0x8000,  /* Generic success */
+    DRAWFS_RPL_HELLO                      = 0x8001,  /* Handshake response */
+    DRAWFS_RPL_DISPLAY_LIST               = 0x8010,  /* Display list response */
+    DRAWFS_RPL_DISPLAY_OPEN               = 0x8011,  /* Display open response */
+    DRAWFS_RPL_SURFACE_CREATE             = 0x8020,  /* Surface created */
+    DRAWFS_RPL_SURFACE_DESTROY            = 0x8021,  /* Surface destroyed */
+    DRAWFS_RPL_SURFACE_PRESENT            = 0x8022,  /* Present acknowledged */
+    DRAWFS_RPL_ERROR                      = 0x8FFF,  /* Error response */
+
+    /* Requests (0x0xxx) */
+    DRAWFS_REQ_HELLO                      = 0x0001,  /* Client handshake */
+    DRAWFS_REQ_DISPLAY_LIST               = 0x0010,  /* Enumerate displays */
+    DRAWFS_REQ_DISPLAY_OPEN               = 0x0011,  /* Open display */
+    DRAWFS_REQ_SURFACE_CREATE             = 0x0020,  /* Create surface */
+    DRAWFS_REQ_SURFACE_DESTROY            = 0x0021,  /* Destroy surface */
+    DRAWFS_REQ_SURFACE_PRESENT            = 0x0022,  /* Present surface */
 };
 
 enum drawfs_err_code {
-    DRAWFS_ERR_OK = 0,
-    DRAWFS_ERR_INVALID_FRAME = 1,
-    DRAWFS_ERR_INVALID_MSG = 2,
-    DRAWFS_ERR_UNSUPPORTED_VERSION = 3,
-    DRAWFS_ERR_UNSUPPORTED_CAP = 4,
-    DRAWFS_ERR_PERMISSION = 5,
-    DRAWFS_ERR_NOT_FOUND = 6,
-    DRAWFS_ERR_BUSY = 7,
-    DRAWFS_ERR_NO_MEMORY = 8,
-    DRAWFS_ERR_INVALID_HANDLE = 9,
-    DRAWFS_ERR_INVALID_STATE = 10,
-    DRAWFS_ERR_INVALID_ARG = 11,
-    DRAWFS_ERR_OVERFLOW = 12,
-    DRAWFS_ERR_IO = 13,
-    DRAWFS_ERR_INTERNAL = 14,
+    DRAWFS_ERR_OK                         = 0,  /* Success */
+    DRAWFS_ERR_INVALID_FRAME              = 1,  /* Malformed frame */
+    DRAWFS_ERR_INVALID_MSG                = 2,  /* Malformed message */
+    DRAWFS_ERR_UNSUPPORTED_VERSION        = 3,  /* Version mismatch */
+    DRAWFS_ERR_UNSUPPORTED_CAP            = 4,  /* Unsupported capability */
+    DRAWFS_ERR_PERMISSION                 = 5,  /* Permission denied */
+    DRAWFS_ERR_NOT_FOUND                  = 6,  /* Resource not found */
+    DRAWFS_ERR_BUSY                       = 7,  /* Resource busy */
+    DRAWFS_ERR_NO_MEMORY                  = 8,  /* Out of memory */
+    DRAWFS_ERR_INVALID_HANDLE             = 9,  /* Invalid handle */
+    DRAWFS_ERR_INVALID_STATE              = 10,  /* Invalid state */
+    DRAWFS_ERR_INVALID_ARG                = 11,  /* Invalid argument */
+    DRAWFS_ERR_OVERFLOW                   = 12,  /* Buffer overflow */
+    DRAWFS_ERR_IO                         = 13,  /* I/O error */
+    DRAWFS_ERR_INTERNAL                   = 14,  /* Internal error */
 };
+/* END GENERATED CONSTANTS */
 
 struct drawfs_req_hello {
     uint16_t client_major;
@@ -180,9 +187,15 @@ struct drawfs_surface_destroy_rep {
  * event, allowing clients to correlate presentation completion with
  * the original request (e.g., for frame timing or double-buffering).
  */
+/* BEGIN GENERATED CONSTANTS: events */
+/* Do not edit. Generated from shared/protocol_constants.json
+ * by shared/tools/gen_constants.py */
+
 enum drawfs_event_type {
-    DRAWFS_EVT_SURFACE_PRESENTED = 0x9002,
+    /* Events (0x9xxx) */
+    DRAWFS_EVT_SURFACE_PRESENTED          = 0x9002,  /* Surface displayed */
 };
+/* END GENERATED CONSTANTS: events */
 
 struct drawfs_req_surface_present {
     uint32_t surface_id;

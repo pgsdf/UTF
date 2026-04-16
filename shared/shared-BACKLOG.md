@@ -9,7 +9,7 @@ eventually the clock publication interface that all four daemons read.
 
 ## S-1 — Protocol Constants Code Generator
 
-**Status**: Open
+**Status**: Done
 **Effort**: Small
 **Blocks**: S-2, and any future protocol constant additions across any subsystem
 

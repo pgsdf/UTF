@@ -70,27 +70,39 @@ pub const ChunkType = struct {
     pub const META: u32 = fourcc('M', 'E', 'T', 'A');
 };
 
+// BEGIN GENERATED CONSTANTS
+// Do not edit. Generated from shared/protocol_constants.json
+// by shared/tools/gen_constants.py
+
 pub const Op = struct {
-    pub const RESET: u16 = 0x0001;
-    pub const SET_CLIP_RECTS: u16 = 0x0002;
-    pub const CLEAR_CLIP: u16 = 0x0003;
-    pub const SET_BLEND: u16 = 0x0004;
-    pub const SET_TRANSFORM_2D: u16 = 0x0005;
-    pub const RESET_TRANSFORM: u16 = 0x0006;
-    pub const SET_ANTIALIAS: u16 = 0x0007;
-    pub const FILL_RECT: u16 = 0x0010;
-    pub const STROKE_RECT: u16 = 0x0011;
-    pub const STROKE_LINE: u16 = 0x0012;
-    pub const SET_STROKE_JOIN: u16 = 0x0013;
-    pub const SET_STROKE_CAP: u16 = 0x0014;
-    pub const SET_MITER_LIMIT: u16 = 0x0015;
-    pub const STROKE_QUAD_BEZIER: u16 = 0x0016;
-    pub const STROKE_CUBIC_BEZIER: u16 = 0x0017;
-    pub const STROKE_PATH: u16 = 0x0018;
-    pub const BLIT_IMAGE: u16 = 0x0020;
-    pub const DRAW_GLYPH_RUN: u16 = 0x0030;
-    pub const END: u16 = 0x00F0;
+    // State opcodes
+    pub const RESET: u16 = 0x0001; // Reset state payload=0b
+    pub const SET_CLIP_RECTS: u16 = 0x0002; // Set clip rectangles payload=variable
+    pub const CLEAR_CLIP: u16 = 0x0003; // Clear clipping payload=0b
+    pub const SET_BLEND: u16 = 0x0004; // Set blend mode payload=4b
+    pub const SET_TRANSFORM_2D: u16 = 0x0005; // Set 2D transform payload=24b
+    pub const RESET_TRANSFORM: u16 = 0x0006; // Reset transform payload=0b
+    pub const SET_ANTIALIAS: u16 = 0x0007; // Set antialiasing payload=4b
+
+    // Draw opcodes
+    pub const FILL_RECT: u16 = 0x0010; // Fill rectangle payload=32b
+    pub const STROKE_RECT: u16 = 0x0011; // Stroke rectangle payload=36b
+    pub const STROKE_LINE: u16 = 0x0012; // Stroke line payload=36b
+    pub const SET_STROKE_JOIN: u16 = 0x0013; // Set line join payload=4b
+    pub const SET_STROKE_CAP: u16 = 0x0014; // Set line cap payload=4b
+    pub const SET_MITER_LIMIT: u16 = 0x0015; // Set miter limit payload=4b
+    pub const STROKE_QUAD_BEZIER: u16 = 0x0016; // Stroke quadratic bezier payload=44b
+    pub const STROKE_CUBIC_BEZIER: u16 = 0x0017; // Stroke cubic bezier payload=60b
+    pub const STROKE_PATH: u16 = 0x0018; // Stroke path payload=variable
+    pub const BLIT_IMAGE: u16 = 0x0020; // Blit image payload=variable
+
+    // Text opcodes
+    pub const DRAW_GLYPH_RUN: u16 = 0x0030; // Draw glyph run payload=variable
+
+    // Control opcodes
+    pub const END: u16 = 0x00F0; // End of stream payload=0b
 };
+// END GENERATED CONSTANTS
 
 pub fn pad8Len(n: usize) usize {
     return (8 - (n % 8)) % 8;

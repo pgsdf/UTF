@@ -21,42 +21,41 @@ pub const SurfaceId = u32;
 pub const ClientId = u32;
 
 /// Message types
+// BEGIN GENERATED CONSTANTS: msg_type
+// Do not edit. Generated from shared/protocol_constants.json
+// by shared/tools/gen_constants.py
+
 pub const MsgType = enum(u16) {
     // Client -> Daemon requests (0x0xxx)
-    hello = 0x0001,
-    create_surface = 0x0010,
-    destroy_surface = 0x0011,
-    attach_buffer = 0x0020,
-    commit = 0x0021,
-    set_visible = 0x0030,
-    set_z_order = 0x0031,
-    set_position = 0x0032,
-    sync = 0x0040,
-    disconnect = 0x00F0,
-
-    // Remote transport messages (for network connections without FD passing)
-    attach_buffer_inline = 0x0022, // SDCS data sent inline in message payload
+    hello = 0x0001, // Client handshake
+    create_surface = 0x0010, // Create surface
+    destroy_surface = 0x0011, // Destroy surface
+    attach_buffer = 0x0020, // Attach shm buffer
+    commit = 0x0021, // Commit surface
+    attach_buffer_inline = 0x0022, // Attach inline buffer (remote)
+    set_visible = 0x0030, // Set visibility
+    set_z_order = 0x0031, // Set stacking order
+    set_position = 0x0032, // Set position
+    sync = 0x0040, // Sync barrier
+    clipboard_set = 0x0050, // Set clipboard
+    clipboard_request = 0x0051, // Request clipboard
+    disconnect = 0x00F0, // Client disconnect
 
     // Daemon -> Client responses (0x8xxx)
-    hello_reply = 0x8001,
-    surface_created = 0x8010,
-    surface_destroyed = 0x8011,
-    buffer_released = 0x8020,
-    frame_complete = 0x8021,
-    sync_done = 0x8040,
-    error_reply = 0x80F0,
+    hello_reply = 0x8001, // Handshake response
+    surface_created = 0x8010, // Surface created
+    surface_destroyed = 0x8011, // Surface destroyed
+    buffer_released = 0x8020, // Buffer released
+    frame_complete = 0x8021, // Frame rendered
+    sync_done = 0x8040, // Sync complete
+    error_reply = 0x80F0, // Error response
 
-    // Clipboard operations (0x005x)
-    clipboard_set = 0x0050, // Client -> Daemon: set clipboard content
-    clipboard_request = 0x0051, // Client -> Daemon: request clipboard content
-
-    // Daemon -> Client input events (0x9xxx)
-    key_press = 0x9001,
-    mouse_event = 0x9002,
-
-    // Daemon -> Client clipboard events (0x905x)
-    clipboard_data = 0x9050, // Daemon -> Client: clipboard content
+    // Daemon -> Client events (0x9xxx)
+    key_press = 0x9001, // Keyboard event
+    mouse_event = 0x9002, // Mouse event
+    clipboard_data = 0x9050, // Clipboard data
 };
+// END GENERATED CONSTANTS: msg_type
 
 /// Message header (8 bytes, always present)
 pub const MsgHeader = extern struct {
@@ -447,17 +446,22 @@ pub const SyncDoneMsg = extern struct {
 };
 
 /// Error codes
+// BEGIN GENERATED CONSTANTS: error_code
+// Do not edit. Generated from shared/protocol_constants.json
+// by shared/tools/gen_constants.py
+
 pub const ErrorCode = enum(u32) {
-    none = 0,
-    invalid_message = 1,
-    invalid_surface = 2,
-    invalid_buffer = 3,
-    permission_denied = 4,
-    resource_limit = 5,
-    protocol_error = 6,
-    internal_error = 7,
-    validation_failed = 8,
+    none = 0, // Success
+    invalid_message = 1, // Invalid message format
+    invalid_surface = 2, // Invalid surface ID
+    invalid_buffer = 3, // Invalid buffer
+    permission_denied = 4, // Permission denied
+    resource_limit = 5, // Resource limit reached
+    protocol_error = 6, // Protocol violation
+    internal_error = 7, // Internal error
+    validation_failed = 8, // Validation failed
 };
+// END GENERATED CONSTANTS: error_code
 
 /// Error reply
 pub const ErrorReplyMsg = extern struct {
