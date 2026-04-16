@@ -722,6 +722,106 @@ pub const DrawfsBackend = struct {
                     }
                 },
                 0x00F0 => return, // END
+                0x0030 => { // DRAW_GLYPH_RUN
+                    // Payload layout (all little-endian):
+                    //   [0..4)   base_x      f32
+                    //   [4..8)   base_y      f32
+                    //   [8..12)  r           f32
+                    //   [12..16) g           f32
+                    //   [16..20) b           f32
+                    //   [20..24) a           f32
+                    //   [24..28) cell_width  u32
+                    //   [28..32) cell_height u32
+                    //   [32..36) atlas_cols  u32
+                    //   [36..40) atlas_width  u32
+                    //   [40..44) atlas_height u32
+                    //   [44..48) glyph_count u32
+                    //   [48..48+glyph_count*12) glyphs: (index u32, x_off f32, y_off f32)
+                    //   [48+glyph_count*12..)   atlas: atlas_width*atlas_height bytes (alpha)
+                    if (payload.len < 48) break;
+
+                    const base_x     = readF32(payload[0..4]);
+                    const base_y     = readF32(payload[4..8]);
+                    const gr         = readF32(payload[8..12]);
+                    const gg         = readF32(payload[12..16]);
+                    const gb         = readF32(payload[16..20]);
+                    const ga         = readF32(payload[20..24]);
+                    const cell_w     = std.mem.readInt(u32, payload[24..28], .little);
+                    const cell_h     = std.mem.readInt(u32, payload[28..32], .little);
+                    const atlas_cols = std.mem.readInt(u32, payload[32..36], .little);
+                    const atlas_w    = std.mem.readInt(u32, payload[36..40], .little);
+                    const atlas_h    = std.mem.readInt(u32, payload[40..44], .little);
+                    const glyph_count = std.mem.readInt(u32, payload[44..48], .little);
+
+                    if (cell_w == 0 or cell_h == 0 or atlas_cols == 0) break;
+                    if (atlas_w == 0 or atlas_h == 0 or glyph_count == 0) break;
+
+                    const glyphs_bytes: usize = @as(usize, glyph_count) * 12;
+                    const atlas_bytes:  usize = @as(usize, atlas_w) * @as(usize, atlas_h);
+                    if (payload.len < 48 + glyphs_bytes + atlas_bytes) break;
+
+                    const glyphs_slice = payload[48 .. 48 + glyphs_bytes];
+                    const atlas_data   = payload[48 + glyphs_bytes .. 48 + glyphs_bytes + atlas_bytes];
+
+                    const cr8 = clampU8(gr);
+                    const cg8 = clampU8(gg);
+                    const cb8 = clampU8(gb);
+                    const stride = self.surface_stride;
+                    const fb_w = self.width;
+                    const fb_h = self.height;
+
+                    // Render each glyph.
+                    var gi: usize = 0;
+                    while (gi < glyph_count) : (gi += 1) {
+                        const goff = gi * 12;
+                        const glyph_index = std.mem.readInt(u32, glyphs_slice[goff..][0..4], .little);
+                        const x_off = readF32(glyphs_slice[goff + 4 ..][0..4]);
+                        const y_off = readF32(glyphs_slice[goff + 8 ..][0..4]);
+
+                        // Atlas cell origin for this glyph.
+                        const glyph_row = glyph_index / atlas_cols;
+                        const glyph_col = glyph_index % atlas_cols;
+                        const atlas_x: usize = @as(usize, glyph_col) * @as(usize, cell_w);
+                        const atlas_y: usize = @as(usize, glyph_row) * @as(usize, cell_h);
+
+                        // Destination top-left pixel (no transform matrix in drawfs backend).
+                        const dst_x_f = base_x + x_off;
+                        const dst_y_f = base_y + y_off;
+
+                        var py: usize = 0;
+                        while (py < cell_h) : (py += 1) {
+                            var px: usize = 0;
+                            while (px < cell_w) : (px += 1) {
+                                const src_x = atlas_x + px;
+                                const src_y = atlas_y + py;
+                                if (src_x >= atlas_w or src_y >= atlas_h) continue;
+
+                                const glyph_alpha = atlas_data[src_y * @as(usize, atlas_w) + src_x];
+                                if (glyph_alpha == 0) continue;
+
+                                // Combine glyph alpha mask with color alpha.
+                                const final_alpha: f32 =
+                                    (@as(f32, @floatFromInt(glyph_alpha)) / 255.0) * ga;
+                                const ca8 = clampU8(final_alpha);
+                                if (ca8 == 0) continue;
+
+                                const dx: isize = @as(isize, @intFromFloat(dst_x_f)) +
+                                                  @as(isize, @intCast(px));
+                                const dy: isize = @as(isize, @intFromFloat(dst_y_f)) +
+                                                  @as(isize, @intCast(py));
+
+                                if (dx < 0 or dy < 0) continue;
+                                if (dx >= @as(isize, @intCast(fb_w)) or
+                                    dy >= @as(isize, @intCast(fb_h))) continue;
+
+                                const idx = @as(usize, @intCast(dy)) * stride +
+                                            @as(usize, @intCast(dx)) * 4;
+                                writePixel(fb, idx, cr8, cg8, cb8, ca8,
+                                           self.render_state.blend_mode);
+                            }
+                        }
+                    }
+                },
                 else => {}, // Ignore unknown opcodes
             }
 

@@ -126,7 +126,7 @@ decouples the scheduling logic from the clock implementation.
 
 ## D-4 — DRAW_GLYPH_RUN in drawfs Backend
 
-**Status**: Open
+**Status**: Done
 **Effort**: Medium
 **Depends on**: D-2 (render state in place)
 

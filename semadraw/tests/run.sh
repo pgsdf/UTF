@@ -71,6 +71,9 @@ mkdir -p tests/out
 ./zig-out/bin/sdcs_make_text tests/out/text.sdcs
 ./zig-out/bin/sdcs_replay tests/out/text.sdcs tests/out/text.ppm 256 256
 
+./zig-out/bin/sdcs_make_glyph tests/out/glyph.sdcs
+./zig-out/bin/sdcs_replay tests/out/glyph.sdcs tests/out/glyph.ppm 256 256
+
 ./zig-out/bin/sdcs_make_aa tests/out/aa.sdcs
 ./zig-out/bin/sdcs_replay tests/out/aa.sdcs tests/out/aa.ppm 256 256
 
@@ -92,6 +95,7 @@ hash_curves=""
 hash_path=""
 hash_text=""
 hash_aa=""
+hash_glyph=""
 
 if command -v sha256 >/dev/null 2>&1; then
   hash_one=$(sha256 -q tests/out/test.ppm)
@@ -107,6 +111,7 @@ if command -v sha256 >/dev/null 2>&1; then
   hash_path=$(sha256 -q tests/out/path.ppm)
   hash_text=$(sha256 -q tests/out/text.ppm)
   hash_aa=$(sha256 -q tests/out/aa.ppm)
+  hash_glyph=$(sha256 -q tests/out/glyph.ppm)
 elif command -v sha256sum >/dev/null 2>&1; then
   hash_one=$(sha256sum tests/out/test.ppm | awk '{print $1}')
   hash_two=$(sha256sum tests/out/overlap.ppm | awk '{print $1}')
@@ -121,6 +126,7 @@ elif command -v sha256sum >/dev/null 2>&1; then
   hash_path=$(sha256sum tests/out/path.ppm | awk '{print $1}')
   hash_text=$(sha256sum tests/out/text.ppm | awk '{print $1}')
   hash_aa=$(sha256sum tests/out/aa.ppm | awk '{print $1}')
+  hash_glyph=$(sha256sum tests/out/glyph.ppm | awk '{print $1}')
 else
   echo "sha256 tool not found"
   exit 1
@@ -141,6 +147,7 @@ if [ ! -f "$expected_file" ]; then
   echo "$hash_path  path.ppm" >> "$expected_file"
   echo "$hash_text  text.ppm" >> "$expected_file"
   echo "$hash_aa  aa.ppm" >> "$expected_file"
+  echo "$hash_glyph  glyph.ppm" >> "$expected_file"
   echo "golden hashes created at $expected_file"
   exit 0
 fi
