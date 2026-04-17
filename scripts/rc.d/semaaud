@@ -1,0 +1,36 @@
+#!/bin/sh
+#
+# PROVIDE: semaaud
+# REQUIRE: chronofs
+# KEYWORD: shutdown
+#
+# semaaud is the UTF audio routing daemon. It requires chronofs to be
+# running first so it can attach to the shared clock.
+#
+# Add the following to /etc/rc.conf to enable:
+#   semaaud_enable="YES"
+
+. /etc/rc.subr
+
+name="semaaud"
+rcvar="semaaud_enable"
+
+load_rc_config $name
+
+: ${semaaud_enable:="NO"}
+: ${semaaud_flags:=""}
+: ${semaaud_user:="root"}
+: ${semaaud_rundir:="/var/run/utf"}
+
+command="/usr/local/sbin/semaaud"
+pidfile="${semaaud_rundir}/semaaud.pid"
+command_args="-p ${pidfile} ${semaaud_flags}"
+
+start_precmd="semaaud_prestart"
+
+semaaud_prestart()
+{
+    install -d -o "${semaaud_user}" -m 0755 "${semaaud_rundir}"
+}
+
+run_rc_command "$1"

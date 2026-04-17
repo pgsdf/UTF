@@ -1,0 +1,42 @@
+#!/bin/sh
+#
+# PROVIDE: chronofs
+# REQUIRE: FILESYSTEMS
+# KEYWORD: shutdown
+#
+# chronofs is the temporal coordination layer for the UTF stack. It
+# publishes the shared audio-sample clock that semadrawd, semaaud, and
+# semainput consume, so it MUST start before any of them.
+#
+# Add the following to /etc/rc.conf to enable:
+#   chronofs_enable="YES"
+
+. /etc/rc.subr
+
+name="chronofs"
+rcvar="chronofs_enable"
+
+load_rc_config $name
+
+: ${chronofs_enable:="NO"}
+: ${chronofs_flags:=""}
+: ${chronofs_user:="root"}
+: ${chronofs_rundir:="/var/run/utf"}
+: ${chronofs_logdir:="/var/log/utf"}
+
+command="/usr/local/sbin/chronofs"
+pidfile="${chronofs_rundir}/chronofs.pid"
+command_args="-p ${pidfile} ${chronofs_flags}"
+
+start_precmd="chronofs_prestart"
+
+chronofs_prestart()
+{
+    install -d -o "${chronofs_user}" -m 0755 "${chronofs_rundir}"
+    install -d -o "${chronofs_user}" -m 0755 "${chronofs_logdir}"
+    if ! kldstat -q -m drawfs; then
+        warn "drawfs kernel module is not loaded"
+    fi
+}
+
+run_rc_command "$1"

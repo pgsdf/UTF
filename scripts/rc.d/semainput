@@ -1,0 +1,37 @@
+#!/bin/sh
+#
+# PROVIDE: semainput
+# REQUIRE: chronofs
+# KEYWORD: shutdown
+#
+# semainput is the UTF input classification and gesture daemon. It
+# requires chronofs to be running first so input events can be
+# timestamped against the shared audio-sample clock.
+#
+# Add the following to /etc/rc.conf to enable:
+#   semainput_enable="YES"
+
+. /etc/rc.subr
+
+name="semainput"
+rcvar="semainput_enable"
+
+load_rc_config $name
+
+: ${semainput_enable:="NO"}
+: ${semainput_flags:=""}
+: ${semainput_user:="root"}
+: ${semainput_rundir:="/var/run/utf"}
+
+command="/usr/local/sbin/semainput"
+pidfile="${semainput_rundir}/semainput.pid"
+command_args="-p ${pidfile} ${semainput_flags}"
+
+start_precmd="semainput_prestart"
+
+semainput_prestart()
+{
+    install -d -o "${semainput_user}" -m 0755 "${semainput_rundir}"
+}
+
+run_rc_command "$1"

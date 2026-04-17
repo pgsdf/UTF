@@ -1,7 +1,7 @@
 # UTF — Unified Temporal Fabric
 
 UTF is a graphics, audio, and input stack for FreeBSD. It draws windows, routes
-sound, and handles mice, keyboards, and touch; all coordinated against a
+sound, and handles mice, keyboards, and touch — all coordinated against a
 single audio-driven clock so audio and video stay in sync by construction
 rather than by luck. Install it if you're building a FreeBSD desktop or media
 application and want these three things to work together as one system.
@@ -17,9 +17,9 @@ not run on Linux or macOS.
 | --- | --- | --- |
 | Operating system | FreeBSD 15 | Earlier versions are not supported. |
 | Kernel sources | Installed | Needed to build the `drawfs` kernel module. |
-| Zig | 0.15 | Used to build the three userspace daemons. |
+| Zig | 0.15 | Used to build the userspace daemons and orchestrate the overall build. |
 | C toolchain | base system | Already present on FreeBSD. |
-| Root access | Yes | Required to load the kernel module. |
+| Root access | Yes | Required for `install`, and for loading the kernel module. |
 
 Check your versions:
 
@@ -29,216 +29,123 @@ zig version       # should report 0.15 or newer
 ls /usr/src/sys   # kernel sources should be present
 ```
 
-If any of these fail, stop and resolve them first. The install below assumes
-all four are in place.
+If any of these fail, stop and resolve them first.
 
 ---
 
 ## Install
 
-Clone the repository and run the build steps in the order below. Order
-matters: `drawfs` exposes the `/dev/draw` device that `semadraw` depends on,
-so it must be built and loaded first. The userspace daemons can be built in
-any order after that.
-
 ```sh
-# 1. Clone
 git clone https://github.com/pgsdf/UTF.git
 cd UTF
-
-# 2. Build and load the kernel module (drawfs)
-cd drawfs
-./build.sh install
-./build.sh build
-sudo ./build.sh load
-./build.sh test
-cd ..
-
-# 3. Build the userspace daemons
-cd semadraw  && zig build && cd ..
-cd semaaud   && zig build && cd ..
-cd semainput && zig build && cd ..
-cd chronofs  && zig build && cd ..
+zig build                         # compile everything
+zig build test                    # run per-subsystem and integration tests
+sudo zig build install --prefix /usr/local
 ```
 
-After this, the kernel module is loaded and all four daemon binaries are
-built. Proceed to **Verify** to confirm the system is working.
+That's the whole install. `zig build` orchestrates all four userspace daemons
+and the `drawfs` kernel module; `zig build install` stages binaries, the
+kernel module, rc.d scripts, devfs rules, and default config into the prefix
+following FreeBSD `hier(7)`:
+
+| Artifact | Installed to |
+| --- | --- |
+| Daemons (`chronofs`, `semaaud`, `semainput`, `semadrawd`) | `/usr/local/sbin/` |
+| `drawfs.ko` | `/boot/modules/` |
+| rc.d scripts | `/usr/local/etc/rc.d/` |
+| devfs rules | `/usr/local/etc/devfs.rules.d/` |
+| Default config | `/usr/local/etc/utf/` |
+| `utf-up` / `utf-down` wrappers | `/usr/local/sbin/` |
+
+Without `--prefix`, everything stages under `zig-out/` so you can inspect the
+tree before a system-wide install.
+
+---
+
+## Bring the stack up
+
+Enable the services in `/etc/rc.conf`:
+
+```sh
+sysrc chronofs_enable=YES
+sysrc semaaud_enable=YES
+sysrc semainput_enable=YES
+sysrc semadrawd_enable=YES
+```
+
+Then, either reboot, or bring the stack up immediately:
+
+```sh
+sudo utf-up
+```
+
+`utf-up` loads the `drawfs` kernel module and starts the daemons in dependency
+order (chronofs first, semadrawd last). It delegates each start to `service(8)`
+so boot-time and interactive startup share one code path.
 
 ---
 
 ## Verify
 
-Run these checks in order. Each one confirms a layer is up.
-
-**1. Kernel module loaded and device present:**
-
 ```sh
-kldstat | grep drawfs       # should list the drawfs module
-ls -l /dev/draw             # should show the character device
+kldstat | grep drawfs     # module is loaded
+service chronofs status   # daemon is running
+service semaaud status
+service semainput status
+service semadrawd status
+chrono_dump               # shows timestamped events from all three
+                          # consumers against the shared audio clock
 ```
 
-**2. Daemons start cleanly:**
-
-Startup order matters because chronofs publishes the shared clock that the
-other daemons consume. Start it first, then the rest can start in any order:
-
-```sh
-# Terminal 1 — start chronofs first (publishes the shared clock)
-chronofs/zig-out/bin/chronofs
-
-# Terminals 2, 3, 4 — the rest
-semaaud/zig-out/bin/semaaud
-semainput/zig-out/bin/semainput
-semadraw/zig-out/bin/semadrawd
-```
-
-Each should start without error and stay running. If a daemon exits
-immediately, see **Troubleshooting**.
-
-**3. Stack is coherent:**
-
-Run the chronofs diagnostic to confirm all subsystems are publishing events
-against a common clock:
-
-```sh
-chronofs/zig-out/bin/chrono_dump
-```
-
-You should see timestamped events from `semadrawd`, `semaaud`, and
-`semainput` interleaved against the shared audio-sample clock. If all three
-appear and their timestamps advance monotonically, the fabric is up.
+If `chrono_dump` shows events from `semadrawd`, `semaaud`, and `semainput`
+advancing monotonically against a common timeline, the fabric is coherent and
+you're done.
 
 ---
 
-## Try It
+## Bring the stack down
 
-See `docs/quickstart.md` for a five-minute walkthrough that renders a test
-surface, routes an audio stream, and prints input events — enough to confirm
-the whole fabric is working end-to-end.
+```sh
+sudo utf-down
+```
 
-For longer-form installation help, including per-step explanations and
-platform-specific notes, see `docs/install.md`.
+This stops the daemons in reverse dependency order and unloads the kernel
+module. For a clean uninstall, follow with:
+
+```sh
+cd UTF
+sudo zig build uninstall --prefix /usr/local   # removes staged files
+sudo sysrc -x chronofs_enable
+sudo sysrc -x semaaud_enable
+sudo sysrc -x semainput_enable
+sudo sysrc -x semadrawd_enable
+```
 
 ---
 
 ## Troubleshooting
 
-**`./build.sh load` fails with "module already loaded"**
-The module was loaded in a previous session. Run `sudo kldunload drawfs` and
-try again, or skip the load step — it's already running.
+**`zig build` fails in `drawfs` with missing kernel headers**
+Kernel sources aren't installed. `pkg install freebsd-src-sys` or fetch them
+to `/usr/src`, then re-run.
 
-**`./build.sh build` fails with missing kernel headers**
-Kernel sources aren't installed. Install them with `pkg install
-freebsd-src-sys` or fetch them via `fetch` / `svnlite` to `/usr/src`, then
-re-run.
+**`zig build` fails with "unsupported Zig version"**
+Your Zig is older than 0.15. Check with `zig version`; install from
+https://ziglang.org/download/ or `pkg install zig-devel`.
 
-**`zig build` fails with "unsupported Zig version" or similar**
-Your Zig is older than 0.15. Check with `zig version`. Install a current Zig
-from https://ziglang.org/download/ or via `pkg install zig-devel`.
+**`utf-up` reports `/dev/draw is not present`**
+The `drawfs` kernel module failed to load. Check `dmesg` for the reason;
+common causes are a kernel ABI mismatch after an update (`zig build` again
+against current sources) or the module file missing from `/boot/modules/`.
 
-**`/dev/draw` exists but `semadrawd` reports permission denied**
-The device is root-owned by default. Either run `semadrawd` as root for
-testing, or add a devfs rule so your user can open it. See
-`drawfs/docs/permissions.md`.
+**`semadrawd` starts but reports permission denied on `/dev/draw`**
+The default devfs permissions are `0600 root:wheel`. Either run `semadrawd`
+as root, or enable the installed devfs ruleset:
+`sysrc devfs_system_ruleset=utf-drawfs && service devfs restart`, after
+adding your user to the `utf` group.
 
 **A daemon exits immediately with no error**
-Run it with `-v` or `--verbose` (flag name varies by daemon) to see why. The
-most common causes are a stale socket in `/var/run/` from a previous run
-(delete it) or another instance already bound.
+Stale socket or pidfile in `/var/run/utf/` from a previous unclean shutdown.
+Remove the relevant file and retry, or run with `-v` for verbose diagnostics.
 
 More cases in `docs/troubleshooting.md`.
-
----
-
-## Uninstall
-
-```sh
-# Stop any running daemons (Ctrl-C in their terminals, or pkill)
-pkill semadrawd semaaud semainput chronofs
-
-# Unload the kernel module
-sudo kldunload drawfs
-
-# Remove build artifacts
-cd UTF
-rm -rf drawfs/build \
-       semadraw/zig-out semaaud/zig-out \
-       semainput/zig-out chronofs/zig-out
-
-# Remove the repository
-cd .. && rm -rf UTF
-```
-
-See `docs/uninstall.md` if you also want to remove installed kernel module
-files or devfs rules.
-
----
-
-## Architecture
-
-UTF brings together four subsystems under a single workspace and provides the
-cross-cutting infrastructure — shared protocol constants, a unified event
-schema, session identity, and a clock publication interface — that makes them
-a coherent fabric rather than four independent daemons.
-
-```
-                    Applications
-                         │
-                    libsemadraw
-                    (SDCS streams)
-                         │
-                    semadrawd ──── semainput ──── semaaud
-                    (compositor)   (input)        (audio)
-                         │              \            /
-                      drawfs           chronofs
-                    (/dev/draw)     (temporal fabric)
-                         │
-                      hardware
-```
-
-**chronofs** is the temporal coordination layer that aligns audio, visual, and
-input domains against a single monotonic clock driven by audio hardware. The
-frame scheduler queries scene state at a target audio position rather than
-wall time, eliminating drift between subsystems as a structural property of
-the architecture. See `docs/architecture/chronofs.md` for the design and
-`chrono_dump` for runtime diagnostics.
-
----
-
-## Subsystems
-
-| Component | Role |
-| --- | --- |
-| drawfs | Kernel graphics transport. `/dev/draw` character device, surface lifecycle, mmap-backed pixel buffers, DRM/KMS display. |
-| semadraw | Semantic rendering. SDCS command streams, `semadrawd` compositor, software and hardware backends, remote transport. |
-| semaaud | Audio daemon. OSS output, durable policy-controlled stream routing, sample rate negotiation, sample position counter. |
-| semainput | Input daemon. evdev device classification, pointer smoothing, gesture recognition, audio-clock-timestamped events. |
-| shared/ | Protocol constants (with code generator), unified event log schema, session identity, clock publication interface. |
-| chronofs | Temporal coordination layer. Clock module, event stream ring buffers, resolver, audio-driven frame scheduler. |
-
-Each subsystem has its own `docs/` directory with detailed protocol, build,
-and API reference material.
-
----
-
-## Status
-
-All subsystems are implemented and integrated against the chronofs temporal
-fabric.
-
-| Component | Status |
-| --- | --- |
-| drawfs | Phase 1 and Phase 2 (DRM/KMS) complete. Kernel input event delivery integrated. |
-| semadraw | Clock-source-driven frame scheduler, drawfs backend integration, remote transport hardening, DRAW_GLYPH_RUN, and unified event emission complete. |
-| semaaud | Phase 12 durable policy complete. Sample position counter, sample rate negotiation, and unified schema adoption complete. |
-| semainput | Pinch calibration, unified schema adoption, keyboard passthrough, and audio-clock event timestamping complete. |
-| shared/ | Protocol constant generator, session identity module, unified event log schema, and clock publication shared-memory interface complete. |
-| chronofs | Clock module, event stream ring buffers, resolver, and audio-driven frame scheduler integration complete. `chrono_dump` diagnostic available. |
-
----
-
-## License
-
-BSD 2-Clause. See `LICENSE`.
-
-Copyright (c) 2026 Pacific Grove Software Distribution Foundation.

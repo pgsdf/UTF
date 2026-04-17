@@ -1,0 +1,36 @@
+#
+# utf.conf.sample — UTF stack configuration
+#
+# Copy to /usr/local/etc/utf/utf.conf and edit as needed. Each daemon
+# reads its own section; keys not listed here fall back to compiled-in
+# defaults.
+#
+
+[chronofs]
+# Path to the shared clock publication segment.
+clock_path = /var/run/utf/clock
+
+# Ring buffer capacity, in events, per subscribed subsystem.
+ring_capacity = 65536
+
+[semaaud]
+# OSS device for primary output.
+oss_device = /dev/dsp
+
+# Policy file. See semaaud(8) for grammar.
+policy = /usr/local/etc/utf/semaaud.policy
+
+[semainput]
+# Pointer smoothing window, in audio samples.
+smoothing_window = 512
+
+# Enable gesture recognition.
+gestures = true
+
+[semadrawd]
+# Backend preference order. First available wins.
+# Choices: drawfs, drm, vulkan, x11, wayland, software
+backends = drawfs, drm, software
+
+# Unix socket for client connections.
+socket = /var/run/utf/semadrawd.sock

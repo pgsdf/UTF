@@ -1,0 +1,28 @@
+.{
+    .name = "utf",
+    .version = "0.1.0",
+    .minimum_zig_version = "0.15.0",
+
+    .dependencies = .{
+        .chronofs = .{ .path = "chronofs" },
+        .semaaud = .{ .path = "semaaud" },
+        .semainput = .{ .path = "semainput" },
+        .semadraw = .{ .path = "semadraw" },
+    },
+
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "chronofs",
+        "drawfs",
+        "semaaud",
+        "semadraw",
+        "semainput",
+        "shared",
+        "scripts",
+        "tests",
+        "docs",
+        "LICENSE",
+        "README.md",
+    },
+}

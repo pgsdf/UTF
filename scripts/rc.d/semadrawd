@@ -1,0 +1,40 @@
+#!/bin/sh
+#
+# PROVIDE: semadrawd
+# REQUIRE: chronofs semaaud semainput
+# KEYWORD: shutdown
+#
+# semadrawd is the UTF semantic rendering compositor. It depends on
+# chronofs for the shared clock and opens /dev/draw (provided by the
+# drawfs kernel module) for surface presentation.
+#
+# Add the following to /etc/rc.conf to enable:
+#   semadrawd_enable="YES"
+
+. /etc/rc.subr
+
+name="semadrawd"
+rcvar="semadrawd_enable"
+
+load_rc_config $name
+
+: ${semadrawd_enable:="NO"}
+: ${semadrawd_flags:=""}
+: ${semadrawd_user:="root"}
+: ${semadrawd_rundir:="/var/run/utf"}
+
+command="/usr/local/sbin/semadrawd"
+pidfile="${semadrawd_rundir}/semadrawd.pid"
+command_args="-p ${pidfile} ${semadrawd_flags}"
+
+start_precmd="semadrawd_prestart"
+
+semadrawd_prestart()
+{
+    install -d -o "${semadrawd_user}" -m 0755 "${semadrawd_rundir}"
+    if [ ! -c /dev/draw ]; then
+        err 1 "/dev/draw is not present; is the drawfs kernel module loaded?"
+    fi
+}
+
+run_rc_command "$1"
