@@ -1,7 +1,7 @@
 # UTF — Unified Temporal Fabric
 
 UTF is a graphics, audio, and input stack for FreeBSD. It draws windows, routes
-sound, and handles mice, keyboards, and touch — all coordinated against a
+sound, and handles mice, keyboards, and touch; all coordinated against a
 single audio-driven clock so audio and video stay in sync by construction
 rather than by luck. Install it if you're building a FreeBSD desktop or media
 application and want these three things to work together as one system.
