@@ -92,16 +92,30 @@ case "$cmd" in
 
   deploy)
     need_root "$cmd"
-    OBJDIR=$(make -C "$KMODDIR" -V .OBJDIR)
-    KO="$OBJDIR/drawfs.ko"
-    if [ ! -f "$KO" ]; then
-      echo "ERROR: missing $KO — run: sudo ./build.sh build"
-      exit 1
+    echo "Installing drawfs.ko to /boot/modules/"
+    # Use the kernel build system's own install target — most reliable
+    if ( cd "$KMODDIR" && make install ); then
+        echo "OK: deploy (via make install)"
+    else
+        # Fallback: find and copy manually
+        OBJDIR=$(make -C "$KMODDIR" -V .OBJDIR 2>/dev/null || echo "")
+        KO=""
+        if [ -n "$OBJDIR" ] && [ -f "$OBJDIR/drawfs.ko" ]; then
+            KO="$OBJDIR/drawfs.ko"
+        else
+            # Search common locations
+            KO=$(find "$KMODDIR" -name "drawfs.ko" 2>/dev/null | head -1)
+        fi
+        if [ -z "$KO" ] || [ ! -f "$KO" ]; then
+            echo "ERROR: drawfs.ko not found — run: sudo ./build.sh build"
+            exit 1
+        fi
+        echo "Installing $KO to /boot/modules/"
+        cp "$KO" /boot/modules/drawfs.ko
+        kldxref /boot/modules
+        echo "OK: deploy (manual copy)"
     fi
-    echo "Installing $KO to /boot/modules/"
-    cp "$KO" /boot/modules/drawfs.ko
     kldxref /boot/modules
-    echo "OK: deploy"
     echo ""
     echo "To load now:       kldload drawfs"
     echo "To load at boot:   echo 'drawfs_load=\"YES\"' >> /boot/loader.conf"
@@ -140,9 +154,9 @@ case "$cmd" in
     echo "SRCROOT:   $SRCROOT"
     echo
     echo "Repo dev drawfs.c:"
-    ls -l "$REPO_ROOT/sys/dev/drawfs/drawfs.c" 2>/dev/null || true
+    ls -l "$REPO_ROOT/sys/dev/drawfs/drawfs.c" 2>/dev/null || echo "  not found"
     echo "Installed dev drawfs.c:"
-    ls -l "$DEVDEST/drawfs.c" 2>/dev/null || true
+    ls -l "$DEVDEST/drawfs.c" 2>/dev/null || echo "  not found"
     echo
     echo "Installed symbol check (surface_present):"
     if [ -f "$DEVDEST/drawfs.c" ]; then
@@ -150,7 +164,14 @@ case "$cmd" in
     fi
     echo
     echo "Module OBJDIR:"
-    make -C "$KMODDIR" -V .OBJDIR 2>/dev/null || true
+    OBJDIR=$(make -C "$KMODDIR" -V .OBJDIR 2>/dev/null || echo "unknown")
+    echo "  $OBJDIR"
+    echo "Built module:"
+    ls -l "$OBJDIR/drawfs.ko" 2>/dev/null || echo "  not found — run: sudo ./build.sh build"
+    echo "/boot/modules/drawfs.ko:"
+    ls -l /boot/modules/drawfs.ko 2>/dev/null || echo "  not found — run: sudo ./build.sh deploy"
+    echo "Loaded:"
+    kldstat 2>/dev/null | grep drawfs || echo "  not loaded"
     ;;
 
   *)

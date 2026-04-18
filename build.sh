@@ -5,6 +5,7 @@
 #   sh build.sh                    # build all subprojects
 #   sh build.sh -Dx11=true         # pass flags to zig build
 #   sh build.sh test               # run all test suites
+#   sh build.sh --check            # verify dependencies only, do not build
 #
 # Log file: build-YYYYMMDD-HHMMSS.log in the UTF root directory.
 # Symlink:  build-latest.log always points to the most recent log.
@@ -12,6 +13,26 @@
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Handle --check before setting up the log
+if [ "${1:-}" = "--check" ]; then
+    echo "=== UTF dependency check ==="
+    OK=1
+    if command -v zig >/dev/null 2>&1; then
+        echo "  ok  zig $(zig version)"
+    else
+        echo "  MISSING  zig — install from https://ziglang.org/download/"
+        OK=0
+    fi
+    if [ -f "$SCRIPT_DIR/.config" ]; then
+        echo "  ok  .config found"
+        cat "$SCRIPT_DIR/.config"
+    else
+        echo "  --  .config not found (run: sh configure.sh)"
+    fi
+    [ "$OK" -eq 1 ] && echo "All dependencies present." || echo "Missing dependencies."
+    exit $((1 - OK))
+fi
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 LOG="$SCRIPT_DIR/build-${TIMESTAMP}.log"
 LATEST="$SCRIPT_DIR/build-latest.log"
