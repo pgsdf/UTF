@@ -4,36 +4,7 @@ pub fn build(b: *std.Build) void {
     const target   = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // -----------------------------------------------------------------------
-    // Backend feature flags
-    //
-    // Each GPU-dependent backend can be disabled at build time for
-    // environments where the required libraries are absent (e.g. VirtualBox,
-    // CI, headless servers).  The software and drawfs backends are always
-    // included and require no external libraries.
-    //
-    // Usage:
-    //   zig build                          # all backends (default)
-    //   zig build -Dconsole=true           # no X11/Wayland (bare console)
-    //   zig build -Dx11=false              # disable X11
-    //   zig build -Dvulkan=false           # disable Vulkan
-    //   zig build -Dwayland=false          # disable Wayland
-    //   zig build -Dbsdinput=false         # disable libinput/libudev
-    //   zig build -Dgpu=false              # disable all GPU backends at once
-    //   zig build -Dconsole=true           # console mode: no X11/Wayland
-    //   zig build -Dconsole=true           # console mode: no X11/Wayland
-    // -----------------------------------------------------------------------
-    // Each GPU backend defaults to FALSE — opt in explicitly.
-    // On bare metal with all libraries present: zig build -Dgpu=true
-    // On VirtualBox or console without GPU libs: zig build  (uses software/drawfs only)
-    // -Dgpu=false disables all GPU backends (VirtualBox / headless).
-    // Default: true (bare metal). X11 and Wayland default to false
-    // (not needed on a bare console). Vulkan and bsdinput default to true.
-    const want_gpu      = b.option(bool, "gpu",      "Master switch: false disables all GPU backends (default: true)") orelse true;
-    const want_vulkan   = b.option(bool, "vulkan",   "Enable Vulkan backends (default: true)")                         orelse want_gpu;
-    const want_bsdinput = b.option(bool, "bsdinput", "Enable bsdinput/libinput/libudev (default: true)")               orelse want_gpu;
-    const want_x11      = b.option(bool, "x11",      "Enable X11 backend (default: false)")                            orelse false;
-    const want_wayland  = b.option(bool, "wayland",  "Enable Wayland backend (default: false)")                        orelse false;
+    // UTF requires bare metal FreeBSD 15. Virtualisation is not supported.
 
     const semadraw_root = b.path("src/semadraw.zig");
     const sdcs_root     = b.path("src/sdcs.zig");
@@ -486,74 +457,66 @@ pub fn build(b: *std.Build) void {
 
     // X11 backend module
     const x11_backend_mod = b.createModule(.{
-        .root_source_file = b.path(if (want_x11) "src/backend/x11.zig" else "src/backend/stub_x11.zig"),
+        .root_source_file = b.path("src/backend/x11.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
             .{ .name = "backend", .module = backend_mod },
         },
     });
-    if (want_x11) {
-        x11_backend_mod.link_libc = true;
-        x11_backend_mod.linkSystemLibrary("X11", .{});
-    }
+    x11_backend_mod.link_libc = true;
+    x11_backend_mod.linkSystemLibrary("X11", .{});
 
     // Add x11 import to backend module for createBackend
     backend_mod.addImport("x11", x11_backend_mod);
 
     // Vulkan backend module
     const vulkan_backend_mod = b.createModule(.{
-        .root_source_file = b.path(if (want_vulkan) "src/backend/vulkan.zig" else "src/backend/stub_vulkan.zig"),
+        .root_source_file = b.path("src/backend/vulkan.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
             .{ .name = "backend", .module = backend_mod },
         },
     });
-    if (want_vulkan) {
-        vulkan_backend_mod.link_libc = true;
-        vulkan_backend_mod.linkSystemLibrary("vulkan", .{});
-        vulkan_backend_mod.linkSystemLibrary("X11", .{});
-    }
+    vulkan_backend_mod.link_libc = true;
+    vulkan_backend_mod.linkSystemLibrary("vulkan", .{});
+    vulkan_backend_mod.linkSystemLibrary("X11", .{});
 
     // Add vulkan import to backend module for createBackend
     backend_mod.addImport("vulkan", vulkan_backend_mod);
 
     // Wayland backend module
     const wayland_backend_mod = b.createModule(.{
-        .root_source_file = b.path(if (want_wayland) "src/backend/wayland.zig" else "src/backend/stub_wayland.zig"),
+        .root_source_file = b.path("src/backend/wayland.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
             .{ .name = "backend", .module = backend_mod },
         },
     });
-    if (want_wayland) {
-        wayland_backend_mod.link_libc = true;
-        wayland_backend_mod.linkSystemLibrary("wayland-client", .{});
-    }
+    wayland_backend_mod.link_libc = true;
+    wayland_backend_mod.linkSystemLibrary("wayland-client", .{});
 
     // Add wayland import to backend module for createBackend
     backend_mod.addImport("wayland", wayland_backend_mod);
 
     // BSD input module (for FreeBSD/OpenBSD/NetBSD console input)
     const bsdinput_mod = b.createModule(.{
-        .root_source_file = b.path(if (want_bsdinput) "src/backend/bsdinput.zig" else "src/backend/stub_bsdinput.zig"),
+        .root_source_file = b.path("src/backend/bsdinput.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
             .{ .name = "backend", .module = backend_mod },
         },
     });
-    if (want_bsdinput) {
-        bsdinput_mod.link_libc = true;
-        bsdinput_mod.linkSystemLibrary("input", .{});
-        bsdinput_mod.linkSystemLibrary("udev", .{});
-    }
+    bsdinput_mod.link_libc = true;
+    bsdinput_mod.linkSystemLibrary("input", .{});
+    bsdinput_mod.linkSystemLibrary("udev", .{});
 
     // Vulkan console backend module (VK_KHR_display for direct display output)
     const vulkan_console_backend_mod = b.createModule(.{
-        .root_source_file = b.path(if (want_vulkan) "src/backend/vulkan_console.zig" else "src/backend/stub_vulkan_console.zig"),
+        .root_source_file = b.path("src/backend/vulkan_console.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
@@ -562,10 +525,8 @@ pub fn build(b: *std.Build) void {
             .{ .name = "bsdinput", .module = bsdinput_mod },
         },
     });
-    if (want_vulkan) {
-        vulkan_console_backend_mod.link_libc = true;
-        vulkan_console_backend_mod.linkSystemLibrary("vulkan", .{});
-    }
+    vulkan_console_backend_mod.link_libc = true;
+    vulkan_console_backend_mod.linkSystemLibrary("vulkan", .{});
 
     // Add vulkan_console import to backend module for createBackend
     backend_mod.addImport("vulkan_console", vulkan_console_backend_mod);

@@ -105,26 +105,11 @@ zig build run-semadraw             # build and run compositor
 zig build chrono-dump              # build chrono_dump diagnostic tool
 ```
 
-### Console / bare metal without a display server
+### Requirements
 
-```sh
-cd semadraw && zig build          # works everywhere — no GPU libs required
-```
-
-GPU backends (X11, Vulkan, Wayland, libinput) are **disabled by default**.
-The software and drawfs backends are always compiled and require no external
-libraries. This is the correct setting for bare metal FreeBSD/GhostBSD
-console installs, VirtualBox, and CI environments.
-
-### Enabling GPU backends (bare metal with full library stack)
-
-```sh
-cd semadraw && zig build -Dgpu=true        # enable all GPU backends
-zig build -Dvulkan=true -Dx11=true         # enable specific backends only
-```
-
-Only use `-Dgpu=true` when libvulkan, libX11, libwayland-client, libinput,
-and libudev are all installed.
+UTF requires **bare metal FreeBSD 15** or GhostBSD. Virtualisation is not
+supported — the system depends on hardware audio clocks, DRM/KMS, evdev, and
+`/dev/draw`, none of which are meaningfully available in a VM.
 
 ### Individual subproject builds
 

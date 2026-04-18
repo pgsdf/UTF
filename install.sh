@@ -119,11 +119,10 @@ echo "=== Building UTF (optimize=ReleaseSafe) ==="
 build_sub() {
     name="$1"
     dir="$SCRIPT_DIR/$2"
-    shift 2
     echo ""
     echo "--- Building $name ---"
     cd "$dir"
-    zig build -Doptimize=ReleaseSafe "$@"
+    zig build -Doptimize=ReleaseSafe
     cd "$SCRIPT_DIR"
 }
 

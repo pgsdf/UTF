@@ -1,10 +1,12 @@
 const std = @import("std");
 
 // ============================================================================
-// UTF root build — delegates to each subproject via shell commands.
+// UTF root build — delegates to each subproject.
+//
+// Requires bare metal FreeBSD 15. Virtualisation is not supported.
 //
 // Steps:
-//   zig build              — build all subprojects (software + drawfs backends)
+//   zig build              — build all subprojects
 //   zig build test         — run all test suites
 //   zig build build-semaaud / build-semainput / build-semadraw / build-chronofs
 //   zig build test-semaaud / test-semainput / test-semadraw / test-chronofs
@@ -12,9 +14,6 @@ const std = @import("std");
 //   zig build run-semainput — build and run semainputd (requires root)
 //   zig build run-semadraw — build and run semadrawd
 //   zig build chrono-dump  — build chrono_dump
-//
-// GPU backends are opt-in (disabled by default):
-//   zig build -Dgpu=true   — enable all GPU backends (bare metal with full libs)
 // ============================================================================
 
 pub fn build(b: *std.Build) void {
@@ -22,16 +21,6 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
     _ = target;
     _ = optimize;
-
-    // Pass -Dgpu=true to semadraw when GPU libraries are available.
-    const want_gpu = b.option(bool, "gpu",
-        "Enable GPU backends in semadraw (default: false; set true on bare metal with full libs)")
-        orelse false;
-
-    const semadraw_args: []const []const u8 = if (want_gpu)
-        &.{ "zig", "build", "-Dgpu=true" }
-    else
-        &.{ "zig", "build" };
 
     const subprojects = [_]struct {
         name: []const u8,
@@ -48,12 +37,7 @@ pub fn build(b: *std.Build) void {
     const install_all = b.default_step;
 
     for (subprojects) |sp| {
-        const args = if (std.mem.eql(u8, sp.name, "semadraw"))
-            semadraw_args
-        else
-            &[_][]const u8{ "zig", "build" };
-
-        const build_cmd = b.addSystemCommand(args);
+        const build_cmd = b.addSystemCommand(&.{ "zig", "build" });
         build_cmd.setCwd(b.path(sp.dir));
 
         const build_step = b.step(
@@ -100,7 +84,7 @@ pub fn build(b: *std.Build) void {
 
     const run_semadraw = b.step("run-semadraw", "Build and run semadrawd (compositor)");
     {
-        const build_cmd = b.addSystemCommand(semadraw_args);
+        const build_cmd = b.addSystemCommand(&.{ "zig", "build" });
         build_cmd.setCwd(b.path("semadraw"));
         const run_cmd = b.addSystemCommand(&.{ "zig-out/bin/semadrawd" });
         run_cmd.setCwd(b.path("semadraw"));
