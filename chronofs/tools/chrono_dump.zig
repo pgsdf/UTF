@@ -5,10 +5,10 @@
 ///
 /// Usage:
 ///   # Live: pipe all subsystem stdout into chrono_dump
-///   { semaud; semainputd; semadrawd; } | chrono_dump
+///   { semaaud; semainputd; semadrawd; } | chrono_dump
 ///
 ///   # Drift analysis
-///   { semaud; semadrawd; } | chrono_dump --drift
+///   { semaaud; semadrawd; } | chrono_dump --drift
 ///
 ///   # Replay a recorded log
 ///   chrono_dump --replay fabric.log
@@ -356,7 +356,7 @@ const USAGE =
     \\  --rate <hz>     Sample rate for time display (default: 48000)
     \\
     \\Examples:
-    \\  { semaud; semainputd; semadrawd; } 2>/dev/null | chrono_dump --drift
+    \\  { semaaud; semainputd; semadrawd; } 2>/dev/null | chrono_dump --drift
     \\  chrono_dump --replay fabric.log --rate 48000
     \\
 ;

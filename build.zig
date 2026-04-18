@@ -7,7 +7,7 @@ const std = @import("std");
 //   zig build              — build all daemons and tools
 //   zig build test         — run all test suites
 //   zig build install      — install daemons to prefix (default: zig-out/)
-//   zig build run-semaaud  — build and run semaud
+//   zig build run-semaaud  — build and run semaaud
 //   zig build run-semainput — build and run semainputd (requires root)
 //   zig build run-semadraw — build and run semadrawd
 //   zig build chrono-dump  — build chrono_dump
@@ -81,14 +81,14 @@ pub fn build(b: *std.Build) void {
     // Convenience run steps
     // -----------------------------------------------------------------------
     const run_semaaud = b.step("run-semaaud",
-        "Build and run semaud (audio daemon)");
+        "Build and run semaaud (audio daemon)");
     {
         const build_cmd = b.addSystemCommand(&.{
             "zig", "build", "--build-file", "semaaud/build.zig",
             "--prefix", "semaaud/zig-out",
         });
         build_cmd.setCwd(b.path("semaaud"));
-        const run_cmd = b.addSystemCommand(&.{ "semaaud/zig-out/bin/semaud" });
+        const run_cmd = b.addSystemCommand(&.{ "semaaud/zig-out/bin/semaaud" });
         run_cmd.step.dependOn(&build_cmd.step);
         run_semaaud.dependOn(&run_cmd.step);
     }

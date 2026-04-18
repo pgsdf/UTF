@@ -120,15 +120,15 @@ cd drawfs
 
 ```sh
 # Start all daemons
-sudo semaud      2>/dev/null &
+sudo semaaud      2>/dev/null &
 sudo semainputd  2>/dev/null &
 semadrawd        2>/dev/null &
 
 # Watch the unified event timeline
-{ sudo semaud; sudo semainputd; semadrawd; } 2>/dev/null | chrono_dump
+{ sudo semaaud; sudo semainputd; semadrawd; } 2>/dev/null | chrono_dump
 
 # Drift analysis (requires semaaud playing audio)
-{ sudo semaud; semadrawd; } 2>/dev/null | chrono_dump --drift
+{ sudo semaaud; semadrawd; } 2>/dev/null | chrono_dump --drift
 
 # Replay a recorded session
 chrono_dump --replay fabric.log --rate 48000
@@ -241,7 +241,7 @@ All four daemons emit newline-delimited JSON to stdout. Every line contains:
 Pipe any combination of daemons into `chrono_dump` for a merged timeline:
 
 ```sh
-{ semaud; semainputd; semadrawd; } 2>/dev/null | chrono_dump
+{ semaaud; semainputd; semadrawd; } 2>/dev/null | chrono_dump
 ```
 
 ---

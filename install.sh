@@ -9,7 +9,7 @@
 #   sh install.sh --uninstall      # remove installed files
 #
 # Installed binaries:
-#   $PREFIX/bin/semaud        — audio routing daemon
+#   $PREFIX/bin/semaaud        — audio routing daemon
 #   $PREFIX/bin/semainputd    — input classification daemon
 #   $PREFIX/bin/semadrawd     — semantic rendering compositor
 #   $PREFIX/bin/chrono_dump   — chronofs diagnostic tool
@@ -25,7 +25,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 UNINSTALL=0
 CHECK_ONLY=0
 
-BINARIES="semaud semainputd semadrawd chrono_dump"
+BINARIES="semaaud semainputd semadrawd chrono_dump"
 
 # ============================================================================
 # Argument parsing
@@ -139,7 +139,7 @@ install_bin() {
     fi
 }
 
-install_bin "$SCRIPT_DIR/semaaud/zig-out/bin/semaud"
+install_bin "$SCRIPT_DIR/semaaud/zig-out/bin/semaaud"
 install_bin "$SCRIPT_DIR/semainput/zig-out/bin/semainputd"
 install_bin "$SCRIPT_DIR/semadraw/zig-out/bin/semadrawd"
 install_bin "$SCRIPT_DIR/chronofs/zig-out/bin/chrono_dump"
@@ -163,7 +163,7 @@ if [ -d /etc/rc.d ] || [ -d "$RCDDIR" ]; then
 . /etc/rc.subr
 name="semaaud"
 rcvar="semaaud_enable"
-command="$PREFIX/bin/semaud"
+command="$PREFIX/bin/semaaud"
 : \${semaaud_enable:="NO"}
 load_rc_config \$name
 run_rc_command "\$1"
@@ -228,7 +228,7 @@ for bin in $BINARIES; do
 done
 echo ""
 echo "Quick start:"
-echo "  sudo $PREFIX/bin/semaud     &   # audio daemon"
+echo "  sudo $PREFIX/bin/semaaud     &   # audio daemon"
 echo "  sudo $PREFIX/bin/semainputd &   # input daemon"
 echo "  $PREFIX/bin/semadrawd       &   # compositor"
 echo "  $PREFIX/bin/chrono_dump --drift     # live timeline"
