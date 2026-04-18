@@ -116,6 +116,17 @@ fi
 
 echo "=== Building UTF (optimize=ReleaseSafe) ==="
 
+# Build drawfs kernel module first
+echo ""
+echo "--- Building drawfs kernel module ---"
+if [ -f "$SCRIPT_DIR/drawfs/build.sh" ]; then
+    sh "$SCRIPT_DIR/drawfs/build.sh" install
+    sh "$SCRIPT_DIR/drawfs/build.sh" build
+    sh "$SCRIPT_DIR/drawfs/build.sh" deploy
+else
+    echo "WARNING: drawfs/build.sh not found — skipping kernel module"
+fi
+
 # Read backend configuration from .config if present
 CONFIG="$SCRIPT_DIR/.config"
 SEMADRAW_FLAGS=""
@@ -256,7 +267,14 @@ for bin in $BINARIES; do
     fi
 done
 echo ""
+echo "To load drawfs now:"
+echo "  kldload drawfs"
+echo ""
+echo "To load drawfs at boot, add to /boot/loader.conf:"
+echo "  drawfs_load=\"YES\""
+echo ""
 echo "Quick start:"
+echo "  kldload drawfs"
 echo "  sudo $PREFIX/bin/semaaud     &   # audio daemon"
 echo "  sudo $PREFIX/bin/semainputd &   # input daemon"
 echo "  $PREFIX/bin/semadrawd       &   # compositor"

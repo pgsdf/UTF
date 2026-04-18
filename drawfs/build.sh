@@ -28,6 +28,7 @@ usage() {
 Usage:
   sudo ./build.sh install
   sudo ./build.sh build
+  sudo ./build.sh deploy
   sudo ./build.sh load
   sudo ./build.sh unload
   sudo ./build.sh test [tests/stepXX_*.py]
@@ -35,13 +36,18 @@ Usage:
   ./build.sh verify
   ./build.sh help
 
+Commands:
+  install  Copy drawfs sources into /usr/src kernel tree
+  build    Compile drawfs.ko from kernel sources
+  deploy   Install drawfs.ko to /boot/modules/ (run after build)
+  load     Load drawfs.ko from build directory (for testing)
+  unload   Unload drawfs kernel module
+  test     Run Python integration tests
+  all      install + build + deploy + load + test
+  verify   Check source and build state without changing anything
+
 Environment:
   SRCROOT=/usr/src   Root of FreeBSD source tree (default: /usr/src)
-
-Notes:
-  - install uses rsync --delete, so /usr/src/sys/dev/drawfs and /usr/src/sys/modules/drawfs
-    will be overwritten to match this repo.
-  - build uses the in-tree kernel module build system under /usr/src/sys/modules/drawfs
 USAGE
 }
 
@@ -84,6 +90,23 @@ case "$cmd" in
     echo "OK: load"
     ;;
 
+  deploy)
+    need_root "$cmd"
+    OBJDIR=$(make -C "$KMODDIR" -V .OBJDIR)
+    KO="$OBJDIR/drawfs.ko"
+    if [ ! -f "$KO" ]; then
+      echo "ERROR: missing $KO — run: sudo ./build.sh build"
+      exit 1
+    fi
+    echo "Installing $KO to /boot/modules/"
+    cp "$KO" /boot/modules/drawfs.ko
+    kldxref /boot/modules
+    echo "OK: deploy"
+    echo ""
+    echo "To load now:       kldload drawfs"
+    echo "To load at boot:   echo 'drawfs_load=\"YES\"' >> /boot/loader.conf"
+    ;;
+
   unload)
     need_root "$cmd"
     kldunload drawfs 2>/dev/null || true
@@ -107,6 +130,7 @@ case "$cmd" in
     testfile=${1:-tests/step11_surface_mmap_test.py}
     "$0" install
     "$0" build
+    "$0" deploy
     "$0" load
     "$0" test "$testfile"
     ;;

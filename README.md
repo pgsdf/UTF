@@ -190,10 +190,19 @@ Requires FreeBSD kernel sources and root:
 
 ```sh
 cd drawfs
-./build.sh install   # install kernel source tree
-./build.sh build     # compile the module
-./build.sh load      # kldload drawfs.ko
-./build.sh test      # run Python integration tests
+sudo ./build.sh install   # copy sources into /usr/src
+sudo ./build.sh build     # compile drawfs.ko
+sudo ./build.sh deploy    # install to /boot/modules/
+sudo kldload drawfs       # load immediately
+
+# Or all at once:
+sudo ./build.sh all
+```
+
+To load drawfs automatically at boot, add to `/boot/loader.conf`:
+
+```
+drawfs_load="YES"
 ```
 
 ---
