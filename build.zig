@@ -24,16 +24,22 @@ pub fn build(b: *std.Build) void {
     _ = optimize;
 
     // GPU flag — passed through to semadraw subproject.
-    // Default: auto-detect. Set false explicitly to skip all GPU backends.
     const want_gpu = b.option(bool, "gpu",
         "Enable GPU-dependent backends in semadraw (default: true; set false for VirtualBox/headless)")
         orelse true;
 
-    // Build semadraw args: conditionally add -Dgpu=false
-    const semadraw_args: []const []const u8 = if (want_gpu)
-        &.{ "zig", "build" }
+    // Console flag — disables X11 and Wayland backends in semadraw.
+    const want_console = b.option(bool, "console",
+        "Console mode: disable X11 and Wayland backends (default: false)")
+        orelse false;
+
+    // Build semadraw args based on flags.
+    const semadraw_args: []const []const u8 = if (!want_gpu)
+        &.{ "zig", "build", "-Dgpu=false" }
+    else if (want_console)
+        &.{ "zig", "build", "-Dconsole=true" }
     else
-        &.{ "zig", "build", "-Dgpu=false" };
+        &.{ "zig", "build" };
 
     const subprojects = [_]struct {
         name: []const u8,

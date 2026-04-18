@@ -14,16 +14,20 @@ pub fn build(b: *std.Build) void {
     //
     // Usage:
     //   zig build                          # all backends (default)
+    //   zig build -Dconsole=true           # no X11/Wayland (bare console)
     //   zig build -Dx11=false              # disable X11
     //   zig build -Dvulkan=false           # disable Vulkan
     //   zig build -Dwayland=false          # disable Wayland
     //   zig build -Dbsdinput=false         # disable libinput/libudev
     //   zig build -Dgpu=false              # disable all GPU backends at once
+    //   zig build -Dconsole=true           # console mode: no X11/Wayland
+    //   zig build -Dconsole=true           # console mode: no X11/Wayland
     // -----------------------------------------------------------------------
     const want_gpu     = b.option(bool, "gpu",     "Enable all GPU-dependent backends (default: true)") orelse true;
-    const want_x11     = b.option(bool, "x11",     "Enable X11 backend (requires libX11)")              orelse want_gpu;
+    const want_console = b.option(bool, "console", "Console mode: disables X11 and Wayland (default: false)") orelse false;
+    const want_x11     = b.option(bool, "x11",     "Enable X11 backend (requires libX11)")              orelse (want_gpu and !want_console);
     const want_vulkan  = b.option(bool, "vulkan",  "Enable Vulkan backends (requires libvulkan)")       orelse want_gpu;
-    const want_wayland = b.option(bool, "wayland", "Enable Wayland backend (requires libwayland-client)") orelse want_gpu;
+    const want_wayland = b.option(bool, "wayland", "Enable Wayland backend (requires libwayland-client)") orelse (want_gpu and !want_console);
     const want_bsdinput = b.option(bool, "bsdinput", "Enable bsdinput/libinput/libudev")                orelse want_gpu;
 
     const semadraw_root = b.path("src/semadraw.zig");

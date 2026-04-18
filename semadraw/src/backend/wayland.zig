@@ -1127,7 +1127,7 @@ pub const WaylandBackend = struct {
 
         // Poll for data with timeout
         var pfd = posix.pollfd{
-            .fd = pipe_fds[0],
+            .fd = @as(posix.fd_t, @intCast(pipe_fds[0])),
             .events = posix.POLL.IN,
             .revents = 0,
         };
@@ -1135,7 +1135,7 @@ pub const WaylandBackend = struct {
         const ready = posix.poll(@as(*[1]posix.pollfd, &pfd), 100) catch 0; // 100ms timeout
         if (ready > 0) {
             while (total_read < buffer.len) {
-                const n = posix.read(pipe_fds[0], buffer[total_read..]) catch break;
+                const n = posix.read(@as(posix.fd_t, @intCast(pipe_fds[0])), buffer[total_read..]) catch break;
                 if (n == 0) break;
                 total_read += n;
             }

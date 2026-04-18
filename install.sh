@@ -127,15 +127,17 @@ build_sub() {
     cd "$SCRIPT_DIR"
 }
 
-# Detect VirtualBox (or other headless/VM environments) via dmidecode or
-# sysctl. When running in a VM without GPU libraries, disable GPU backends.
+# Detect environment and set appropriate semadraw build flags.
 GPU_FLAGS=""
 if sysctl -n hw.model 2>/dev/null | grep -qi "virtualbox"; then
-    echo "VirtualBox detected — disabling GPU backends (X11, Vulkan, Wayland)"
+    echo "VirtualBox detected — disabling all GPU backends (-Dgpu=false)"
     GPU_FLAGS="-Dgpu=false"
 elif [ -f /sys/class/dmi/id/product_name ] && grep -qi "virtualbox" /sys/class/dmi/id/product_name 2>/dev/null; then
-    echo "VirtualBox detected — disabling GPU backends (X11, Vulkan, Wayland)"
+    echo "VirtualBox detected — disabling all GPU backends (-Dgpu=false)"
     GPU_FLAGS="-Dgpu=false"
+elif [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
+    echo "Console environment detected — disabling X11 and Wayland backends (-Dconsole=true)"
+    GPU_FLAGS="-Dconsole=true"
 fi
 
 build_sub "semaaud"   "semaaud"
