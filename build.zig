@@ -12,6 +12,9 @@ const std = @import("std");
 //   zig build run-semainput — build and run semainputd (requires root)
 //   zig build run-semadraw — build and run semadrawd
 //   zig build chrono-dump  — build chrono_dump
+//
+// VirtualBox / headless:
+//   zig build -Dgpu=false  — disable GPU backends (X11, Vulkan, Wayland, bsdinput)
 // ============================================================================
 
 pub fn build(b: *std.Build) void {
@@ -19,6 +22,18 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
     _ = target;
     _ = optimize;
+
+    // GPU flag — passed through to semadraw subproject.
+    // Default: auto-detect. Set false explicitly to skip all GPU backends.
+    const want_gpu = b.option(bool, "gpu",
+        "Enable GPU-dependent backends in semadraw (default: true; set false for VirtualBox/headless)")
+        orelse true;
+
+    // Build semadraw args: conditionally add -Dgpu=false
+    const semadraw_args: []const []const u8 = if (want_gpu)
+        &.{ "zig", "build" }
+    else
+        &.{ "zig", "build", "-Dgpu=false" };
 
     const subprojects = [_]struct {
         name: []const u8,
@@ -35,8 +50,13 @@ pub fn build(b: *std.Build) void {
     const install_all = b.default_step;
 
     for (subprojects) |sp| {
-        // zig build — run inside the subproject directory
-        const build_cmd = b.addSystemCommand(&.{ "zig", "build" });
+        // Choose args: semadraw gets the GPU-aware command, others get plain
+        const args = if (std.mem.eql(u8, sp.name, "semadraw"))
+            semadraw_args
+        else
+            &[_][]const u8{ "zig", "build" };
+
+        const build_cmd = b.addSystemCommand(args);
         build_cmd.setCwd(b.path(sp.dir));
 
         const build_step = b.step(
@@ -47,8 +67,8 @@ pub fn build(b: *std.Build) void {
         build_all.dependOn(&build_cmd.step);
         install_all.dependOn(&build_cmd.step);
 
-        // zig build test — run inside the subproject directory
-        const test_cmd = b.addSystemCommand(&.{ "zig", "build", "test" });
+        const test_args: []const []const u8 = &.{ "zig", "build", "test" };
+        const test_cmd = b.addSystemCommand(test_args);
         test_cmd.setCwd(b.path(sp.dir));
 
         const test_step = b.step(
@@ -84,7 +104,7 @@ pub fn build(b: *std.Build) void {
 
     const run_semadraw = b.step("run-semadraw", "Build and run semadrawd (compositor)");
     {
-        const build_cmd = b.addSystemCommand(&.{ "zig", "build" });
+        const build_cmd = b.addSystemCommand(semadraw_args);
         build_cmd.setCwd(b.path("semadraw"));
         const run_cmd = b.addSystemCommand(&.{ "zig-out/bin/semadrawd" });
         run_cmd.setCwd(b.path("semadraw"));
