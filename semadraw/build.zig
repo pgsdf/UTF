@@ -685,6 +685,9 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    // Wire client into semadraw_mod so app.zig can import semadraw_client
+    semadraw_mod.addImport("semadraw_client", client_mod);
+
     // Client library (static)
     const client_lib = b.addLibrary(.{
         .name = "semadraw_client",
@@ -770,6 +773,22 @@ pub fn build(b: *std.Build) void {
         }),
     });
     b.installArtifact(semadraw_demo);
+
+    // Hello — minimal App framework example
+    const hello = b.addExecutable(.{
+        .name = "hello",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/apps/hello/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "semadraw", .module = semadraw_mod },
+            },
+        }),
+    });
+    b.installArtifact(hello);
+    const hello_step = b.step("hello", "Build the hello example app");
+    hello_step.dependOn(&hello.step);
 
     // Unit tests
     const tests = b.addTest(.{

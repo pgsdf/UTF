@@ -62,3 +62,9 @@ pub const Surface = struct {
 };
 
 pub const Encoder = @import("encoder.zig").Encoder;
+
+/// High-level application framework. Wraps connection, surface, encoder,
+/// and event loop. See src/app.zig for usage.
+pub const App     = @import("app.zig").App;
+pub const AppDesc = @import("app.zig").AppDesc;
+pub const AppEvent = @import("app.zig").Event;
