@@ -111,6 +111,22 @@ UTF requires **bare metal FreeBSD 15** or GhostBSD. Virtualisation is not
 supported — the system depends on hardware audio clocks, DRM/KMS, evdev, and
 `/dev/draw`, none of which are meaningfully available in a VM.
 
+### Environment-specific semadraw builds
+
+X11 and Wayland backends are **disabled by default**. Vulkan and bsdinput are
+enabled by default and work on any bare metal FreeBSD or GhostBSD system.
+
+```sh
+# FreeBSD bare tty console (default — no flags needed)
+cd semadraw && zig build
+
+# GhostBSD or FreeBSD with Xorg
+cd semadraw && zig build -Dx11=true
+
+# With Wayland
+cd semadraw && zig build -Dwayland=true
+```
+
 ### Individual subproject builds
 
 ```sh
