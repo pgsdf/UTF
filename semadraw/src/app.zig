@@ -46,17 +46,17 @@ const log = std.log.scoped(.semadraw_app);
 // ============================================================================
 
 pub const KeyEvent = struct {
-    keycode: u32,
+    key_code: u32,
     pressed: bool,
-    modifiers: u32,
+    modifiers: u8,
 };
 
 pub const MouseEvent = struct {
     x: f32,
     y: f32,
-    dx: f32,
-    dy: f32,
-    buttons: u32,
+    button: u8,
+    pressed: bool,
+    modifiers: u8,
 };
 
 /// Events delivered to the application's onEvent callback.
@@ -246,16 +246,16 @@ pub const App = struct {
                 }},
                 .disconnected => Event{ .quit = {} },
                 .key_press => |kp| Event{ .key = .{
-                    .keycode   = kp.keycode,
-                    .pressed   = kp.pressed,
+                    .key_code  = kp.key_code,
+                    .pressed   = kp.pressed != 0,
                     .modifiers = kp.modifiers,
                 }},
                 .mouse_event => |me| Event{ .mouse = .{
-                    .x       = me.x,
-                    .y       = me.y,
-                    .dx      = me.dx,
-                    .dy      = me.dy,
-                    .buttons = me.buttons,
+                    .x         = @as(f32, @floatFromInt(me.x)),
+                    .y         = @as(f32, @floatFromInt(me.y)),
+                    .button    = @intFromEnum(me.button),
+                    .pressed   = me.event_type == .press,
+                    .modifiers = me.modifiers,
                 }},
                 else => null,
             };
