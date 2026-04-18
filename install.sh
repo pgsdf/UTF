@@ -94,6 +94,18 @@ if [ "$UNINSTALL" -eq 1 ]; then
             echo "  skip     $target (not found)"
         fi
     done
+
+    RCDDIR="$PREFIX/etc/rc.d"
+    for svc in semaaud semainput semadraw; do
+        target="$RCDDIR/$svc"
+        if [ -f "$target" ]; then
+            rm -f "$target"
+            echo "  removed  $target"
+        else
+            echo "  skip     $target (not found)"
+        fi
+    done
+
     echo "=== Done ==="
     exit 0
 fi
@@ -107,16 +119,28 @@ echo "=== Building UTF (optimize=ReleaseSafe) ==="
 build_sub() {
     name="$1"
     dir="$SCRIPT_DIR/$2"
+    shift 2
     echo ""
     echo "--- Building $name ---"
     cd "$dir"
-    zig build -Doptimize=ReleaseSafe
+    zig build -Doptimize=ReleaseSafe "$@"
     cd "$SCRIPT_DIR"
 }
 
+# Detect VirtualBox (or other headless/VM environments) via dmidecode or
+# sysctl. When running in a VM without GPU libraries, disable GPU backends.
+GPU_FLAGS=""
+if sysctl -n hw.model 2>/dev/null | grep -qi "virtualbox"; then
+    echo "VirtualBox detected — disabling GPU backends (X11, Vulkan, Wayland)"
+    GPU_FLAGS="-Dgpu=false"
+elif [ -f /sys/class/dmi/id/product_name ] && grep -qi "virtualbox" /sys/class/dmi/id/product_name 2>/dev/null; then
+    echo "VirtualBox detected — disabling GPU backends (X11, Vulkan, Wayland)"
+    GPU_FLAGS="-Dgpu=false"
+fi
+
 build_sub "semaaud"   "semaaud"
 build_sub "semainput" "semainput"
-build_sub "semadraw"  "semadraw"
+build_sub "semadraw"  "semadraw" $GPU_FLAGS
 build_sub "chronofs"  "chronofs"
 
 # ============================================================================

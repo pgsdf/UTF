@@ -81,6 +81,18 @@ This builds all subprojects at `ReleaseSafe`, installs the daemons to
 `$PREFIX/bin/`, and writes FreeBSD `rc.d` service scripts to
 `$PREFIX/etc/rc.d/`.
 
+### Remove
+
+```sh
+sh install.sh --uninstall                     # remove from /usr/local
+sh install.sh --uninstall --prefix ~/utf-out  # remove from custom prefix
+```
+
+Removes `semaaud`, `semainputd`, `semadrawd`, and `chrono_dump` from
+`$PREFIX/bin/` and the `rc.d` scripts from `$PREFIX/etc/rc.d/`. Build
+artifacts in the source tree are not touched; run `zig build clean` in each
+subproject directory to remove those.
+
 ### Zig build
 
 ```sh
@@ -92,6 +104,25 @@ zig build run-semainput            # build and run input daemon (requires root)
 zig build run-semadraw             # build and run compositor
 zig build chrono-dump              # build chrono_dump diagnostic tool
 ```
+
+### VirtualBox / headless environments
+
+When GPU libraries (libvulkan, libX11, libwayland-client, libinput) are
+absent — for example in a VirtualBox VM — disable the GPU-dependent backends:
+
+```sh
+cd semadraw && zig build -Dgpu=false
+```
+
+Individual backends can also be disabled selectively:
+
+```sh
+zig build -Dvulkan=false -Dwayland=false   # keep X11, disable others
+```
+
+The `software` and `drawfs` backends are always available and require no
+external libraries. `install.sh` detects VirtualBox automatically and applies
+`-Dgpu=false` to the semadraw build.
 
 ### Individual subproject builds
 
