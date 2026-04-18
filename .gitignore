@@ -1,0 +1,7 @@
+# Build logs
+build-*.log
+build-latest.log
+
+# Zig build artifacts
+zig-out/
+.zig-cache/

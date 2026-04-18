@@ -81,6 +81,25 @@ This builds all subprojects at `ReleaseSafe`, installs the daemons to
 `$PREFIX/bin/`, and writes FreeBSD `rc.d` service scripts to
 `$PREFIX/etc/rc.d/`.
 
+### Development builds
+
+For day-to-day development, use `build.sh` rather than `install.sh`:
+
+```sh
+sh build.sh                  # build everything, log output to build-YYYYMMDD-HHMMSS.log
+sh build.sh -Dx11=true       # pass flags to zig build
+sh build.sh test             # run all test suites
+cat build-latest.log         # view the most recent build log
+```
+
+`build.sh` builds each subproject in-place and tees all output to a
+timestamped log file in the UTF root directory, with `build-latest.log`
+always pointing to the most recent run. Use this during development when
+you need to capture build output for troubleshooting.
+
+`install.sh` is for deploying UTF system-wide. `build.sh` is for building
+and iterating during development. They are not interchangeable.
+
 ### Remove
 
 ```sh
