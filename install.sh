@@ -219,7 +219,27 @@ if [ -d /etc/rc.d ] || [ -d "$RCDDIR" ]; then
 name="semaaud"
 rcvar="semaaud_enable"
 command="$PREFIX/bin/semaaud"
+command_interpreter=""
+pidfile="/var/run/semaaud.pid"
 : \${semaaud_enable:="NO"}
+: \${semaaud_flags:=""}
+
+start_cmd="semaaud_start"
+stop_cmd="semaaud_stop"
+
+semaaud_start() {
+    echo "Starting \${name}."
+    /usr/sbin/daemon -p "\${pidfile}" -f \${command} \${semaaud_flags}
+}
+
+semaaud_stop() {
+    if [ -f "\${pidfile}" ]; then
+        kill \$(cat "\${pidfile}") 2>/dev/null || true
+        rm -f "\${pidfile}"
+        echo "Stopped \${name}."
+    fi
+}
+
 load_rc_config \$name
 run_rc_command "\$1"
 RCEOF
@@ -236,7 +256,27 @@ RCEOF
 name="semainput"
 rcvar="semainput_enable"
 command="$PREFIX/bin/semainputd"
+command_interpreter=""
+pidfile="/var/run/semainput.pid"
 : \${semainput_enable:="NO"}
+: \${semainput_flags:=""}
+
+start_cmd="semainput_start"
+stop_cmd="semainput_stop"
+
+semainput_start() {
+    echo "Starting \${name}."
+    /usr/sbin/daemon -p "\${pidfile}" -f \${command} \${semainput_flags}
+}
+
+semainput_stop() {
+    if [ -f "\${pidfile}" ]; then
+        kill \$(cat "\${pidfile}") 2>/dev/null || true
+        rm -f "\${pidfile}"
+        echo "Stopped \${name}."
+    fi
+}
+
 load_rc_config \$name
 run_rc_command "\$1"
 RCEOF
@@ -246,14 +286,34 @@ RCEOF
     cat > "$RCDDIR/semadraw" << RCEOF
 #!/bin/sh
 # PROVIDE: semadraw
-# REQUIRE: LOGIN semaaud
+# REQUIRE: LOGIN semaaud semainput
 # KEYWORD: shutdown
 
 . /etc/rc.subr
 name="semadraw"
 rcvar="semadraw_enable"
 command="$PREFIX/bin/semadrawd"
+command_interpreter=""
+pidfile="/var/run/semadraw.pid"
 : \${semadraw_enable:="NO"}
+: \${semadraw_flags:="-b drawfs"}
+
+start_cmd="semadraw_start"
+stop_cmd="semadraw_stop"
+
+semadraw_start() {
+    echo "Starting \${name}."
+    /usr/sbin/daemon -p "\${pidfile}" -f \${command} \${semadraw_flags}
+}
+
+semadraw_stop() {
+    if [ -f "\${pidfile}" ]; then
+        kill \$(cat "\${pidfile}") 2>/dev/null || true
+        rm -f "\${pidfile}"
+        echo "Stopped \${name}."
+    fi
+}
+
 load_rc_config \$name
 run_rc_command "\$1"
 RCEOF
