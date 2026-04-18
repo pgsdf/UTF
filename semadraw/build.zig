@@ -787,6 +787,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     b.installArtifact(hello);
+    b.installArtifact(hello);
     const hello_step = b.step("hello", "Build the hello example app");
     hello_step.dependOn(&hello.step);
 
