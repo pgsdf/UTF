@@ -1,14 +1,10 @@
 # chronofs Backlog
 
 `chronofs` is the temporal coordination layer described in `docs/Thoughts.md`.
-It does not yet exist as code. This backlog defines the implementation in
-dependency order, starting from the clock primitive and building up to the
-audio-driven frame scheduler integration.
-
-All items in this backlog depend on the shared/ and subsystem backlogs being
-complete: the clock must be published (S-4), events must carry
-`ts_audio_samples` (A-3, I-3, D-1), and the frame scheduler must be clock-
-abstracted (D-3).
+All items in this backlog are complete. The implementation covers the clock
+primitive (C-1), event stream ring buffers (C-2), the resolver (C-3),
+audio-driven frame scheduler integration (C-4), and the `chrono_dump`
+diagnostic tool (C-5).
 
 ---
 

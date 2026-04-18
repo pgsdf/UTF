@@ -43,16 +43,20 @@
 3. Tuning
    - [x] Event queue and surface limits tunable via sysctl (hw.drawfs.max_*)
 
-## Phase 2: Real Display Bring-up (DF-3 — In Progress)
+## Phase 2: Real Display Bring-up (DF-3 — Skeleton Complete)
 - [x] drawfs_drm.c skeleton with full FreeBSD KPI annotations
 - [x] hw.drawfs.backend sysctl gate (swap/drm)
 - [x] Connector enumeration and mode selection
 - [x] Dumb buffer allocation and framebuffer objects
 - [x] Initial mode set via DRM_IOCTL_MODE_SETCRTC
 - [x] Page-flip present path via DRM_IOCTL_MODE_PAGE_FLIP
-- [ ] Flip completion event handler (kthread)
-- [ ] Damage rect filtering in SURFACE_PRESENT
-- [ ] Atomic modesetting (drmModeAtomicCommit)
+
+Hardware bring-up requires a FreeBSD 15 machine with a DRM-capable GPU and
+drm-kmod loaded. The following items remain for the hardware bring-up phase:
+
+- [ ] Flip completion event handler (kthread to clear flip_pending)
+- [ ] Damage rect filtering in SURFACE_PRESENT (partial update optimisation)
+- [ ] Atomic modesetting (drmModeAtomicCommit) for HDR and VRR support
 - [ ] Multi-GPU / multi-connector enumeration
 
 ## Phase 3: User Environment
