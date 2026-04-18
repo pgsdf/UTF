@@ -37,7 +37,7 @@
 
 const std = @import("std");
 const client = @import("semadraw_client");
-const semadraw = @import("semadraw");
+const Encoder = @import("encoder.zig").Encoder;
 
 const log = std.log.scoped(.semadraw_app);
 
@@ -103,7 +103,7 @@ pub const AppDesc = struct {
 /// `ctx`   — user context pointer passed to run()
 /// `enc`   — encoder to write SDCS commands into
 /// `frame` — monotonic frame counter
-pub const DrawFn  = *const fn (ctx: *anyopaque, enc: *semadraw.Encoder, frame: u64) anyerror!void;
+pub const DrawFn  = *const fn (ctx: *anyopaque, enc: *Encoder, frame: u64) anyerror!void;
 
 /// Called for each input/lifecycle event.
 /// Return `true` to continue running, `false` to quit.
@@ -118,7 +118,7 @@ pub const App = struct {
     desc: AppDesc,
     conn: *client.Connection,
     surface: *client.Surface,
-    encoder: semadraw.Encoder,
+    encoder: Encoder,
     frame: u64,
     running: bool,
 
@@ -154,7 +154,7 @@ pub const App = struct {
             .desc      = desc,
             .conn      = conn,
             .surface   = surface,
-            .encoder   = semadraw.Encoder.init(allocator),
+            .encoder   = Encoder.init(allocator),
             .frame     = 0,
             .running   = true,
         };
