@@ -93,29 +93,54 @@ case "$cmd" in
   deploy)
     need_root "$cmd"
     echo "Installing drawfs.ko to /boot/modules/"
-    # Use the kernel build system's own install target — most reliable
-    if ( cd "$KMODDIR" && make install ); then
+
+    # Find the built module
+    KO=""
+
+    # Try make install first (cleanest approach)
+    if ( cd "$KMODDIR" && make install ) 2>/dev/null; then
         echo "OK: deploy (via make install)"
-    else
-        # Fallback: find and copy manually
-        OBJDIR=$(make -C "$KMODDIR" -V .OBJDIR 2>/dev/null || echo "")
-        KO=""
-        if [ -n "$OBJDIR" ] && [ -f "$OBJDIR/drawfs.ko" ]; then
-            KO="$OBJDIR/drawfs.ko"
-        else
-            # Search common locations
-            KO=$(find "$KMODDIR" -name "drawfs.ko" 2>/dev/null | head -1)
-        fi
-        if [ -z "$KO" ] || [ ! -f "$KO" ]; then
-            echo "ERROR: drawfs.ko not found — run: sudo ./build.sh build"
-            exit 1
-        fi
-        echo "Installing $KO to /boot/modules/"
-        cp "$KO" /boot/modules/drawfs.ko
         kldxref /boot/modules
-        echo "OK: deploy (manual copy)"
+        echo ""
+        echo "To load now:       kldload drawfs"
+        echo "To load at boot:   echo 'drawfs_load=\"YES\"' >> /boot/loader.conf"
+        exit 0
     fi
+
+    # Fall back to locating the .ko manually
+    OBJDIR=$(make -C "$KMODDIR" -V .OBJDIR 2>/dev/null || echo "")
+    if [ -n "$OBJDIR" ] && [ -f "$OBJDIR/drawfs.ko" ]; then
+        KO="$OBJDIR/drawfs.ko"
+    fi
+
+    # Last resort: search common FreeBSD obj tree locations
+    if [ -z "$KO" ]; then
+        for candidate in \
+            /usr/obj/usr/src/amd64.amd64/sys/modules/drawfs/drawfs.ko \
+            /usr/obj/usr/src/arm64.aarch64/sys/modules/drawfs/drawfs.ko \
+            /usr/obj/usr/src/sys/modules/drawfs/drawfs.ko
+        do
+            if [ -f "$candidate" ]; then
+                KO="$candidate"
+                break
+            fi
+        done
+    fi
+
+    # Search anywhere under /usr/obj as a final fallback
+    if [ -z "$KO" ]; then
+        KO=$(find /usr/obj -name "drawfs.ko" 2>/dev/null | head -1)
+    fi
+
+    if [ -z "$KO" ] || [ ! -f "$KO" ]; then
+        echo "ERROR: drawfs.ko not found — run: sudo ./build.sh build"
+        exit 1
+    fi
+
+    echo "Found: $KO"
+    cp "$KO" /boot/modules/drawfs.ko
     kldxref /boot/modules
+    echo "OK: deploy"
     echo ""
     echo "To load now:       kldload drawfs"
     echo "To load at boot:   echo 'drawfs_load=\"YES\"' >> /boot/loader.conf"

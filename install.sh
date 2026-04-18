@@ -229,7 +229,7 @@ RCEOF
     cat > "$RCDDIR/semainput" << RCEOF
 #!/bin/sh
 # PROVIDE: semainput
-# REQUIRE: LOGIN
+# REQUIRE: LOGIN semaaud
 # KEYWORD: shutdown
 
 . /etc/rc.subr

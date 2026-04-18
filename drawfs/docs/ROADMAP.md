@@ -51,13 +51,24 @@
 - [x] Initial mode set via DRM_IOCTL_MODE_SETCRTC
 - [x] Page-flip present path via DRM_IOCTL_MODE_PAGE_FLIP
 
-Hardware bring-up requires a FreeBSD 15 machine with a DRM-capable GPU and
-drm-kmod loaded. The following items remain for the hardware bring-up phase:
+`drawfs_drm.c` is excluded from the default build — it requires `drm-kmod`
+headers (`<drm/drm_device.h>`) which are not part of the FreeBSD base system.
+To enable, install `drm-kmod`, add `CFLAGS+=-DDRAWFS_DRM_ENABLED` and
+`drawfs_drm.c` to `SRCS` in the Makefile.
+
+Hardware bring-up items for when drm-kmod is available:
 
 - [ ] Flip completion event handler (kthread to clear flip_pending)
 - [ ] Damage rect filtering in SURFACE_PRESENT (partial update optimisation)
 - [ ] Atomic modesetting (drmModeAtomicCommit) for HDR and VRR support
 - [ ] Multi-GPU / multi-connector enumeration
+
+## Operational Status
+
+drawfs Phase 1 is verified operational on bare metal FreeBSD 15.0-RELEASE-p5
+at 1920x1080@60Hz using the swap backend. The module builds cleanly, loads
+via `kldload`, creates `/dev/draw`, and semadrawd successfully negotiates
+the protocol, creates a surface, and maps it for rendering.
 
 ## Phase 3: User Environment
 - Reference compositor

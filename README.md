@@ -48,7 +48,10 @@ architecture.
 UTF/
 ├── build.zig            root build (delegates to subprojects)
 ├── build.zig.zon        package manifest
-├── install.sh           one-shot installer
+├── build.sh             development build wrapper with logging
+├── configure.sh         interactive backend selection (bsddialog)
+├── install.sh           one-shot system installer
+├── start.sh             start all daemons in correct order
 ├── drawfs/              FreeBSD kernel module (/dev/draw)
 ├── semadraw/            semantic rendering daemon and client library
 ├── semaaud/             audio routing daemon
@@ -209,28 +212,53 @@ drawfs_load="YES"
 
 ## Quick Start
 
+**Startup order matters.** `semaaud` must start first — it publishes the
+audio hardware clock to `/var/run/sema/clock`. `semainputd` and `semadrawd`
+both read this region at startup to timestamp events with `ts_audio_samples`.
+
+### Using start.sh (recommended)
+
 ```sh
-# Start all daemons
-sudo semaaud      2>/dev/null &
-sudo semainputd  2>/dev/null &
-semadrawd        2>/dev/null &
-
-# Watch the unified event timeline
-{ sudo semaaud; sudo semainputd; semadrawd; } 2>/dev/null | chrono_dump
-
-# Drift analysis (requires semaaud playing audio)
-{ sudo semaaud; semadrawd; } 2>/dev/null | chrono_dump --drift
-
-# Replay a recorded session
-chrono_dump --replay fabric.log --rate 48000
+sh start.sh                        # start all daemons, drawfs backend
+sh start.sh --timeline             # start all + live chrono_dump view
+sh start.sh --backend software     # use software backend instead
+sh start.sh --stop                 # stop all running UTF daemons
 ```
 
-To enable daemons at boot, add to `/etc/rc.conf`:
+### Manual startup
 
+```sh
+# 1. Audio daemon first — publishes the clock
+sudo semaaud &
+sleep 1
+
+# 2. Input daemon — reads clock for timestamping
+sudo semainputd &
+sleep 1
+
+# 3. Compositor — reads clock for frame scheduler
+sudo semadrawd -b drawfs &
+
+# 4. Optional: unified event timeline
+{ sudo semaaud; sudo semainputd; sudo semadrawd -b drawfs; } 2>/dev/null | chrono_dump
 ```
-semaaud_enable="YES"
-semainput_enable="YES"
-semadraw_enable="YES"
+
+### Boot configuration
+
+`install.sh` configures boot automatically. drawfs loads via `loader.conf`
+and the daemons start via `rc.d` in the correct order (`semaaud` → 
+`semainputd` → `semadrawd`).
+
+To configure manually:
+
+```sh
+# /boot/loader.conf
+echo 'drawfs_load="YES"' >> /boot/loader.conf
+
+# /etc/rc.conf
+sysrc semaaud_enable="YES"
+sysrc semainput_enable="YES"
+sysrc semadraw_enable="YES"
 ```
 
 ---
@@ -246,9 +274,11 @@ not a compositor; policy lives in userspace.
 
 Completed: full surface lifecycle protocol, input event injection
 (`DRAWFSGIOC_INJECT_INPUT`), per-session resource limits, event queue
-backpressure, and a DRM/KMS backend skeleton (`drawfs_drm.c`) with connector
-enumeration, dumb buffer allocation, and page-flip present path gated by
-`hw.drawfs.backend`.
+backpressure. Verified operational on bare metal FreeBSD 15 at 1920x1080.
+
+A DRM/KMS backend skeleton (`drawfs_drm.c`) exists for Phase 2 but requires
+`drm-kmod` headers and is excluded from the default build. The default backend
+uses the swap path which is fully functional.
 
 See `drawfs/docs/` for the protocol specification and architecture.
 

@@ -25,7 +25,9 @@
 #include "drawfs_proto.h"
 #include "drawfs_internal.h"
 #include "drawfs_surface.h"
+#ifdef DRAWFS_DRM_ENABLED
 #include "drawfs_drm.h"
+#endif
 #include "drawfs_frame.h"
 
 MALLOC_DEFINE(M_DRAWFS, "drawfs", "drawfs session and object memory");
@@ -1153,7 +1155,6 @@ drawfs_reply_display_list(struct drawfs_session *s, uint32_t msg_id)
         &payload, sizeof(payload));
 }
 
-static int
 /*
  * hw.drawfs.backend — display backend selector.
  * "swap" uses the existing vm_object path (default).
@@ -1165,6 +1166,7 @@ SYSCTL_STRING(_hw_drawfs, OID_AUTO, backend, CTLFLAG_RW,
     drawfs_backend, sizeof(drawfs_backend),
     "Display backend: \"swap\" (default) or \"drm\"");
 
+static int
 drawfs_modevent(module_t mod, int type, void *data)
 {
     int error;
@@ -1184,17 +1186,21 @@ drawfs_modevent(module_t mod, int type, void *data)
             DRAWFS_NODEPATH, drawfs_dev_uid, drawfs_dev_gid, drawfs_dev_mode);
 
         /* Attempt DRM init; failure is non-fatal — falls back to swap. */
+#ifdef DRAWFS_DRM_ENABLED
         if (strncmp(drawfs_backend, "drm", 3) == 0) {
             if (drawfs_drm_init() != 0) {
                 printf("drawfs: DRM init failed, falling back to swap\n");
                 strlcpy(drawfs_backend, "swap", sizeof(drawfs_backend));
             }
         }
+#endif
         break;
 
     case MOD_UNLOAD:
+#ifdef DRAWFS_DRM_ENABLED
         if (strncmp(drawfs_backend, "drm", 3) == 0)
             drawfs_drm_fini();
+#endif
         if (drawfs_dev != NULL)
             destroy_dev(drawfs_dev);
         uprintf("drawfs unloaded\n");

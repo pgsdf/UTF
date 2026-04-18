@@ -127,10 +127,6 @@ void drawfs_drm_display_close(struct drawfs_drm_display *dd);
  * Returns 0 on success, errno on failure.  A failure here does NOT abort
  * the SURFACE_PRESENT reply; the client still receives the acknowledgement.
  */
-int  drawfs_drm_surface_present(struct drawfs_drm_display *dd,
-    struct drawfs_surface *surf,
-    const struct drawfs_damage_rect *damage, uint32_t damage_count);
-
 /* -------------------------------------------------------------------------
  * Damage rectangle (for partial update optimisation)
  * -------------------------------------------------------------------------
@@ -143,5 +139,15 @@ struct drawfs_damage_rect {
     uint32_t w;
     uint32_t h;
 };
+
+/*
+ *    buffer.
+ *
+ * Returns 0 on success, errno on failure.  A failure here does NOT abort
+ * the SURFACE_PRESENT reply; the client still receives the acknowledgement.
+ */
+int  drawfs_drm_surface_present(struct drawfs_drm_display *dd,
+    struct drawfs_surface *surf,
+    const struct drawfs_damage_rect *damage, uint32_t damage_count);
 
 #endif /* _DEV_DRAWFS_DRAWFS_DRM_H_ */
