@@ -4,7 +4,7 @@ const std = @import("std");
 // UTF root build — delegates to each subproject via shell commands.
 //
 // Steps:
-//   zig build              — build all subprojects
+//   zig build              — build all subprojects (software + drawfs backends)
 //   zig build test         — run all test suites
 //   zig build build-semaaud / build-semainput / build-semadraw / build-chronofs
 //   zig build test-semaaud / test-semainput / test-semadraw / test-chronofs
@@ -13,8 +13,8 @@ const std = @import("std");
 //   zig build run-semadraw — build and run semadrawd
 //   zig build chrono-dump  — build chrono_dump
 //
-// VirtualBox / headless:
-//   zig build -Dgpu=false  — disable GPU backends (X11, Vulkan, Wayland, bsdinput)
+// GPU backends are opt-in (disabled by default):
+//   zig build -Dgpu=true   — enable all GPU backends (bare metal with full libs)
 // ============================================================================
 
 pub fn build(b: *std.Build) void {
@@ -23,21 +23,13 @@ pub fn build(b: *std.Build) void {
     _ = target;
     _ = optimize;
 
-    // GPU flag — passed through to semadraw subproject.
+    // Pass -Dgpu=true to semadraw when GPU libraries are available.
     const want_gpu = b.option(bool, "gpu",
-        "Enable GPU-dependent backends in semadraw (default: true; set false for VirtualBox/headless)")
-        orelse true;
-
-    // Console flag — disables X11 and Wayland backends in semadraw.
-    const want_console = b.option(bool, "console",
-        "Console mode: disable X11 and Wayland backends (default: false)")
+        "Enable GPU backends in semadraw (default: false; set true on bare metal with full libs)")
         orelse false;
 
-    // Build semadraw args based on flags.
-    const semadraw_args: []const []const u8 = if (!want_gpu)
-        &.{ "zig", "build", "-Dgpu=false" }
-    else if (want_console)
-        &.{ "zig", "build", "-Dconsole=true" }
+    const semadraw_args: []const []const u8 = if (want_gpu)
+        &.{ "zig", "build", "-Dgpu=true" }
     else
         &.{ "zig", "build" };
 
@@ -56,7 +48,6 @@ pub fn build(b: *std.Build) void {
     const install_all = b.default_step;
 
     for (subprojects) |sp| {
-        // Choose args: semadraw gets the GPU-aware command, others get plain
         const args = if (std.mem.eql(u8, sp.name, "semadraw"))
             semadraw_args
         else
@@ -73,8 +64,7 @@ pub fn build(b: *std.Build) void {
         build_all.dependOn(&build_cmd.step);
         install_all.dependOn(&build_cmd.step);
 
-        const test_args: []const []const u8 = &.{ "zig", "build", "test" };
-        const test_cmd = b.addSystemCommand(test_args);
+        const test_cmd = b.addSystemCommand(&.{ "zig", "build", "test" });
         test_cmd.setCwd(b.path(sp.dir));
 
         const test_step = b.step(

@@ -107,34 +107,24 @@ zig build chrono-dump              # build chrono_dump diagnostic tool
 
 ### Console / bare metal without a display server
 
-When building on a bare FreeBSD console without X11 or Wayland installed,
-disable those backends to avoid missing library errors:
-
 ```sh
-cd semadraw && zig build -Dconsole=true
+cd semadraw && zig build          # works everywhere — no GPU libs required
 ```
 
-This keeps Vulkan, DRM/KMS, and drawfs backends active while removing the
-X11 and Wayland dependencies. Use this on bare metal GhostBSD/FreeBSD
-console installs.
+GPU backends (X11, Vulkan, Wayland, libinput) are **disabled by default**.
+The software and drawfs backends are always compiled and require no external
+libraries. This is the correct setting for bare metal FreeBSD/GhostBSD
+console installs, VirtualBox, and CI environments.
 
-### VirtualBox / headless environments
-
-When GPU libraries are entirely absent (VirtualBox, CI, headless servers):
-
-```sh
-cd semadraw && zig build -Dgpu=false
-```
-
-Individual backends can also be disabled selectively:
+### Enabling GPU backends (bare metal with full library stack)
 
 ```sh
-zig build -Dvulkan=false -Dwayland=false   # keep X11, disable others
+cd semadraw && zig build -Dgpu=true        # enable all GPU backends
+zig build -Dvulkan=true -Dx11=true         # enable specific backends only
 ```
 
-The `software` and `drawfs` backends are always available and require no
-external libraries. `install.sh` detects the environment automatically:
-VirtualBox gets `-Dgpu=false`, bare console gets `-Dconsole=true`.
+Only use `-Dgpu=true` when libvulkan, libX11, libwayland-client, libinput,
+and libudev are all installed.
 
 ### Individual subproject builds
 

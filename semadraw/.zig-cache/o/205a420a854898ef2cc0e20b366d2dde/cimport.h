@@ -1,9 +1,0 @@
-#include <sys/ioctl.h>
-#include <termios.h>
-#include <sys/consio.h>
-#include <sys/kbio.h>
-#include <fcntl.h>
-#include <dirent.h>
-#include <unistd.h>
-#include <libinput.h>
-#include <libudev.h>

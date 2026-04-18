@@ -23,11 +23,13 @@ pub fn build(b: *std.Build) void {
     //   zig build -Dconsole=true           # console mode: no X11/Wayland
     //   zig build -Dconsole=true           # console mode: no X11/Wayland
     // -----------------------------------------------------------------------
-    const want_gpu     = b.option(bool, "gpu",     "Enable all GPU-dependent backends (default: true)") orelse true;
-    const want_console = b.option(bool, "console", "Console mode: disables X11 and Wayland (default: false)") orelse false;
-    const want_x11     = b.option(bool, "x11",     "Enable X11 backend (requires libX11)")              orelse (want_gpu and !want_console);
+    // Each GPU backend defaults to FALSE — opt in explicitly.
+    // On bare metal with all libraries present: zig build -Dgpu=true
+    // On VirtualBox or console without GPU libs: zig build  (uses software/drawfs only)
+    const want_gpu     = b.option(bool, "gpu",     "Enable all GPU-dependent backends (default: false)") orelse false;
+    const want_x11     = b.option(bool, "x11",     "Enable X11 backend (requires libX11)")              orelse want_gpu;
     const want_vulkan  = b.option(bool, "vulkan",  "Enable Vulkan backends (requires libvulkan)")       orelse want_gpu;
-    const want_wayland = b.option(bool, "wayland", "Enable Wayland backend (requires libwayland-client)") orelse (want_gpu and !want_console);
+    const want_wayland = b.option(bool, "wayland", "Enable Wayland backend (requires libwayland-client)") orelse want_gpu;
     const want_bsdinput = b.option(bool, "bsdinput", "Enable bsdinput/libinput/libudev")                orelse want_gpu;
 
     const semadraw_root = b.path("src/semadraw.zig");
