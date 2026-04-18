@@ -26,11 +26,14 @@ pub fn build(b: *std.Build) void {
     // Each GPU backend defaults to FALSE — opt in explicitly.
     // On bare metal with all libraries present: zig build -Dgpu=true
     // On VirtualBox or console without GPU libs: zig build  (uses software/drawfs only)
-    const want_gpu     = b.option(bool, "gpu",     "Enable all GPU-dependent backends (default: false)") orelse false;
-    const want_x11     = b.option(bool, "x11",     "Enable X11 backend (requires libX11)")              orelse want_gpu;
-    const want_vulkan  = b.option(bool, "vulkan",  "Enable Vulkan backends (requires libvulkan)")       orelse want_gpu;
-    const want_wayland = b.option(bool, "wayland", "Enable Wayland backend (requires libwayland-client)") orelse want_gpu;
-    const want_bsdinput = b.option(bool, "bsdinput", "Enable bsdinput/libinput/libudev")                orelse want_gpu;
+    // -Dgpu=false disables all GPU backends (VirtualBox / headless).
+    // Default: true (bare metal). X11 and Wayland default to false
+    // (not needed on a bare console). Vulkan and bsdinput default to true.
+    const want_gpu      = b.option(bool, "gpu",      "Master switch: false disables all GPU backends (default: true)") orelse true;
+    const want_vulkan   = b.option(bool, "vulkan",   "Enable Vulkan backends (default: true)")                         orelse want_gpu;
+    const want_bsdinput = b.option(bool, "bsdinput", "Enable bsdinput/libinput/libudev (default: true)")               orelse want_gpu;
+    const want_x11      = b.option(bool, "x11",      "Enable X11 backend (default: false)")                            orelse false;
+    const want_wayland  = b.option(bool, "wayland",  "Enable Wayland backend (default: false)")                        orelse false;
 
     const semadraw_root = b.path("src/semadraw.zig");
     const sdcs_root     = b.path("src/sdcs.zig");
@@ -483,7 +486,7 @@ pub fn build(b: *std.Build) void {
 
     // X11 backend module
     const x11_backend_mod = b.createModule(.{
-        .root_source_file = b.path(if (want_x11) "src/backend/x11.zig" else "src/backend/stub.zig"),
+        .root_source_file = b.path(if (want_x11) "src/backend/x11.zig" else "src/backend/stub_x11.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
@@ -500,7 +503,7 @@ pub fn build(b: *std.Build) void {
 
     // Vulkan backend module
     const vulkan_backend_mod = b.createModule(.{
-        .root_source_file = b.path(if (want_vulkan) "src/backend/vulkan.zig" else "src/backend/stub.zig"),
+        .root_source_file = b.path(if (want_vulkan) "src/backend/vulkan.zig" else "src/backend/stub_vulkan.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
@@ -518,7 +521,7 @@ pub fn build(b: *std.Build) void {
 
     // Wayland backend module
     const wayland_backend_mod = b.createModule(.{
-        .root_source_file = b.path(if (want_wayland) "src/backend/wayland.zig" else "src/backend/stub.zig"),
+        .root_source_file = b.path(if (want_wayland) "src/backend/wayland.zig" else "src/backend/stub_wayland.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
@@ -535,7 +538,7 @@ pub fn build(b: *std.Build) void {
 
     // BSD input module (for FreeBSD/OpenBSD/NetBSD console input)
     const bsdinput_mod = b.createModule(.{
-        .root_source_file = b.path(if (want_bsdinput) "src/backend/bsdinput.zig" else "src/backend/stub.zig"),
+        .root_source_file = b.path(if (want_bsdinput) "src/backend/bsdinput.zig" else "src/backend/stub_bsdinput.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
@@ -550,7 +553,7 @@ pub fn build(b: *std.Build) void {
 
     // Vulkan console backend module (VK_KHR_display for direct display output)
     const vulkan_console_backend_mod = b.createModule(.{
-        .root_source_file = b.path(if (want_vulkan) "src/backend/vulkan_console.zig" else "src/backend/stub.zig"),
+        .root_source_file = b.path(if (want_vulkan) "src/backend/vulkan_console.zig" else "src/backend/stub_vulkan_console.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
