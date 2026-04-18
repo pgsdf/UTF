@@ -116,19 +116,36 @@ fi
 
 echo "=== Building UTF (optimize=ReleaseSafe) ==="
 
+# Read backend configuration from .config if present
+CONFIG="$SCRIPT_DIR/.config"
+SEMADRAW_FLAGS=""
+if [ -f "$CONFIG" ]; then
+    echo "Reading configuration from $CONFIG"
+    . "$CONFIG"
+    [ "${SEMADRAW_VULKAN:-false}"   = "true"  ] && SEMADRAW_FLAGS="$SEMADRAW_FLAGS -Dvulkan=true"
+    [ "${SEMADRAW_VULKAN:-false}"   = "false" ] && SEMADRAW_FLAGS="$SEMADRAW_FLAGS -Dvulkan=false"
+    [ "${SEMADRAW_X11:-false}"      = "true"  ] && SEMADRAW_FLAGS="$SEMADRAW_FLAGS -Dx11=true"
+    [ "${SEMADRAW_WAYLAND:-false}"  = "true"  ] && SEMADRAW_FLAGS="$SEMADRAW_FLAGS -Dwayland=true"
+    [ "${SEMADRAW_BSDINPUT:-false}" = "true"  ] && SEMADRAW_FLAGS="$SEMADRAW_FLAGS -Dbsdinput=true"
+    [ "${SEMADRAW_BSDINPUT:-false}" = "false" ] && SEMADRAW_FLAGS="$SEMADRAW_FLAGS -Dbsdinput=false"
+else
+    echo "No .config found — using defaults (run sh configure.sh to configure)"
+fi
+
 build_sub() {
     name="$1"
     dir="$SCRIPT_DIR/$2"
+    shift 2
     echo ""
     echo "--- Building $name ---"
     cd "$dir"
-    zig build -Doptimize=ReleaseSafe
+    zig build -Doptimize=ReleaseSafe "$@"
     cd "$SCRIPT_DIR"
 }
 
 build_sub "semaaud"   "semaaud"
 build_sub "semainput" "semainput"
-build_sub "semadraw"  "semadraw"
+build_sub "semadraw"  "semadraw"  $SEMADRAW_FLAGS
 build_sub "chronofs"  "chronofs"
 
 # ============================================================================

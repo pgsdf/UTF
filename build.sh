@@ -16,6 +16,19 @@ TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 LOG="$SCRIPT_DIR/build-${TIMESTAMP}.log"
 LATEST="$SCRIPT_DIR/build-latest.log"
 
+# Read configuration from .config if present and no args given
+CONFIG="$SCRIPT_DIR/.config"
+BUILD_FLAGS=""
+if [ -f "$CONFIG" ] && [ $# -eq 0 ]; then
+    . "$CONFIG"
+    [ "${SEMADRAW_VULKAN:-false}"  = "true" ] && BUILD_FLAGS="$BUILD_FLAGS -Dvulkan=true"
+    [ "${SEMADRAW_VULKAN:-false}"  = "false" ] && BUILD_FLAGS="$BUILD_FLAGS -Dvulkan=false"
+    [ "${SEMADRAW_X11:-false}"     = "true" ] && BUILD_FLAGS="$BUILD_FLAGS -Dx11=true"
+    [ "${SEMADRAW_WAYLAND:-false}" = "true" ] && BUILD_FLAGS="$BUILD_FLAGS -Dwayland=true"
+    [ "${SEMADRAW_BSDINPUT:-false}" = "true" ] && BUILD_FLAGS="$BUILD_FLAGS -Dbsdinput=true"
+    [ "${SEMADRAW_BSDINPUT:-false}" = "false" ] && BUILD_FLAGS="$BUILD_FLAGS -Dbsdinput=false"
+fi
+
 echo "UTF build — $(date)"
 echo "Log: $LOG"
 echo ""
@@ -27,11 +40,13 @@ echo ""
     echo "Host:      $(uname -n)"
     echo "OS:        $(uname -sr)"
     echo "Zig:       $(zig version 2>/dev/null || echo 'not found')"
+    echo "Config:    ${CONFIG} ($([ -f "$CONFIG" ] && echo found || echo not found))"
+    echo "Flags:     ${BUILD_FLAGS:-none}"
     echo "Args:      $*"
     echo ""
 
     cd "$SCRIPT_DIR"
-    zig build "$@" 2>&1
+    zig build $BUILD_FLAGS "$@" 2>&1
     STATUS=$?
 
     echo ""

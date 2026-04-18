@@ -2,6 +2,10 @@
 build-*.log
 build-latest.log
 
+# Local build configuration
+.config
+
 # Zig build artifacts
 zig-out/
 .zig-cache/
+

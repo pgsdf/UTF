@@ -71,8 +71,14 @@ Requires **Zig 0.15.2** or newer. FreeBSD 15 recommended; GhostBSD supported.
 ```sh
 git clone https://github.com/pgsdf/UTF
 cd UTF
-sh install.sh                     # installs to /usr/local (requires root)
-sh install.sh --prefix ~/utf-out  # custom prefix, no root needed
+sh configure.sh    # select which backends to enable (interactive)
+sh install.sh      # build at ReleaseSafe and install to /usr/local
+```
+
+Or with a custom prefix:
+
+```sh
+sh install.sh --prefix ~/utf-out
 sh install.sh --check             # verify dependencies only
 sh install.sh --uninstall         # remove installed files
 ```
@@ -86,10 +92,10 @@ This builds all subprojects at `ReleaseSafe`, installs the daemons to
 For day-to-day development, use `build.sh` rather than `install.sh`:
 
 ```sh
-sh build.sh                  # build everything, log output to build-YYYYMMDD-HHMMSS.log
-sh build.sh -Dx11=true       # pass flags to zig build
-sh build.sh test             # run all test suites
-cat build-latest.log         # view the most recent build log
+sh configure.sh          # select backends (writes .config)
+sh build.sh              # build using .config, log to build-YYYYMMDD-HHMMSS.log
+sh build.sh --build      # configure and build in one step
+cat build-latest.log     # view the most recent build log
 ```
 
 `build.sh` builds each subproject in-place and tees all output to a
@@ -99,6 +105,29 @@ you need to capture build output for troubleshooting.
 
 `install.sh` is for deploying UTF system-wide. `build.sh` is for building
 and iterating during development. They are not interchangeable.
+
+### Backend selection
+
+`configure.sh` presents an interactive checklist (using `bsddialog`, which
+is included in FreeBSD 15 base) to select which semadraw backends to enable.
+The selection is saved to `.config` and read automatically by both
+`build.sh` and `install.sh`.
+
+```sh
+sh configure.sh          # interactive selection
+sh configure.sh --show   # show current configuration
+sh configure.sh --build  # select and build immediately
+```
+
+| Backend | Default | Requires |
+|---------|---------|---------|
+| Vulkan | off | `pkg install vulkan-headers vulkan-loader` |
+| X11 | off | `pkg install libX11` |
+| Wayland | off | `pkg install wayland` |
+| bsdinput | off | `pkg install libinput libudev-devd` |
+
+The software and drawfs backends are always included and require no
+additional packages.
 
 ### Remove
 
