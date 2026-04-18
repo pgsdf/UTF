@@ -99,6 +99,9 @@ pub const Encoder = struct {
     /// Suitable for inline buffer transmission to the daemon.
     /// Caller owns the returned memory.
     pub fn finishBytesWithHeader(self: *Encoder) ![]u8 {
+        // Append END command if not already present
+        try appendCmdAlloc(&self.cmds, self.allocator, sdcs.Op.END, &[_]u8{});
+
         const payload_len = self.cmds.items.len;
         const payload_pad = sdcs.pad8Len(payload_len);
         const padded_payload = payload_len + payload_pad;
