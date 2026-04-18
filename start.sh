@@ -87,17 +87,17 @@ echo ""
 
 # 1. semaaud — must be first (publishes clock)
 echo "Starting semaaud..."
-sudo "$SEMAAUD" &
+sudo "$SEMAAUD" >>/var/log/semaaud.log 2>&1 &
 SEMAAUD_PID=$!
 sleep 1
-echo "  pid $SEMAAUD_PID"
+echo "  pid $SEMAAUD_PID (log: /var/log/semaaud.log)"
 
 # 2. semainputd — requires semaaud clock
 echo "Starting semainputd..."
-sudo "$SEMAINPUT" &
+sudo "$SEMAINPUT" >>/var/log/semainputd.log 2>&1 &
 SEMAINPUT_PID=$!
 sleep 1
-echo "  pid $SEMAINPUT_PID"
+echo "  pid $SEMAINPUT_PID (log: /var/log/semainputd.log)"
 
 # 3. semadrawd — requires semaaud clock
 echo "Starting semadrawd (backend: $BACKEND)..."
@@ -106,9 +106,9 @@ if [ "$TIMELINE" -eq 1 ] && [ -n "$CHRONO_DUMP" ]; then
     echo "=== Live timeline (ctrl-c to stop) ==="
     { sudo "$SEMADRAW" -b "$BACKEND" 2>&1; } | "$CHRONO_DUMP"
 else
-    sudo "$SEMADRAW" -b "$BACKEND" &
+    sudo "$SEMADRAW" -b "$BACKEND" >>/var/log/semadrawd.log 2>&1 &
     SEMADRAW_PID=$!
-    echo "  pid $SEMADRAW_PID"
+    echo "  pid $SEMADRAW_PID (log: /var/log/semadrawd.log)"
     echo ""
     echo "=== UTF running ==="
     echo "  semaaud:    pid $SEMAAUD_PID"
