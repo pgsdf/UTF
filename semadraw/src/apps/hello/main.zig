@@ -14,6 +14,7 @@ const std = @import("std");
 const semadraw = @import("semadraw");
 
 const App = semadraw.App;
+const AppEvent = semadraw.AppEvent;
 const Encoder = semadraw.Encoder;
 
 const WIDTH: f32 = 800;
@@ -86,7 +87,7 @@ fn onDraw(ctx: *anyopaque, enc: *Encoder, frame: u64) !void {
     );
 }
 
-fn onEvent(ctx: *anyopaque, event: App.Event) !bool {
+fn onEvent(ctx: *anyopaque, event: AppEvent) !bool {
     _ = ctx;
     return switch (event) {
         .quit => false,
