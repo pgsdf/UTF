@@ -106,6 +106,21 @@ if [ "$UNINSTALL" -eq 1 ]; then
         fi
     done
 
+    echo ""
+    echo "=== Disabling daemons in /etc/rc.conf ==="
+    sysrc -x semaaud_enable 2>/dev/null  && echo "  removed  semaaud_enable"  || echo "  skip     semaaud_enable (not set)"
+    sysrc -x semainput_enable 2>/dev/null && echo "  removed  semainput_enable" || echo "  skip     semainput_enable (not set)"
+    sysrc -x semadraw_enable 2>/dev/null  && echo "  removed  semadraw_enable"  || echo "  skip     semadraw_enable (not set)"
+
+    echo ""
+    echo "=== Removing drawfs from /boot/loader.conf ==="
+    if grep -q "drawfs_load" /boot/loader.conf 2>/dev/null; then
+        sed -i '' '/drawfs_load/d' /boot/loader.conf
+        echo "  removed  drawfs_load from /boot/loader.conf"
+    else
+        echo "  skip     drawfs_load (not found)"
+    fi
+
     echo "=== Done ==="
     exit 0
 fi
@@ -246,10 +261,24 @@ RCEOF
     echo "  installed  $RCDDIR/semadraw"
 
     echo ""
-    echo "To enable daemons at boot, add to /etc/rc.conf:"
-    echo "  semaaud_enable=\"YES\""
-    echo "  semainput_enable=\"YES\""
-    echo "  semadraw_enable=\"YES\""
+    echo "=== Enabling daemons in /etc/rc.conf ==="
+    sysrc semaaud_enable="YES"
+    sysrc semainput_enable="YES"
+    sysrc semadraw_enable="YES"
+fi
+
+# ============================================================================
+# loader.conf — load drawfs at boot
+# ============================================================================
+
+LOADER_CONF="/boot/loader.conf"
+echo ""
+echo "=== Configuring /boot/loader.conf ==="
+if grep -q "drawfs_load" "$LOADER_CONF" 2>/dev/null; then
+    echo "  already set  drawfs_load=\"YES\""
+else
+    echo "drawfs_load=\"YES\"" >> "$LOADER_CONF"
+    echo "  added  drawfs_load=\"YES\" to $LOADER_CONF"
 fi
 
 # ============================================================================
@@ -267,17 +296,13 @@ for bin in $BINARIES; do
     fi
 done
 echo ""
-echo "To load drawfs now:"
-echo "  kldload drawfs"
+echo "drawfs will load automatically at next boot (loader.conf)."
+echo "Daemons will start automatically at next boot (rc.conf)."
 echo ""
-echo "To load drawfs at boot, add to /boot/loader.conf:"
-echo "  drawfs_load=\"YES\""
-echo ""
-echo "Quick start:"
+echo "To start now without rebooting:"
 echo "  kldload drawfs"
-echo "  sudo $PREFIX/bin/semaaud     &   # audio daemon"
-echo "  sudo $PREFIX/bin/semainputd &   # input daemon"
-echo "  $PREFIX/bin/semadrawd       &   # compositor"
-echo "  $PREFIX/bin/chrono_dump --drift     # live timeline"
+echo "  service semaaud start"
+echo "  service semainput start"
+echo "  service semadraw start"
 echo ""
 echo "To remove:  sh install.sh --uninstall --prefix $PREFIX"
