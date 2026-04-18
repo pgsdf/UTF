@@ -1135,9 +1135,9 @@ pub const WaylandBackend = struct {
         const ready = posix.poll(@as(*[1]posix.pollfd, &pfd), 100) catch 0; // 100ms timeout
         if (ready > 0) {
             while (total_read < buffer.len) {
-                const n = c.read(pipe_fds[0], buffer[total_read..].ptr, buffer.len - total_read);
-                if (n <= 0) break;
-                total_read += @intCast(n);
+                const n = posix.read(pipe_fds[0], buffer[total_read..]) catch break;
+                if (n == 0) break;
+                total_read += n;
             }
         }
 
