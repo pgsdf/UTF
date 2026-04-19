@@ -1,9 +1,35 @@
 # UTF Backlog
 
-This is the project-level backlog. Subsystem-level backlogs
-(`drawfs/drawfs-BACKLOG.md`, `semadraw/semadraw-BACKLOG.md`, etc.)
-track work inside a single component. This file tracks work that
-crosses components or changes project-wide invariants.
+This is the **single, consolidated backlog** for the Unified Temporal
+Fabric. It replaces the per-subsystem backlogs that previously lived at
+`drawfs/drawfs-BACKLOG.md`, `semadraw/semadraw-BACKLOG.md`,
+`semaaud/semaaud-BACKLOG.md`, `semainput/semainput-BACKLOG.md`,
+`chronofs/chronofs-BACKLOG.md`, and `shared/shared-BACKLOG.md`.
+
+Those files remain as short pointers to this one, so existing links and
+references continue to resolve, but they are no longer the source of
+truth for tasks. This file is.
+
+---
+
+## How to read this
+
+Work is grouped by substrate, with each item numbered in its historical
+ID (e.g. `DF-1`, `C-3`, `A-2`) so external references don't break.
+Status is tracked per item:
+
+- `[x] Done` — implemented, landed on `master`, acceptance criteria met.
+- `[ ] Open` — not yet started.
+- `[ ] Deferred` — consciously postponed, with a note explaining why.
+
+Priorities are **P0** (project-level invariant or blocker), **P1**
+(near-term, directly unblocks downstream work), **P2** (valuable but
+not on the critical path), or unset for items that don't need ranking.
+
+All seven implementation waves (the original chronofs-anchored
+dependency chain) are complete. The current theme is: **make DRM
+strictly optional** — preserve the DRM-less default path as UTF's
+unbreakable invariant while allowing opt-in DRM for users who want it.
 
 ---
 
@@ -11,164 +37,396 @@ crosses components or changes project-wide invariants.
 
 The goal is that the DRM-less swap path remains the unbreakable default
 and that DRM/KMS support is a strictly optional add-on. A user running
-`sh configure.sh` and accepting defaults must produce a `drawfs.ko` with
-no DRM references, no `drm-kmod` build dependency, and no `drm-kmod`
-load dependency.
+`sh configure.sh` and accepting defaults must produce a `drawfs.ko`
+with no DRM references, no `drm-kmod` build dependency, and no
+`drm-kmod` load dependency.
 
 ### Non-goals
 
 - Making DRM the default. It will never be the default.
 - Detecting drm-kmod automatically. Autodetection leaks the opinion
   that "DRM is better" into the build; it is not.
-- Removing `drawfs_drm.c` or the kernel-side `#ifdef DRAWFS_DRM_ENABLED`
-  gates. They are correct already.
+- Removing `drawfs_drm.c` or the kernel-side `#ifdef
+  DRAWFS_DRM_ENABLED` gates. They are correct already.
 - Surfacing DRM backend selection through `semadrawd` CLI. `semadrawd
   -b drawfs` is agnostic to the kernel backend.
 
 ---
 
-## Wave 1 — Build-system gating  [DONE]
+## Project-level invariants
 
-**Priority**: P0. Everything else depends on this.
-
-- [x] **B1.1** `configure.sh` adds `drawfs_drm` checklist item, default off,
-      writes `DRAWFS_DRM=true|false` to `.config`.
-- [x] **B1.2** `build.sh` reads `DRAWFS_DRM` from `.config`, exports it.
-- [x] **B1.3** `install.sh` reads `DRAWFS_DRM` and propagates to
-      `drawfs/build.sh`.
-- [x] **B1.4** `drawfs/build.sh` honors `DRAWFS_DRM` (env or `.config`),
-      translates to `DRAWFS_DRM_ENABLED=1` on the `make(1)` command line.
-- [x] **B1.5** Both `sys/dev/drawfs/Makefile` and
-      `sys/modules/drawfs/Makefile` guard `drawfs_drm.c` behind
-      `.if defined(DRAWFS_DRM_ENABLED)`.
-
-### Acceptance criteria
-
-- `sh configure.sh` (accept defaults) → `sh install.sh` → `kldstat -v`
-  shows `drawfs.ko` with no `drm_*` symbols and no `linux_common` or
-  `drm` dependency in `kldstat -v`.
-- `strings /boot/modules/drawfs.ko | grep -i drm` returns nothing.
-- Default build works on a FreeBSD 15 or GhostBSD host with no ports
-  installed beyond the base `zig` package.
-- With `DRAWFS_DRM=true`: `drawfs.ko` contains `drawfs_drm_init` and
-  `drawfs_drm_fini` symbols; `sysctl hw.drawfs.backend` defaults to
-  `"swap"`; setting it to `"drm"` and reloading activates the DRM path
-  if drm-kmod is loaded, falls back to swap and logs a warning
-  otherwise.
-
----
-
-## Wave 2 — Runtime control & safety  [ALREADY IMPLEMENTED]
-
-**Priority**: P0. Already complete in `drawfs.c` before this work began —
-no change required.
-
-- [x] **B2.1** `hw.drawfs.backend` sysctl (default `"swap"`) — already at
-      `drawfs.c:1164`.
-- [x] **B2.2** `drawfs_modevent(MOD_LOAD)` attempts DRM init only when
-      backend is `"drm"`, falls back to swap on failure — already at
-      `drawfs.c:1189`.
-
-### Suggested follow-ups (deferred, low priority)
-
-- [ ] **B2.3** Write a small `tests/step_XX_backend_sysctl.py` that
-      confirms the sysctl exists, defaults to `"swap"`, and is
-      read/write. Low effort, increases confidence that a future
-      refactor doesn't regress the invariant.
-
----
-
-## Wave 3 — Protocol: damage / partial updates  [DEFERRED]
-
-**Priority**: P2. Beneficial for both backends but scoped out of the
-current changeset because it is a wire-format change.
-
-### Problem
-
-`DRAWFS_REQ_SURFACE_PRESENT` currently implies a full-surface present.
-Both backends (swap mmap, DRM dumb-buffer flip) could benefit from
-explicit partial updates: the swap backend avoids unnecessary event
-coalescing for small dirty regions, and the DRM backend can use
-`drmModeDirtyFB` or partial page-flip on hardware that supports it.
-
-### Plan
-
-- [ ] **B3.1** Design. Add `DRAWFS_REQ_SURFACE_PRESENT_REGION` opcode
-      to `shared/protocol_constants.json` and specify the payload
-      (surface_id + list of rects, capped at N=16 per request).
-- [ ] **B3.2** Regenerate C and Zig headers via `gen_constants.py`.
-- [ ] **B3.3** Implement in the **swap path first**. Rect list is
-      accepted, validated, coalesced, and emitted back as a
-      `SURFACE_PRESENTED_REGION` event. Swap semantics are unchanged —
-      this is pure metadata.
-- [ ] **B3.4** Implement in the DRM path. Use `drmModeDirtyFB` if the
-      kernel DRM driver supports it, fall back to full present
-      otherwise.
-- [ ] **B3.5** Extend `semadraw`'s drawfs backend to emit region
-      presents when the compositor's damage tracker produces a bounded
-      rect set.
-
-### Non-goals for this wave
-
-- Sub-rectangle damage at finer granularity than the compositor already
-  tracks. The compositor's existing damage tracking is the upstream
-  source of truth.
-- Triple-buffering or front/back buffer management. Present semantics
-  remain immediate.
-
-### Acceptance criteria
-
-- A full-surface present (the current behavior) remains the exact same
-  wire bytes and event stream — zero regression for clients that don't
-  use the new opcode.
-- A region present with N=1 full-surface rect produces an identical
-  pixel result to a full present.
-
----
-
-## Wave 4 — OS detection (FreeBSD vs GhostBSD)  [DONE]
-
-**Priority**: P1. Low-risk infrastructure.
-
-- [x] **B4.1** `scripts/detect-os.sh` sets `UTF_OS` and
-      `UTF_OS_VERSION` by probing for `ghostbsd-version(1)`.
-- [x] **B4.2** `configure.sh` records `UTF_OS` in `.config` and
-      tailors the drm-kmod advisory on DRM enable.
-- [x] **B4.3** `build.sh` re-detects at build time and warns if
-      `.config` was copied from a different OS family.
-- [x] **B4.4** `install.sh` and `drawfs/build.sh` inherit `UTF_OS`
-      from the parent or re-detect.
-
-### Explicit non-goals
-
-- Branching build behavior on `UTF_OS`. The two systems share a kernel
-  family and produce identical drawfs.ko. The detection is for
-  messaging and future-proofing only.
-- Adding OS-specific header paths. If drm-kmod installs headers to
-  different paths on the two OSes, fix it then, not speculatively.
-
----
-
-## Wave 5 — Documentation  [DONE]
-
-- [x] **B5.1** `README.md` gains a "Graphics Backends" section that
-      explains the swap-default / DRM-optional story explicitly.
-- [x] **B5.2** This file (`BACKLOG.md`).
-- [ ] **B5.3** Add a short note to `drawfs/docs/ROADMAP.md` pointing at
-      this backlog for DRM-related work (deferred, cosmetic).
-
----
-
-## Invariants to preserve across all future changes
+These hold across all changes. Any future work that would break one
+needs its own backlog item first, documenting why the invariant is
+changing.
 
 1. `sh configure.sh` with all defaults → swap-only `drawfs.ko`.
 2. `drm-kmod` is never a build-time or load-time hard dependency.
 3. `hw.drawfs.backend` defaults to `"swap"` at module load.
 4. DRM init failure at module load falls back to swap — never panics,
    never prevents load.
-5. Removing or renaming `DRAWFS_DRM_ENABLED` requires coordinating
-   with every `#ifdef` in `drawfs.c`, `drawfs_drm.c`, and both
-   Makefiles. Don't do it casually.
+5. Renaming `DRAWFS_DRM_ENABLED` requires coordinating with every
+   `#ifdef` in `drawfs.c`, `drawfs_drm.c`, and both Makefiles.
 6. `UTF_OS` detection is informational only. Any future use that
    branches build behavior on it must be justified by a concrete,
-   observable divergence between the two OSes, not a speculation.
+   observable divergence between FreeBSD and GhostBSD, not a
+   speculation.
+
+---
+
+## Shared infrastructure (`shared/`)
+
+Cross-cutting code used by all four daemons: protocol constants, the
+event schema, session identity, clock publication.
+
+### `[x]` S-1 — Protocol Constants Code Generator  *(Done, Small)*
+
+Single source of truth for protocol constants across drawfs, semadraw
+IPC, and SDCS. `shared/tools/gen_constants.py` reads
+`protocol_constants.json` and emits C headers and Zig constant
+declarations with a validation mode that diffs against the
+hand-written sources. Two of the four critical PROTOCOL_MISMATCH
+findings were drift that this generator now prevents structurally.
+
+### `[x]` S-2 — Unified Event Log Schema  *(Done, Small; blocks: A-3, I-1, D-1)*
+
+All four daemons emit JSON-lines to stdout with a common envelope:
+`type`, `subsystem`, `session`, `seq`, `ts_wall_ns`,
+`ts_audio_samples`. Documented in `shared/EVENT_SCHEMA.md`.
+Filesystem state surfaces (e.g. semaaud's `/tmp/draw/audio/…`) are a
+separate concern — retained for introspection, not for chronofs.
+
+### `[x]` S-3 — Session Identity  *(Done, Small; blocks: S-2, all event-log convergence)*
+
+`u64` token rendered as 16 hex chars, written to
+`/var/run/sema/session` at fabric startup. Whichever daemon starts
+first calls `readOrCreate`; the rest read the existing token. Survives
+individual daemon restarts, dies with the tmpfs on reboot.
+`shared/src/session.zig`.
+
+### `[x]` S-4 — Clock Publication Interface  *(Done, Small–Medium; depends: A-2; blocks: I-3, C-1)*
+
+20-byte mmap region at `/var/run/sema/clock` with magic `SMCK`, version,
+`clock_valid`, `sample_rate`, `samples_written`. Seq-cst atomic stores
+by semaaud; atomic loads by every other daemon — no IPC round-trip.
+`shared/src/clock.zig` provides `ClockWriter`, `ClockReader`, and
+`toNanoseconds(samples, sample_rate)`.
+
+---
+
+## `drawfs` — kernel spatial substrate
+
+`/dev/draw` character device, surface lifecycle, mmap-backed pixel
+buffers, framed binary protocol, input event injection.
+
+### `[x]` DF-1 — Verify Integration Against Repaired semadraw Backend  *(Done, Small)*
+
+Integration smoke test covering `RESET`, `SET_BLEND`, `SET_ANTIALIAS`,
+`FILL_RECT`, `STROKE_RECT`, `STROKE_LINE`, `END` against a loaded
+`drawfs.ko`. Surface pixel output matches software renderer golden
+images. Python integration test lives in `drawfs/tests/`.
+
+### `[x]` DF-2 — Input Event Delivery  *(Done, Medium; depends: I-1)*
+
+Kernel-side input injection via `DRAWFSGIOC_INJECT_INPUT` ioctl. Event
+types `EVT_KEY`, `EVT_POINTER`, `EVT_SCROLL`, `EVT_TOUCH` in the
+`0x9xxx` event range. Delivery is non-blocking on the rendering path
+and observes the existing surface-event backpressure rules.
+
+### `[x]` DF-3 — DRM/KMS Display Bring-up (Phase 2)  *(Done — skeleton, Large; depends: DF-1)*
+
+`drawfs_drm.c` skeleton present: connector/CRTC enumeration, mode set
+on `DISPLAY_OPEN`, dumb buffer allocation, page flip on
+`SURFACE_PRESENT`. Gated behind `hw.drawfs.backend` sysctl. **The
+skeleton compiles only when `DRAWFS_DRM_ENABLED` is passed to
+make(1)**, which is the build-system change tracked under the
+DRM-optional theme below. Actual hardware bring-up is deferred until
+someone has matching hardware to exercise it.
+
+### `[ ]` DF-4 — Verify on FreeBSD 15 debug kernel (WITNESS)  *(Open, Small)*
+
+Rerun the drawfs test suite against a FreeBSD 15 kernel built with
+`WITNESS` enabled. This stresses the locking-order discipline in
+`drawfs.c` and `drawfs_surface.c` (session mutex, surface mutex,
+vm_object lock) in a way that the release kernel does not. Precondition:
+access to a host or VM running a debug-built FreeBSD 15 kernel —
+currently deferred because no such host is available. Migrated from
+`drawfs/docs/ROADMAP.md` as part of B5.3.
+
+---
+
+## `semadraw` — semantic rendering substrate
+
+`libsemadraw` for clients, `semadrawd` compositor, SDCS command stream
+format, backends (software, drawfs, Vulkan, DRM/KMS, X11, Wayland,
+vulkan_console, headless).
+
+### `[x]` D-1 — Event Emission in Unified Schema  *(Done, Small–Medium; depends: S-2, S-3)*
+
+`surface_created`, `surface_destroyed`, `frame_complete`,
+`client_connected`, `client_disconnected` events emitted on stdout in
+the unified schema. `frame_complete` includes `ts_audio_samples` taken
+from the frame scheduler's target sample position, not the wall clock.
+
+### `[x]` D-2 — drawfs Backend Render State  *(Done, Small; depends: DF-1)*
+
+`RenderState` in `src/backend/drawfs.zig` tracks `blend_mode`,
+`antialias`, `stroke_join`, `stroke_cap`. Golden-image parity with the
+software renderer for state-change mid-sequence scenes. Render state
+does not leak between client sessions.
+
+### `[x]` D-3 — Frame Scheduler Clock Abstraction  *(Done, Small; blocks: C-4)*
+
+`ClockSource` interface in `src/compositor/frame_scheduler.zig`;
+`WallClockSource` is the default, `MockClockSource` supports
+deterministic testing. No `std.time` calls remain directly in the
+scheduler. This was the preparatory refactor for audio-driven
+scheduling.
+
+### `[x]` D-4 — `DRAW_GLYPH_RUN` in drawfs Backend  *(Done, Medium; depends: D-2)*
+
+Opcode `0x0030` implemented in the drawfs backend with correct CJK
+double-width handling. `semadraw-term` now runs on the drawfs backend.
+Output matches software-renderer golden images within a 1-pixel
+tolerance.
+
+### `[x]` D-5 — Remote Transport Hardening  *(Done, Small)*
+
+TCP loopback round-trip test; abrupt-disconnect test does not crash
+`semadrawd` or leak surfaces; read timeout prevents stalled remote
+clients from holding surfaces indefinitely. `docs/API_OVERVIEW.md`
+documents the TCP transport alongside the Unix socket.
+
+---
+
+## `semaaud` — audio daemon
+
+OSS output, two named targets (`default`, `alt`), policy engine with
+allow/deny/override/group semantics, preemption, fallback routing.
+
+### `[x]` A-1 — Phase 12 Durable Policy Validation  *(Done, Small)*
+
+`policy-valid` and `policy-errors` surface files; `#` comment support;
+`version=1` recognised and validated; unknown-directive and unsupported-
+version errors surface correctly. Spec in
+`docs/SemaAud-Phase12-DurablePolicy-Spec.md`.
+
+### `[x]` A-2 — Audio Sample Position Counter  *(Done, Small; blocks: S-4, C-1)*
+
+`samples_written: std.atomic.Value(u64)` in `Shared`, advanced by
+`n / bytes_per_sample_frame` after every successful
+`posix.write(audio_fd)`. Monotonic across streams (does not reset on
+preempt/override). Exposed in `RuntimeState.renderJson` alongside
+`sample_rate`.
+
+### `[x]` A-3 — Unified Event Log Schema Adoption  *(Done, Medium; depends: S-2, S-3)*
+
+`emitEvent` in `state.zig` writes JSON-lines to stdout in the unified
+schema. Every `stream_begin`/`stream_end`/`stream_reject`/
+`stream_preempt`/… event appears on stdout in addition to the
+filesystem surfaces. `ts_audio_samples` is non-null during an active
+stream and null otherwise.
+
+### `[x]` A-4 — Sample Rate Negotiation  *(Done, Small; depends: A-2)*
+
+`parseHeader` no longer hardcodes 48000Hz/stereo/s16le. `SNDCTL_DSP_SPEED`
+and `SNDCTL_DSP_CHANNELS` negotiate with the OSS device; `s16le` and
+`s32le` are both accepted. Clients are rejected with a clear error on
+unsupported rates. `samples_written` remains accurate because the
+division uses the negotiated `channels` and `format`.
+
+---
+
+## `semainput` — input daemon
+
+evdev device discovery, classification and fingerprinting, logical
+identity aggregation, pointer smoothing, gesture recognition.
+
+### `[x]` I-1 — Unified Event Log Schema Adoption  *(Done, Small; depends: S-2, S-3)*
+
+`emitSemanticEvent` and `emitGestureEvent` include `subsystem`,
+`session`, `seq`, `ts_wall_ns`, and (initially null) `ts_audio_samples`.
+`seq` increments monotonically across all event types. `jq` parses the
+stream without errors.
+
+### `[x]` I-2 — Keyboard Event Passthrough  *(Done, Small; depends: I-1)*
+
+Keyboard discovery verified; `KEY_*` evdev events translate to
+`key_down`/`key_up`; key-repeat suppression (evdev `value=2` ignored);
+`identity_snapshot` includes `has_keyboard` per logical device.
+
+### `[x]` I-3 — Audio Clock Timestamping  *(Done, Small; depends: S-4, I-1)*
+
+`ClockReader` opened at startup against `/var/run/sema/clock`;
+`ts_audio_samples` populated at event emission time when
+`clock_valid == 1`, null otherwise. Clock-reader failure is non-fatal.
+
+### `[x]` I-4 — Gesture Tuning: Pinch Scale Factor  *(Done, Small)*
+
+`scale_factor = cur_distance / prev_distance` added to `pinch_begin`
+and `pinch` events as f32. The `delta` formula recalibrated to
+`sqrt(cur²) - sqrt(prev²)`. Backward-compatible `delta` and
+`scale_hint` retained.
+
+---
+
+## `chronofs` — temporal coordination layer
+
+Clock, event streams, resolver, audio-driven frame scheduler, diagnostic
+tool. All items below are complete; chronofs is the working realisation
+of the `docs/Thoughts.md` design.
+
+### `[x]` C-1 — Clock Module  *(Done, Small; depends: S-4)*
+
+`chronofs/src/clock.zig` wraps `shared.clock.ClockReader` with `now()`,
+`isValid()`, `toNs()`, `sampleRate()`. `MockClock` for deterministic
+tests.
+
+### `[x]` C-2 — Event Stream Buffers  *(Done, Medium; depends: C-1)*
+
+`EventStream(T, capacity)` generic ring buffer with thread-safe
+`append`, `query(t_start, t_end)`, `at(t)`, `latest()`. `DomainStreams`
+owns one per domain (audio/visual/input). Event payload types defined:
+`AudioEvent`, `VisualEvent`, `InputEvent`.
+
+### `[x]` C-3 — Resolver  *(Done, Medium; depends: C-2)*
+
+`Resolver` with `resolveVisual`/`resolveInput`/`resolveAudio`/
+`currentTime`. JSON-lines ingest helpers per subsystem
+(`ingestSemaaudLine`, `ingestSemainputLine`, `ingestSemadrawLine`).
+Ingestion driver spawns a thread per subsystem reading a pipe.
+
+### `[x]` C-4 — Audio-Driven Frame Scheduler Integration  *(Done, Medium; depends: C-3, D-3)*
+
+`ChronofsClockSource` adapts `chronofs.Clock` to the `ClockSource`
+interface. `nextFrameTarget(clock, refresh_rate_hz)` computes the next
+sample-aligned frame boundary (800 samples at 48kHz/60Hz). Frames are
+rendered at the target position, not the current one. `ts_audio_samples`
+in `frame_complete` events derives from the same counter — drift-free
+AV synchronisation by construction.
+
+### `[x]` C-5 — `chrono_dump` Diagnostic Tool  *(Done, Small; depends: C-3)*
+
+Live timeline view; `--drift` computes frame-vs-audio-position deltas;
+`--replay <file>` reads a recorded log and prints resolved state at
+1000-sample intervals. Drift during steady-state playback < 1 frame
+period.
+
+---
+
+## DRM-optional build system
+
+Makes the DRM/KMS path a strictly opt-in feature while preserving the
+swap-backed default as the unbreakable invariant.
+
+### `[x]` B1.1 — `configure.sh` DRM checklist item  *(Done)*
+
+Adds `drawfs_drm` to the bsddialog checklist (default off), writes
+`DRAWFS_DRM=true|false` to `.config`.
+
+### `[x]` B1.2 — `build.sh` reads DRAWFS_DRM  *(Done)*
+
+Exports `DRAWFS_DRM` from `.config` to the environment so
+`drawfs/build.sh` and any nested make(1) invocations see it.
+
+### `[x]` B1.3 — `install.sh` propagates DRAWFS_DRM  *(Done)*
+
+Reads `.config` before the kernel build so `drawfs/build.sh` inherits
+the flag via environment.
+
+### `[x]` B1.4 — `drawfs/build.sh` honors DRAWFS_DRM  *(Done)*
+
+Translates `DRAWFS_DRM=true` into `DRAWFS_DRM_ENABLED=1` on the
+`make(1)` command line for both the dev and modules kernel builds.
+
+### `[x]` B1.5 — Kernel Makefile conditional  *(Done)*
+
+Both `sys/dev/drawfs/Makefile` and `sys/modules/drawfs/Makefile` guard
+`drawfs_drm.c` and `-DDRAWFS_DRM_ENABLED` behind
+`.if defined(DRAWFS_DRM_ENABLED)`. Default builds produce a
+`drawfs.ko` with zero DRM references.
+
+### `[x]` B2.1 — `hw.drawfs.backend` sysctl  *(Already implemented; drawfs.c:1164)*
+
+Defaults to `"swap"`, 16-byte string, `CTLFLAG_RW`.
+
+### `[x]` B2.2 — DRM init fallback-to-swap  *(Already implemented; drawfs.c:1189)*
+
+`MOD_LOAD` calls `drawfs_drm_init()` only when backend is `"drm"`.
+Failure logs a warning and resets the sysctl to `"swap"`. Broken drm
+drivers cannot prevent `drawfs.ko` from loading.
+
+### `[x]` B2.3 — Regression test for `hw.drawfs.backend`
+
+`drawfs/tests/test_backend_sysctl.py`. Asserts the sysctl exists,
+defaults to `"swap"`, is read/write, and round-trips both `"swap"` and
+`"drm"` as plain strings. Protects invariants 2.2, 3, and 4 above.
+
+### `[x]` B4.1–B4.4 — OS detection (FreeBSD vs GhostBSD)  *(Done)*
+
+`scripts/detect-os.sh` exports `UTF_OS` and `UTF_OS_VERSION` by
+probing for `ghostbsd-version(1)`. `configure.sh` records them in
+`.config` and tailors the drm-kmod advisory. `build.sh` re-detects at
+build time and warns on a host mismatch. `install.sh` and
+`drawfs/build.sh` inherit or re-detect.
+
+### `[x]` B5.1 — README "Graphics Backends" section  *(Done)*
+### `[x]` B5.2 — Consolidated root `BACKLOG.md`  *(Done — this file)*
+
+### `[x]` B5.3 — Cross-link from `drawfs/docs/ROADMAP.md`  *(Done)*
+
+`drawfs/docs/ROADMAP.md` now carries a blockquote at the top pointing
+at this file as the source of truth for task tracking, and its
+bottom-of-file `## Backlog` section has been removed. The surviving
+"Remaining" item (WITNESS debug-kernel verification) was migrated to
+DF-4 above.
+
+---
+
+## Deferred
+
+### `[ ]` Damage / partial-update protocol (was B3.1–B3.5)  *(Deferred, P2)*
+
+Beneficial for both backends but scoped out of current work because
+it is a wire-format change that requires its own design pass. Plan:
+
+1. Design `DRAWFS_REQ_SURFACE_PRESENT_REGION` opcode in
+   `shared/protocol_constants.json`: surface_id + list of rects,
+   capped at N=16 per request.
+2. Regenerate C and Zig headers via `gen_constants.py` (S-1).
+3. Implement in the **swap path first**: rect list accepted,
+   validated, coalesced, emitted back as `SURFACE_PRESENTED_REGION`.
+   Swap semantics unchanged — this is pure metadata.
+4. Implement in the DRM path: `drmModeDirtyFB` when supported, full
+   present otherwise.
+5. Extend `semadraw`'s drawfs backend to emit region presents when
+   the compositor's damage tracker produces a bounded rect set.
+
+**Non-goals for this work:**
+
+- Sub-rectangle damage finer than the compositor's existing tracking.
+- Triple-buffering or front/back buffer management. Present semantics
+  remain immediate.
+
+**Acceptance criteria:**
+
+- Full-surface present (current behaviour) remains identical on the
+  wire — zero regression for clients that don't use the new opcode.
+- A region present with N=1 full-surface rect produces pixel-identical
+  output to a full present.
+
+---
+
+## Implementation waves (historical)
+
+The dependency chain that got chronofs to working order. Retained here
+as an audit trail; every item is now closed above.
+
+| Wave | Items | Dependency |
+|------|-------|-----------|
+| 1 | A-1, S-1, D-3, D-5, I-4 | None |
+| 2 | S-3, A-2, DF-1 | Wave 1 |
+| 3 | S-2, S-4, DF-2, D-2, A-4 | Wave 2 |
+| 4 | I-1, A-3, D-1, C-1 | Wave 3 |
+| 5 | I-2, I-3, D-4, DF-3, C-2 | Wave 4 |
+| 6 | C-3 | Wave 5 |
+| 7 | C-4, C-5 | Wave 6 |

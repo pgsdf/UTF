@@ -1,5 +1,11 @@
 # ROADMAP
 
+> **Task tracking has moved.** Per-task status for drawfs (and for every
+> other UTF subsystem) now lives in the consolidated root backlog at
+> [`../../BACKLOG.md`](../../BACKLOG.md). This file retains the phase-level
+> roadmap and completed-work summary; individual open tasks should be
+> added to the root backlog, not to this file.
+
 ## Phase 0: Specification
 - Protocol definition
 - State machines
@@ -56,7 +62,9 @@ headers (`<drm/drm_device.h>`) which are not part of the FreeBSD base system.
 To enable, install `drm-kmod`, add `CFLAGS+=-DDRAWFS_DRM_ENABLED` and
 `drawfs_drm.c` to `SRCS` in the Makefile.
 
-Hardware bring-up items for when drm-kmod is available:
+Hardware bring-up items for when drm-kmod is available are tracked in
+the root `BACKLOG.md` (see the "Deferred" section and the DRM-optional
+theme). Summary:
 
 - [ ] Flip completion event handler (kthread to clear flip_pending)
 - [ ] Damage rect filtering in SURFACE_PRESENT (partial update optimisation)
@@ -79,19 +87,3 @@ the protocol, creates a surface, and maps it for rendering.
 - Zero-copy paths
 - GPU acceleration
 - Scheduling and batching
-
-## Backlog
-
-### Completed
-
-- [x] Hardening: Event coalescing for repeated SURFACE_PRESENTED events (hw.drawfs.coalesce_events)
-- [x] Correctness: Stress tests for surface lifecycle (stress_surface_lifecycle.py)
-- [x] Concurrency: Multi-session stress tests with parallel/interleaved operations (stress_multi_session.py)
-- [x] Memory lifecycle: Validation tests using vmstat -m (test_memory_lifecycle.py)
-- [x] Observability: Expose per-session counters (evq_bytes, surfaces_count, surfaces_bytes) in stats ioctl (test_observability.py)
-- [x] Compatibility: Verified on FreeBSD 15.0-RELEASE-p1 (non-debug kernel) - all tests pass
-- [x] Memory lifecycle validation: Debug sysctl counters for vm_object tracking (hw.drawfs.vmobj_allocs/deallocs, test_vmobj_counters.py)
-
-### Remaining
-
-- Compatibility: Test on FreeBSD 15 debug kernel (WITNESS enabled) when available.
