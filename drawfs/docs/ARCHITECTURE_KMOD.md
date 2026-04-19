@@ -131,6 +131,21 @@ The module exposes tunable parameters under `hw.drawfs`:
 Device permission sysctls are applied at module load time via `loader.conf`.
 All other sysctls can be changed at runtime and affect new operations.
 
+### Presentation
+
+| Sysctl | Default | Description |
+|--------|---------|-------------|
+| `hw.drawfs.backend` | `"swap"` | Active kernel backend. `"swap"` uses swap-backed vm_objects (the default, DRM-less path). `"drm"` uses drawfs_drm.c (requires the module to be built with `DRAWFS_DRM_ENABLED=1` and a loaded drm-kmod). If DRM init fails at module load, the sysctl is reset to `"swap"` and the module continues to function. |
+| `hw.drawfs.coalesce_events` | 1 | Coalesce consecutive `EVT_SURFACE_PRESENTED` events for the same surface into a single queued event (1=enabled, 0=disabled). When a present is issued and an unread `EVT_SURFACE_PRESENTED` for that surface is still in the queue, the queued event's cookie is updated in place rather than enqueueing a new event. Reduces queue pressure when userland is slow to drain. Disable only for tests that need every event preserved. |
+| `hw.drawfs.region_coalesce_threshold` | 75 | Within-request coalescing threshold for `SURFACE_PRESENT_REGION`, as a percentage in the range [0, 100]. When a region present arrives, the handler sums the areas of the submitted rects; if that sum meets or exceeds this percentage of the surface area, the rect list collapses to a single full-surface rect in the emitted event. The sum over-counts overlap, which biases toward "coalesce earlier" — correct per spec (this is a heuristic, not a pixel-accurate union). `0` means "always collapse"; `100` means "never collapse by area" (the rect list still collapses if every rect clips outside the surface). See `docs/DESIGN-surface-present-region.md` for the full rationale. |
+
+Note on coalescing relationships: `coalesce_events` is a per-queue,
+cross-request coalescer for `EVT_SURFACE_PRESENTED`. `region_coalesce_threshold`
+is a per-request, within-handler collapser for `EVT_SURFACE_PRESENTED_REGION`.
+They do not interact — region events don't participate in the same-queue
+coalescer, and full-surface present events don't participate in the area-sum
+threshold.
+
 ### Debug
 
 | Sysctl | Type | Description |
