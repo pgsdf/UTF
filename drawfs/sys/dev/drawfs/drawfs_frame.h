@@ -8,6 +8,7 @@
  *
  * This module handles the low-level wire format:
  * - Validating incoming frame headers
+ * - Validating incoming message payloads
  * - Building outgoing frames with proper alignment
  */
 
@@ -19,6 +20,37 @@
  */
 int drawfs_frame_validate(const uint8_t *buf, size_t n,
     struct drawfs_frame_hdr *out_hdr, uint32_t *out_err_offset);
+
+/*
+ * Validate a SURFACE_PRESENT_REGION request payload.
+ *
+ * Pure validator: inspects on-wire bytes, produces a validated view
+ * without consulting session state. The error table in
+ * drawfs/docs/DESIGN-surface-present-region.md § "Error conditions"
+ * is authoritative.
+ *
+ * Returns DRAWFS_ERR_OK on success, with:
+ *   - out_req        — filled with the 24-byte fixed header
+ *   - out_rects      — pointer into the payload buffer where the rect
+ *                      array begins. Aliased, NOT owned. Valid only
+ *                      for the lifetime of the `payload` argument.
+ *   - out_rect_count — number of rects, always in [1, DRAWFS_MAX_PRESENT_RECTS]
+ *
+ * Returns one of DRAWFS_ERR_{INVALID_FRAME, INVALID_MSG,
+ * UNSUPPORTED_CAP, INVALID_ARG, OVERFLOW} on failure. See the function
+ * body for exact mapping.
+ *
+ * Semantic concerns the dispatch layer handles (not this validator):
+ *   - Looking up the surface by surface_id
+ *   - Clamping rects to the surface's actual bounds
+ *   - Dropping rects entirely outside the surface
+ *   - Queue-full / backpressure
+ */
+int drawfs_req_surface_present_region_validate(const uint8_t *payload,
+    size_t payload_len,
+    struct drawfs_req_surface_present_region *out_req,
+    const struct drawfs_rect **out_rects,
+    uint32_t *out_rect_count);
 
 /*
  * Build a frame containing one message.

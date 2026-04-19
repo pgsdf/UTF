@@ -43,6 +43,10 @@
                 "REQ_SURFACE_PRESENT": {
                     "value": "0x0022",
                     "description": "Present surface"
+                },
+                "REQ_SURFACE_PRESENT_REGION": {
+                    "value": "0x0023",
+                    "description": "Present surface with damage rects"
                 }
             },
             "replies": {
@@ -74,6 +78,10 @@
                     "value": "0x8022",
                     "description": "Present acknowledged"
                 },
+                "RPL_SURFACE_PRESENT_REGION": {
+                    "value": "0x8023",
+                    "description": "Regional present acknowledged"
+                },
                 "RPL_ERROR": {
                     "value": "0x8FFF",
                     "description": "Error response"
@@ -83,6 +91,10 @@
                 "EVT_SURFACE_PRESENTED": {
                     "value": "0x9002",
                     "description": "Surface displayed"
+                },
+                "EVT_SURFACE_PRESENTED_REGION": {
+                    "value": "0x9003",
+                    "description": "Surface displayed with damage rects"
                 },
                 "EVT_KEY": {
                     "value": "0x9010",

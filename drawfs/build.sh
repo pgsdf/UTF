@@ -80,8 +80,10 @@ Usage:
   sudo ./build.sh deploy
   sudo ./build.sh load
   sudo ./build.sh unload
-  sudo ./build.sh test [tests/stepXX_*.py]
-  sudo ./build.sh all [tests/stepXX_*.py]
+  sudo ./build.sh test                      # run every tests/test_*.py
+  sudo ./build.sh test stress               # run every tests/stress_*.py
+  sudo ./build.sh test tests/test_foo.py    # run one specific test
+  sudo ./build.sh all [tests/test_foo.py]
   ./build.sh verify
   ./build.sh help
 
@@ -91,7 +93,7 @@ Commands:
   deploy   Install drawfs.ko to /boot/modules/ (run after build)
   load     Load drawfs.ko from build directory (for testing)
   unload   Unload drawfs kernel module
-  test     Run Python integration tests
+  test     Run Python integration tests (see forms above)
   all      install + build + deploy + load + test
   verify   Check source and build state without changing anything
 
@@ -208,25 +210,91 @@ case "$cmd" in
     ;;
 
   test)
+    # Modes:
+    #   ./build.sh test                      — run every tests/test_*.py
+    #   ./build.sh test stress               — run every tests/stress_*.py
+    #   ./build.sh test tests/test_foo.py    — run one specific file
+    #
+    # The default (no argument) runs the full functional suite because
+    # "build.sh test" should be a useful bare verb, not a trap. Stress
+    # tests are opt-in because they are much heavier. New tests added
+    # under tests/test_*.py are picked up automatically.
     need_root "$cmd"
-    testfile=${1:-tests/step11_surface_mmap_test.py}
-    if [ ! -f "$REPO_ROOT/$testfile" ]; then
-      echo "ERROR: test file not found: $testfile"
-      exit 1
+    arg=${1:-}
+    if [ -z "$arg" ]; then
+      # Full suite. Fail the verb on first failure so the exit status
+      # is meaningful; pass-through the failing test's stderr.
+      files=$(ls "$REPO_ROOT"/tests/test_*.py 2>/dev/null | sort)
+      if [ -z "$files" ]; then
+        echo "ERROR: no tests/test_*.py files found under $REPO_ROOT"
+        exit 1
+      fi
+      count=0; failed=0
+      for f in $files; do
+        count=$((count + 1))
+        rel=${f#"$REPO_ROOT"/}
+        echo "--- Running $rel ---"
+        if ! ( cd "$REPO_ROOT" && python3 "$rel" ); then
+          echo "FAIL: $rel"
+          failed=$((failed + 1))
+        fi
+      done
+      echo
+      if [ "$failed" -gt 0 ]; then
+        echo "FAIL: $failed of $count tests failed"
+        exit 1
+      fi
+      echo "OK: $count tests passed"
+    elif [ "$arg" = "stress" ]; then
+      # Stress suite. Same rules.
+      files=$(ls "$REPO_ROOT"/tests/stress_*.py 2>/dev/null | sort)
+      if [ -z "$files" ]; then
+        echo "ERROR: no tests/stress_*.py files found under $REPO_ROOT"
+        exit 1
+      fi
+      count=0; failed=0
+      for f in $files; do
+        count=$((count + 1))
+        rel=${f#"$REPO_ROOT"/}
+        echo "--- Running $rel (stress) ---"
+        if ! ( cd "$REPO_ROOT" && python3 "$rel" ); then
+          echo "FAIL: $rel"
+          failed=$((failed + 1))
+        fi
+      done
+      echo
+      if [ "$failed" -gt 0 ]; then
+        echo "FAIL: $failed of $count stress tests failed"
+        exit 1
+      fi
+      echo "OK: $count stress tests passed"
+    else
+      # Explicit single-file mode. Must exist under REPO_ROOT.
+      if [ ! -f "$REPO_ROOT/$arg" ]; then
+        echo "ERROR: test file not found: $arg"
+        exit 1
+      fi
+      echo "Running $arg"
+      ( cd "$REPO_ROOT" && python3 "$arg" )
+      echo "OK: test"
     fi
-    echo "Running $testfile"
-    ( cd "$REPO_ROOT" && python3 "$testfile" )
-    echo "OK: test"
     ;;
 
   all)
+    # install + build + deploy + load + full test suite.
+    # Optional trailing arg selects a specific test file, mirroring
+    # the `test` verb's contract.
     need_root "$cmd"
-    testfile=${1:-tests/step11_surface_mmap_test.py}
+    arg=${1:-}
     "$0" install
     "$0" build
     "$0" deploy
     "$0" load
-    "$0" test "$testfile"
+    if [ -n "$arg" ]; then
+      "$0" test "$arg"
+    else
+      "$0" test
+    fi
     ;;
 
   verify)
