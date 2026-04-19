@@ -61,6 +61,7 @@ Markers used in the list:
 | `‖`    | Parallel-safe with the previous task.                     |
 | `⧖`    | Blocked — a dependency is not yet satisfied. Explain.     |
 | `✎`    | In progress.                                              |
+| `~`    | Fix applied, awaiting verification on target.             |
 | `✓`    | Done. Moves back to the product backlog as `[x]`.         |
 
 ---
@@ -133,12 +134,12 @@ target match the Linux compile-time check (16/24/16/16 bytes). The
 pre-existing cosmetic drift on `EVT_POINTER`'s comment was fixed as
 a side effect of running the generator.
 
-### `✎` SPRINT-04 — B3.3 pass 1: request validator (EXPANSION SCOPE)
+### `✓` SPRINT-04 — B3.3 pass 1: request validator (EXPANSION SCOPE)
 
 - **Product backlog**: B3.3 (part of B3.3–B3.5 deferred entry)
 - **Depends on**: SPRINT-03 (protocol constants in place)
 - **Effort**: small
-- **Status**: in progress
+- **Status**: done
 - **Owner**: Vic
 - **Done when**: `drawfs_frame.c` carries a validator for
   `DRAWFS_REQ_SURFACE_PRESENT_REGION` that enforces every row of the
@@ -153,9 +154,12 @@ dispatch+coalescing, (3) tests.
 **Pass 1 landed and verified on GhostBSD 15.** Validator compiles,
 links into `drawfs.ko`, module loads cleanly. Validator is not yet
 wired to any caller (that's pass 2). Fifteen unit tests against the
-design-doc error table pass on the Linux userspace harness.
+design-doc error table pass on the Linux userspace harness. No
+regression in any existing test path that touches `drawfs_frame.c`
+(test_protocol, test_sdcs_integration, test_surface, test_session
+all green).
 
-### `→ ✎` SPRINT-04a — Side-fix: `drawfs/build.sh test` verb
+### `→ ✓` SPRINT-04a — Side-fix: `drawfs/build.sh test` verb
 
 - **Product backlog**: none (small defect surfaced during pass 1 verification)
 - **Depends on**: SPRINT-04 (discovered while verifying pass 1)
@@ -171,12 +175,50 @@ Previous default was a hardcoded filename (`tests/step11_surface_mmap_test.py`)
 from a historic naming scheme that the tests directory has since moved
 away from. The bare `./build.sh test` verb was effectively broken,
 which would have undermined pass 3's verification story. Logged here
-honestly rather than hidden inside pass 1.
+honestly rather than hidden inside pass 1. The new runner was exercised
+on the target with an 11-test suite run (9 green, 2 failing — which
+directly led to SPRINT-04b below).
+
+### `→ ✓` SPRINT-04b — Side-fix: DF-5 async-event drain races in tests
+
+- **Product backlog**: DF-5 (newly opened during SPRINT-04a verification)
+- **Depends on**: SPRINT-04a (the failures were invisible before)
+- **Effort**: small (turned out medium after discovering the
+  backpressure test's underlying design was spec-incompatible)
+- **Status**: done
+- **Owner**: Vic
+- **Done when**: `sudo ./build.sh test` on the GhostBSD target reports
+  all 11 tests green. Specifically the four failures (three in
+  `test_input_injection.py`, one in `test_limits.py`) must be gone.
+
+**Verified** on GhostBSD 15: full 11/11 test suite green.
+`test_event_queue_backpressure` now hits ENOSPC after 169 presents
+(≈ `max_evq_bytes=8192` ÷ 48 bytes per reply) and recovers cleanly.
+`test_backpressure_enospc` drains ~200 queued `EVT_KEY` events and
+closes cleanly.
+
+Took three iterations on `test_event_queue_backpressure`. Earlier
+attempts were wrong about where ENOSPC surfaces — tried to read it
+as a reply status, then tried to defeat coalescing via multi-surface
+round-robin, both of which fought the specification. Final version
+followed the docs (PROTOCOL.md line 167, TEST_PLAN.md line 44) and
+the kernel source (drawfs.c:997-999): ENOSPC arrives as an
+`OSError` from `write(2)` itself, so the test simply never reads
+during the accumulation phase.
+
+Lesson: when two fixes in a row don't land, stop theorizing and read
+the specification. Two of Claude's previous fixes for this test were
+plausible-sounding but wrong because they never grounded in the
+design documents.
+
+Two files changed: `test_input_injection.py` (three small edits),
+`test_limits.py` (one function rewritten). Zero changes to
+`drawfs_test.py` or kernel code.
 
 ### `→ ⧖` SPRINT-05 — B3.3 pass 2: dispatch and coalescing (EXPANSION SCOPE)
 
 - **Product backlog**: B3.3
-- **Depends on**: SPRINT-04
+- **Depends on**: SPRINT-04, SPRINT-04b (clean baseline)
 - **Effort**: medium
 - **Status**: queued
 - **Owner**: unassigned

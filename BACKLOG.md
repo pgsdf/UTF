@@ -19,6 +19,9 @@ ID (e.g. `DF-1`, `C-3`, `A-2`) so external references don't break.
 Status is tracked per item:
 
 - `[x] Done` — implemented, landed on `master`, acceptance criteria met.
+- `[~] Fix applied, awaiting verification` — code change is in place but
+  confirmation on the target host is pending. Flips to `[x]` once the
+  relevant test run or smoke check comes back clean.
 - `[ ] Open` — not yet started.
 - `[ ] Deferred` — consciously postponed, with a note explaining why.
 
@@ -154,35 +157,57 @@ release kernel does not.
 FreeBSD 15 kernel. None currently available. Pick this up when one is.
 Migrated from `drawfs/docs/ROADMAP.md` as part of B5.3.
 
-### `[ ]` DF-5 — Fix async-event drain races in input-injection tests  *(Open, Small; depends: DF-2)*
+### `[x]` DF-5 — Fix async-event drain races in input-injection tests  *(Done; depends: DF-2)*
 
 Running the full test suite (after SPRINT-04a's `build.sh` test-verb
-fix made that possible) surfaced four pre-existing failures, all
-with the same shape: tests expect a specific reply message but read
-an asynchronous event that arrived in the queue first.
+fix made that possible) surfaced four pre-existing failures, all with
+the same shape: tests expect a specific reply message but read an
+asynchronous event that arrived in the queue first — plus a fourth
+test (`test_event_queue_backpressure`) whose underlying design was
+incompatible with normative coalescing behavior.
 
-Failing cases:
+**Root cause**: `drawfs_test.py` already had the infrastructure to
+skip events (`drain_until`, `skip_events=True` parameters on
+`surface_destroy` / `surface_present`). The input-injection tests
+just didn't use it after paths that enqueue events — but one of them
+had a queue too large for `drain_until`'s default `max_msgs=20` to
+handle. The `test_limits.py` backpressure test fought the protocol:
+per `docs/PROTOCOL.md` line 167, "Multiple SURFACE_PRESENTED events
+for the same surface may be coalesced under backpressure" — coalescing
+is normative, and a test loop that read one reply per present could
+never accumulate enough queue pressure to hit ENOSPC with a single
+surface.
 
-- `test_input_injection.py::test_evt_touch_delivery` — destroy reply
-  expected, got `EVT_TOUCH` (0x9013).
+**Fixes**:
+
+- `test_input_injection.py::test_evt_touch_delivery` — cleanup
+  destroy uses `skip_events=True`.
 - `test_input_injection.py::test_event_delivery_does_not_block_present`
-  — present expected, got `EVT_KEY` (0x9010).
-- `test_input_injection.py::test_backpressure_enospc` — destroy reply
-  expected, got `EVT_KEY`.
-- `test_limits.py::test_event_queue_backpressure` — unexpected
-  present status -1 (downstream of the same event-drain confusion).
+  — replaced a hand-rolled event-skip loop (which had a subtle bug
+  where it swallowed events without reading past them on the
+  "other event" branch) with `drain_until(fd, RPL_SURFACE_PRESENT,
+  max_msgs=40)`; cleanup destroy uses `skip_events=True`.
+- `test_input_injection.py::test_backpressure_enospc` — explicit
+  `receiver.drain_all()` before cleanup destroy (queue of ~200
+  events exceeds `drain_until`'s default message cap).
+- `test_limits.py::test_event_queue_backpressure` — rewritten per
+  the specification. The test now does what `docs/TEST_PLAN.md`
+  § Step 19 actually says: write presents without reading, catch
+  ENOSPC as an `OSError` from `write(2)` itself (matching the
+  kernel's behavior at `drawfs.c:997-999`), drain the queue, send
+  one more write to verify recovery. No helper, no reading during
+  accumulation, no fighting with coalescing.
 
-The kernel side (DF-2) is almost certainly correct — the kernel just
-multiplexes events and replies on the same fd, in arrival order.
-What's missing is a disciplined event-drain pattern in the **test**
-helpers: the `surface_destroy` and `surface_present` helpers need to
-skip events while searching for the expected reply type, the way
-`test_sdcs_integration.py` and `test_surface.py` already do.
+**Verification**: full 11/11 test suite green on GhostBSD 15.
+Backpressure test hits ENOSPC after 169 presents (= 169 × 48 byte
+replies + overhead ≈ `max_evq_bytes=8192`) and recovers cleanly
+after drain.
 
 **Not a regression** from B3.1–B3.3 pass 1. The validator added in
-pass 1 has no callers yet, so it cannot affect any code path. These
-failures reached the surface only because `./build.sh test` had been
-broken long enough that nobody had run the full suite in a while.
+pass 1 still has no callers, so it cannot affect any code path.
+These failures reached the surface only because `./build.sh test`
+had been broken long enough that the full suite hadn't been
+exercised in a while.
 
 ---
 

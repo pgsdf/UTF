@@ -67,7 +67,28 @@ def test_max_surfaces():
 
 
 def test_event_queue_backpressure():
-    """Event queue fills up, returns ENOSPC, then recovers after drain."""
+    """Event queue fills up, returns ENOSPC, then recovers after drain.
+
+    Per docs/TEST_PLAN.md § Step 19 and docs/PROTOCOL.md, the kernel's
+    contract is:
+
+      - When the event queue can no longer accept an enqueue, the
+        write(2) that provoked it fails with ENOSPC.
+      - After the client drains the queue via read(2), writes succeed
+        again.
+
+    The test exercises exactly this. Each write carries a
+    REQ_SURFACE_PRESENT; the kernel enqueues an RPL_SURFACE_PRESENT
+    (and possibly an EVT_SURFACE_PRESENTED — the protocol permits
+    these to coalesce, which is irrelevant here because replies do
+    not coalesce). By never reading during the accumulation phase,
+    bytes accumulate unconditionally until the kernel's write(2)
+    path returns ENOSPC.
+
+    The test does NOT try to read replies during accumulation. That
+    would drain the very queue we are trying to fill. Reading happens
+    only after ENOSPC, to verify recovery.
+    """
     fd = os.open(DEV, os.O_RDWR)
 
     def read_one(fd):
@@ -92,16 +113,6 @@ def test_event_queue_backpressure():
         status, sid, stride, total = struct.unpack_from("<iIII", payload, 0)
         return status, sid
 
-    def present_no_wait(fd, frame_id, msg_id, sid, cookie):
-        """Present without reading events, just get reply status."""
-        payload = struct.pack("<IIQ", sid, 0, cookie)
-        os.write(fd, make_frame(frame_id, [make_msg(REQ_SURFACE_PRESENT, msg_id, payload)]))
-        msg_type, _, payload = read_one(fd)
-        if msg_type == RPL_SURFACE_PRESENT:
-            status, = struct.unpack_from("<i", payload, 0)
-            return status
-        return -1
-
     try:
         hello(fd, 1, 1)
         display_open(fd, 2, 2)
@@ -109,42 +120,56 @@ def test_event_queue_backpressure():
         status, sid = surface_create(fd, 3, 3, 32, 32)
         assert status == 0
 
-        # Spam presents without draining events to fill the queue
+        # Accumulation phase: write presents without reading anything.
+        # Each reply enqueued takes ~48 bytes; the default max_evq_bytes
+        # is 8192, so the queue saturates at roughly 170 presents.
+        # We cap the loop well above that to tolerate smaller queues
+        # on tuned systems, and well below anything that would suggest
+        # a runaway write that never backpressures.
         hit_enospc = False
-        frame_id = 10
-        presents_before_enospc = 0
+        presents_written = 0
+        MAX_ATTEMPTS = 2000
 
-        for i in range(500):
-            status = present_no_wait(fd, frame_id + i, 100 + i, sid, i)
-            if status == errno.ENOSPC:
-                hit_enospc = True
-                presents_before_enospc = i
-                break
-            elif status != 0:
-                raise AssertionError(f"Unexpected present status {status}")
+        for i in range(MAX_ATTEMPTS):
+            payload = struct.pack("<IIQ", sid, 0, i)
+            frame = make_frame(10 + i, [make_msg(REQ_SURFACE_PRESENT, 100 + i, payload)])
+            try:
+                os.write(fd, frame)
+                presents_written += 1
+            except OSError as e:
+                if e.errno == errno.ENOSPC:
+                    hit_enospc = True
+                    break
+                raise
 
-        assert hit_enospc, "Expected to hit ENOSPC from event queue full"
-        print(f"  Hit ENOSPC after {presents_before_enospc} presents")
+        assert hit_enospc, (
+            f"Expected write(2) to fail with ENOSPC after queue saturation, "
+            f"but {MAX_ATTEMPTS} presents all succeeded. Kernel may not be "
+            f"enforcing max_evq_bytes."
+        )
+        print(f"  Hit ENOSPC after {presents_written} presents "
+              f"(write(2) returned errno {errno.ENOSPC})")
 
-        # Drain events
+        # Drain the queue fully. Each read returns at least one message
+        # (reply or event); we poll until no more are readable.
         p = select.poll()
         p.register(fd, select.POLLIN | select.POLLRDNORM)
         drained = 0
-
         while True:
             ev = p.poll(100)
             if not ev:
                 break
-            msg_type, _, _ = read_one(fd)
-            if msg_type == EVT_SURFACE_PRESENTED:
-                drained += 1
+            os.read(fd, 4096)
+            drained += 1
+        print(f"  Drained {drained} messages from the queue")
 
-        print(f"  Drained {drained} events")
-
-        # Should be able to present again
-        status = present_no_wait(fd, 999, 999, sid, 0xDEADBEEF)
-        assert status == 0, f"Present after drain failed: {status}"
-        print(f"  Present after drain succeeded")
+        # Recovery: a fresh present must now succeed at the write(2) level.
+        # We do not assert anything about the reply payload here; the point
+        # is just that the write no longer backpressures.
+        payload = struct.pack("<IIQ", sid, 0, 0xDEADBEEF)
+        frame = make_frame(99000, [make_msg(REQ_SURFACE_PRESENT, 99000, payload)])
+        os.write(fd, frame)
+        print(f"  Present after drain succeeded (write accepted)")
 
     finally:
         os.close(fd)

@@ -233,7 +233,9 @@ def test_evt_touch_delivery():
         payload = touch_payload(sid, contact=0, phase=2, x=32, y=32)
         inject(injector.fd, sid, EVT_TOUCH, payload)
 
-        receiver.surface_destroy(sid)
+        # The touch-up enqueued an EVT_TOUCH we never read. skip_events
+        # drains async events before reading the destroy reply.
+        receiver.surface_destroy(sid, skip_events=True)
     print("  PASS: test_evt_touch_delivery")
 
 
@@ -282,25 +284,31 @@ def test_event_delivery_does_not_block_present():
             payload = key_payload(sid, code=i + 1, state=1)
             inject(injector.fd, sid, EVT_KEY, payload)
 
-        # Present must succeed immediately without waiting for event drain
+        # Present must succeed immediately without waiting for event drain.
+        # Use drain_until to skip the 20 pending EVT_KEY events and find
+        # the RPL_SURFACE_PRESENT. (An earlier version of this test had a
+        # hand-rolled skip loop with a subtle bug — it swallowed events
+        # without reading past them on the "other event" branch — which is
+        # why it intermittently failed with "present blocked: got 0x9010".)
         fid, mid = receiver._next_ids()
         frame = make_frame(fid, [make_msg(
             REQ_SURFACE_PRESENT, mid,
             struct.pack("<IIQ", sid, 0, 0)
         )])
         receiver.send(frame)
-        mt, _, _ = receiver.read_msg(timeout_ms=2000)
-        # Skip events to find the present reply
-        for _ in range(40):
-            if mt in (RPL_SURFACE_PRESENT, EVT_SURFACE_PRESENTED):
-                if mt == RPL_SURFACE_PRESENT:
-                    break
-                mt, _, _ = receiver.read_msg(timeout_ms=500)
-        assert mt == RPL_SURFACE_PRESENT, \
-            f"present blocked: got 0x{mt:04x}"
+        # drain_until reads up to max_msgs messages, returning the first
+        # one whose type matches. 40 is comfortably above the 20 queued
+        # events plus the reply we expect.
+        from drawfs_test import drain_until, RPL_SURFACE_PRESENT
+        try:
+            drain_until(receiver.fd, RPL_SURFACE_PRESENT, timeout_ms=2000, max_msgs=40)
+        except RuntimeError as e:
+            raise AssertionError(f"present blocked or never replied: {e}")
 
         mm.close()
-        receiver.surface_destroy(sid)
+        # Pending EVT_SURFACE_PRESENTED from the present above hasn't been
+        # read. skip_events drains it so the destroy reply can land cleanly.
+        receiver.surface_destroy(sid, skip_events=True)
     print("  PASS: test_event_delivery_does_not_block_present")
 
 
@@ -324,6 +332,11 @@ def test_backpressure_enospc():
             assert err == 0, f"unexpected inject error: {err}"
 
         assert enospc_seen, "expected ENOSPC after queue saturation"
+        # The queue was deliberately filled to ENOSPC with ~200 EVT_KEY
+        # events. drain_until's default max_msgs=20 is too small to skip
+        # past them, so drain explicitly with the poll-based helper
+        # before calling destroy.
+        receiver.drain_all()
         receiver.surface_destroy(sid)
     print("  PASS: test_backpressure_enospc")
 
