@@ -93,6 +93,34 @@ SYSCTL_INT(_hw_drawfs, OID_AUTO, coalesce_events, CTLFLAG_RW,
     "Coalesce repeated SURFACE_PRESENTED events (1=enabled, 0=disabled)");
 
 /*
+ * Region coalescing threshold.
+ *
+ * When a SURFACE_PRESENT_REGION request arrives, the sum of the
+ * submitted rect areas is compared against the surface area. If the
+ * ratio meets or exceeds this threshold (expressed as a percentage),
+ * the kernel collapses the rect list into a single rect covering the
+ * full surface before emitting the event. This mirrors the design
+ * principle that very-dense damage is cheaper to treat as a full
+ * present than to carry as many rects.
+ *
+ * The sum-of-areas comparison over-counts overlap, which biases the
+ * decision toward "coalesce earlier" — correct per the spec (the
+ * threshold is a heuristic, not a pixel-accurate union). A true
+ * union would be more selective but vastly more complex for no
+ * observable behavior change.
+ *
+ * Clamped to [0, 100] on read. 0 means "always collapse" (every
+ * region request becomes a full-surface event). 100 means "never
+ * collapse by area" (rect list is preserved unless it trivially
+ * equals the surface).
+ */
+static int drawfs_region_coalesce_threshold = 75;
+SYSCTL_INT(_hw_drawfs, OID_AUTO, region_coalesce_threshold, CTLFLAG_RW,
+    &drawfs_region_coalesce_threshold, 0,
+    "Area-sum threshold (percent) above which region presents collapse "
+    "to a full-surface event (default: 75, range: 0-100)");
+
+/*
  * Debug counters for vm_object lifecycle tracking.
  *
  * These read-only counters track global vm_object allocations and
@@ -147,6 +175,7 @@ static int drawfs_reply_display_open(struct drawfs_session *s, uint32_t msg_id, 
 static int drawfs_reply_surface_create(struct drawfs_session *s, uint32_t msg_id, const uint8_t *payload, size_t payload_len);
 static int drawfs_reply_surface_destroy(struct drawfs_session *s, uint32_t msg_id, const uint8_t *payload, size_t payload_len);
 static int drawfs_reply_surface_present(struct drawfs_session *s, uint32_t msg_id, const uint8_t *payload, size_t payload_len);
+static int drawfs_reply_surface_present_region(struct drawfs_session *s, uint32_t msg_id, const uint8_t *payload, size_t payload_len);
 
 static int drawfs_process_frame(struct drawfs_session *s, const uint8_t *buf, size_t n);
 
@@ -371,6 +400,249 @@ send_reply:
 
     (void)drawfs_send_reply(s, DRAWFS_EVT_SURFACE_PRESENTED, 0, &evt, sizeof(evt));
 
+    return (0);
+}
+
+/*
+ * SURFACE_PRESENT_REGION (B3.1 spec; drawfs/docs/DESIGN-surface-present-region.md).
+ *
+ * Handler flow:
+ *   1. Validate the wire payload using the pure validator added in
+ *      drawfs_frame.c (B3.3 pass 1). This enforces the full error
+ *      table with no session-state dependency.
+ *   2. Look up the surface. Same semantics as SURFACE_PRESENT:
+ *      unknown surface_id returns ENOENT in the reply status.
+ *   3. Build a normalized rect list by clamping each rect to the
+ *      surface bounds. Rects that lie entirely outside the surface
+ *      are dropped. If clamping leaves us with zero rects, the
+ *      request becomes a no-op at the event layer (reply still goes
+ *      out with status 0 — the request itself was well-formed).
+ *   4. Apply the area-sum threshold. If the accepted rects cover at
+ *      least hw.drawfs.region_coalesce_threshold percent of the
+ *      surface area (sum of rect areas, over-counting overlaps),
+ *      collapse to a single full-surface rect.
+ *   5. Emit the reply. Emit EVT_SURFACE_PRESENTED_REGION on success.
+ *
+ * This handler does NOT use the existing SURFACE_PRESENTED coalescer.
+ * Cross-request region-event coalescing would require merging rect
+ * lists in place and is out of scope for pass 2. Within-request
+ * coalescing is the area-sum threshold above.
+ */
+static int
+drawfs_reply_surface_present_region(struct drawfs_session *s, uint32_t msg_id,
+    const uint8_t *payload, size_t payload_len)
+{
+    struct drawfs_req_surface_present_region req;
+    const struct drawfs_rect *raw_rects;
+    uint32_t raw_count;
+    struct drawfs_rect accepted[DRAWFS_MAX_PRESENT_RECTS];
+    uint32_t accepted_count;
+    struct drawfs_surface *surf;
+    struct drawfs_rpl_surface_present_region rep;
+    uint8_t *evt_buf;
+    size_t evt_len;
+    struct drawfs_evt_surface_presented_region evt_hdr;
+    uint64_t total_area, surface_area;
+    int threshold;
+    int validation_err;
+    uint32_t i;
+    int32_t x0, y0, x1, y1;
+    int32_t sx1, sy1;
+    int err;
+
+    bzero(&rep, sizeof(rep));
+    bzero(&req, sizeof(req));
+
+    /*
+     * Step 1: validate. This is the pure function from pass 1.
+     * On failure it returns an error code; we translate that to
+     * an errno-shaped reply status, matching the existing
+     * SURFACE_PRESENT pattern where status carries errno values.
+     */
+    validation_err = drawfs_req_surface_present_region_validate(
+        payload, payload_len, &req, &raw_rects, &raw_count);
+    if (validation_err != DRAWFS_ERR_OK) {
+        /*
+         * Map the wire-level error code to a reasonable errno in
+         * the reply. The design doc specifies EINVAL/EFAULT/etc
+         * implicitly through the error-code table; here we map:
+         *   INVALID_FRAME, INVALID_MSG            -> EINVAL
+         *   UNSUPPORTED_CAP                       -> EOPNOTSUPP
+         *   INVALID_ARG                           -> EINVAL
+         *   OVERFLOW                              -> EOVERFLOW
+         * Other errors (shouldn't happen from the validator) -> EINVAL.
+         */
+        switch (validation_err) {
+        case DRAWFS_ERR_UNSUPPORTED_CAP:
+            rep.status = EOPNOTSUPP;
+            break;
+        case DRAWFS_ERR_OVERFLOW:
+            rep.status = EOVERFLOW;
+            break;
+        default:
+            rep.status = EINVAL;
+            break;
+        }
+        rep.surface_id = 0;
+        rep.cookie = req.cookie;  /* may be 0 if validator failed early */
+        goto send_reply;
+    }
+
+    /*
+     * Step 2: session-state check and surface lookup.
+     */
+    if (s->active_display_id == 0 && s->active_display_handle == 0) {
+        rep.status = EINVAL;
+        rep.surface_id = 0;
+        rep.cookie = req.cookie;
+        goto send_reply;
+    }
+
+    if (req.surface_id == 0) {
+        rep.status = EINVAL;
+        rep.surface_id = 0;
+        rep.cookie = req.cookie;
+        goto send_reply;
+    }
+
+    surf = drawfs_surface_lookup(s, req.surface_id);
+    if (surf == NULL) {
+        rep.status = ENOENT;
+        rep.surface_id = 0;
+        rep.cookie = req.cookie;
+        goto send_reply;
+    }
+
+    /*
+     * Step 3: clamp rects to surface bounds, drop any that fall
+     * entirely outside. accepted[] collects the survivors. Note
+     * that the validator already rejected zero-dimension rects,
+     * so we only need to handle off-surface clipping here.
+     *
+     * Coordinates are signed; the surface occupies [0, width_px)
+     * horizontally and [0, height_px) vertically. Use int32_t
+     * intermediates to avoid sign-trap issues on the subtraction.
+     */
+    sx1 = (int32_t)surf->width_px;
+    sy1 = (int32_t)surf->height_px;
+    accepted_count = 0;
+
+    for (i = 0; i < raw_count; i++) {
+        x0 = raw_rects[i].x;
+        y0 = raw_rects[i].y;
+        /*
+         * Width/height were validated non-zero; cast to int32_t is
+         * safe for values up to INT32_MAX. If someone passes a
+         * uint32_t value with the high bit set, the resulting
+         * signed x1/y1 will be negative and the rect will fall
+         * outside every non-empty surface — safely dropped below.
+         */
+        x1 = x0 + (int32_t)raw_rects[i].width;
+        y1 = y0 + (int32_t)raw_rects[i].height;
+
+        /* Clamp to surface bounds. */
+        if (x0 < 0)
+            x0 = 0;
+        if (y0 < 0)
+            y0 = 0;
+        if (x1 > sx1)
+            x1 = sx1;
+        if (y1 > sy1)
+            y1 = sy1;
+
+        /* Entirely outside surface -> drop. */
+        if (x1 <= x0 || y1 <= y0)
+            continue;
+
+        accepted[accepted_count].x = x0;
+        accepted[accepted_count].y = y0;
+        accepted[accepted_count].width = (uint32_t)(x1 - x0);
+        accepted[accepted_count].height = (uint32_t)(y1 - y0);
+        accepted_count++;
+    }
+
+    /* Success: well-formed request, even if no rects survived clipping. */
+    rep.status = 0;
+    rep.surface_id = req.surface_id;
+    rep.cookie = req.cookie;
+
+send_reply:
+    err = drawfs_send_reply(s, DRAWFS_RPL_SURFACE_PRESENT_REGION,
+        msg_id, &rep, sizeof(rep));
+    if (err != 0)
+        return (err);
+
+    /* Only emit an event on full success. */
+    if (rep.status != 0)
+        return (0);
+
+    /*
+     * Step 4: area-sum threshold. Collapse to a single full-surface
+     * rect when accumulated rect area meets threshold.
+     *
+     * Arithmetic note: width_px and height_px are uint32_t, so
+     * surface_area is at most UINT32_MAX^2 which fits in uint64_t.
+     * Each rect contributes width * height with the same bound.
+     * Summing up to DRAWFS_MAX_PRESENT_RECTS=16 rects cannot
+     * overflow uint64_t.
+     */
+    surface_area = (uint64_t)surf->width_px * (uint64_t)surf->height_px;
+    total_area = 0;
+    for (i = 0; i < accepted_count; i++) {
+        total_area += (uint64_t)accepted[i].width *
+                      (uint64_t)accepted[i].height;
+    }
+
+    /* Clamp the sysctl to a sensible range on read. */
+    threshold = drawfs_region_coalesce_threshold;
+    if (threshold < 0)
+        threshold = 0;
+    if (threshold > 100)
+        threshold = 100;
+
+    /*
+     * Collapse if:
+     *   - no rects survived clipping (accepted_count == 0): emit
+     *     a single full-surface rect so the client still sees the
+     *     present happened, or
+     *   - area sum meets or exceeds the threshold as a percentage
+     *     of surface area. Use cross-multiplication to avoid
+     *     floating-point and truncation: total * 100 >= surface * thr.
+     *
+     * A surface with zero area (shouldn't happen — SURFACE_CREATE
+     * rejects those) would make the comparison degenerate; guard
+     * against it defensively by collapsing.
+     */
+    if (accepted_count == 0 ||
+        surface_area == 0 ||
+        total_area * 100 >= surface_area * (uint64_t)threshold) {
+        accepted[0].x = 0;
+        accepted[0].y = 0;
+        accepted[0].width = surf->width_px;
+        accepted[0].height = surf->height_px;
+        accepted_count = 1;
+    }
+
+    /*
+     * Step 5: emit EVT_SURFACE_PRESENTED_REGION.
+     * Event payload = 16-byte header + accepted_count * 16-byte rects.
+     * drawfs_send_reply takes a flat payload buffer, so build one.
+     */
+    evt_hdr.surface_id = req.surface_id;
+    evt_hdr.rect_count = accepted_count;
+    evt_hdr.cookie = req.cookie;
+
+    evt_len = sizeof(evt_hdr) +
+        (size_t)accepted_count * sizeof(struct drawfs_rect);
+    evt_buf = malloc(evt_len, M_DRAWFS, M_WAITOK);
+    memcpy(evt_buf, &evt_hdr, sizeof(evt_hdr));
+    memcpy(evt_buf + sizeof(evt_hdr), accepted,
+        (size_t)accepted_count * sizeof(struct drawfs_rect));
+
+    (void)drawfs_send_reply(s, DRAWFS_EVT_SURFACE_PRESENTED_REGION, 0,
+        evt_buf, evt_len);
+
+    free(evt_buf, M_DRAWFS);
     return (0);
 }
 
@@ -1071,6 +1343,16 @@ drawfs_process_frame(struct drawfs_session *s, const uint8_t *buf, size_t n)
             int error;
 
             error = drawfs_reply_surface_present(s, mh.msg_id, payload, payload_len);
+            if (error != 0)
+                return (error);
+            break;
+        }
+
+        case DRAWFS_REQ_SURFACE_PRESENT_REGION: {
+            int error;
+
+            error = drawfs_reply_surface_present_region(s, mh.msg_id,
+                payload, payload_len);
             if (error != 0)
                 return (error);
             break;

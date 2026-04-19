@@ -215,18 +215,42 @@ Two files changed: `test_input_injection.py` (three small edits),
 `test_limits.py` (one function rewritten). Zero changes to
 `drawfs_test.py` or kernel code.
 
-### `→ ⧖` SPRINT-05 — B3.3 pass 2: dispatch and coalescing (EXPANSION SCOPE)
+### `→ ~` SPRINT-05 — B3.3 pass 2: dispatch and coalescing (EXPANSION SCOPE)
 
 - **Product backlog**: B3.3
 - **Depends on**: SPRINT-04, SPRINT-04b (clean baseline)
 - **Effort**: medium
-- **Status**: queued
-- **Owner**: unassigned
+- **Status**: fix applied, awaiting verification on target
+- **Owner**: Vic
 - **Done when**: `drawfs.c` dispatches on
   `DRAWFS_REQ_SURFACE_PRESENT_REGION`, emits
   `EVT_SURFACE_PRESENTED_REGION`, and honors a new sysctl
   `hw.drawfs.region_coalesce_threshold` (default 75). Module builds
   clean with `DRAWFS_DRM=false` — invariant 1 preserved.
+
+Four design calls, flagged in code comments for the reviewer:
+
+1. **Coalescing algorithm**: sum-of-rect-areas, not a true union.
+   Over-counts overlap, biased toward "coalesce earlier." Cheaper and
+   correct per spec (threshold is a heuristic, not pixel-accurate
+   union).
+2. **Sysctl name**: `hw.drawfs.region_coalesce_threshold`, int
+   0–100, default 75. Exactly as design doc.
+3. **Event type**: always emit `EVT_SURFACE_PRESENTED_REGION` for
+   region requests — including the collapse case, where it carries
+   one full-surface rect. Matches design doc's "event reflects the
+   request, not what the backend physically did."
+4. **No cross-request event coalescing**: the existing
+   `drawfs_try_coalesce_presented` is for `EVT_SURFACE_PRESENTED`
+   only; region events don't share it. Within-request area-sum
+   coalescing is in scope, across-request rect-list merging is not.
+
+18 userspace unit tests covering clamping and area-sum arithmetic
+pass on Linux. Clamping correctly handles: fully-inside, clip-left,
+clip-right, fully-outside, mixed batches. Collapse threshold
+correctly handles: below/at/above threshold, overlapping-sum,
+extreme thresholds (0, 100), zero-rect case, out-of-range
+thresholds (clamped to [0, 100]).
 
 ### `→ ⧖` SPRINT-06 — B3.3 pass 3: Python tests (EXPANSION SCOPE)
 
