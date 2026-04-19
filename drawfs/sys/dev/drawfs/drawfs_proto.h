@@ -38,6 +38,7 @@ enum drawfs_msg_type {
     DRAWFS_RPL_SURFACE_CREATE             = 0x8020,  /* Surface created */
     DRAWFS_RPL_SURFACE_DESTROY            = 0x8021,  /* Surface destroyed */
     DRAWFS_RPL_SURFACE_PRESENT            = 0x8022,  /* Present acknowledged */
+    DRAWFS_RPL_SURFACE_PRESENT_REGION     = 0x8023,  /* Regional present acknowledged */
     DRAWFS_RPL_ERROR                      = 0x8FFF,  /* Error response */
 
     /* Requests (0x0xxx) */
@@ -47,6 +48,7 @@ enum drawfs_msg_type {
     DRAWFS_REQ_SURFACE_CREATE             = 0x0020,  /* Create surface */
     DRAWFS_REQ_SURFACE_DESTROY            = 0x0021,  /* Destroy surface */
     DRAWFS_REQ_SURFACE_PRESENT            = 0x0022,  /* Present surface */
+    DRAWFS_REQ_SURFACE_PRESENT_REGION     = 0x0023,  /* Present surface with damage rects */
 };
 
 enum drawfs_err_code {
@@ -194,8 +196,9 @@ struct drawfs_surface_destroy_rep {
 enum drawfs_event_type {
     /* Events (0x9xxx) */
     DRAWFS_EVT_SURFACE_PRESENTED          = 0x9002,  /* Surface displayed */
+    DRAWFS_EVT_SURFACE_PRESENTED_REGION   = 0x9003,  /* Surface displayed with damage rects */
     DRAWFS_EVT_KEY                        = 0x9010,  /* Key press/release */
-    DRAWFS_EVT_POINTER                    = 0x9011,  /* Pointer move + buttons */
+    DRAWFS_EVT_POINTER                    = 0x9011,  /* Pointer move and buttons */
     DRAWFS_EVT_SCROLL                     = 0x9012,  /* Scroll delta */
     DRAWFS_EVT_TOUCH                      = 0x9013,  /* Touch contact */
 };
@@ -218,6 +221,60 @@ struct drawfs_evt_surface_presented {
     uint32_t reserved;
     uint64_t cookie;     /* echoed from request */
 } __packed;
+
+/*
+ * SURFACE_PRESENT_REGION (B3.1 spec; drawfs/docs/DESIGN-surface-present-region.md)
+ *
+ * A present request carrying an explicit list of damage rectangles.
+ * Functionally equivalent to SURFACE_PRESENT when rect_count == 1 and
+ * the rect covers the full surface; richer otherwise. The rect list
+ * is metadata — on the swap backend the pixel state is unchanged by
+ * the choice of opcode. On the DRM backend, the rects feed
+ * drmModeDirtyFB(2) when the kernel DRM driver supports it, otherwise
+ * a full-surface flip is performed and the event is still emitted
+ * with the originally submitted rects.
+ *
+ * Coordinates are surface-local. Rects are clamped to the surface
+ * bounds silently; rects entirely outside the surface are dropped.
+ * Zero-dimension rects (width == 0 or height == 0) are a protocol
+ * violation (ERR_INVALID_ARG), not a no-op.
+ */
+#define DRAWFS_MAX_PRESENT_RECTS 16
+
+struct drawfs_rect {
+    int32_t  x;          /* top-left x in surface-local coordinates */
+    int32_t  y;          /* top-left y in surface-local coordinates */
+    uint32_t width;      /* width in pixels; must be >= 1            */
+    uint32_t height;     /* height in pixels; must be >= 1           */
+} __packed;
+/* Size: 16 bytes. Natural alignment: 4. */
+
+struct drawfs_req_surface_present_region {
+    uint32_t surface_id;
+    uint32_t flags;      /* reserved, must be 0 (rejected with ERR_UNSUPPORTED_CAP) */
+    uint64_t cookie;     /* opaque client value, echoed in reply/event */
+    uint32_t rect_count; /* 1..DRAWFS_MAX_PRESENT_RECTS inclusive     */
+    uint32_t _reserved;  /* must be 0 (rejected with ERR_INVALID_MSG) */
+    /* struct drawfs_rect rects[rect_count] follows immediately */
+} __packed;
+/* Fixed header size: 24 bytes.
+ * Total payload size: 24 + 16 * rect_count bytes. */
+
+struct drawfs_rpl_surface_present_region {
+    int32_t  status;     /* 0 = success, else drawfs_err_code */
+    uint32_t surface_id;
+    uint64_t cookie;     /* echoed from request               */
+} __packed;
+/* Size: 16 bytes. */
+
+struct drawfs_evt_surface_presented_region {
+    uint32_t surface_id;
+    uint32_t rect_count; /* may differ from request; server may coalesce */
+    uint64_t cookie;     /* echoed from request                          */
+    /* struct drawfs_rect rects[rect_count] follows immediately */
+} __packed;
+/* Fixed header size: 16 bytes.
+ * Total event size: 16 + 16 * rect_count bytes. */
 
 /*
  * EVT_KEY (0x9010) — key press or release.
