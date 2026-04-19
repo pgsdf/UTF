@@ -6,14 +6,63 @@
 #   - Make repo -> /usr/src installation reproducible
 #   - Avoid "stale /usr/src tree" issues during iteration
 #
+# DRM/KMS support:
+#   The DRM/KMS backend (drawfs_drm.c) is OPTIONAL and excluded from the
+#   default build. To enable it, either:
+#     - Export DRAWFS_DRM=true before running this script, or
+#     - Set DRAWFS_DRM=true in UTF/.config (see configure.sh)
+#   When disabled (default), drawfs.ko contains no DRM symbols and has
+#   no drm-kmod build or runtime dependency.
+#
 set -eu
 
 REPO_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+# OS detection — prefer env-inherited values from the parent build.sh /
+# install.sh, fall back to local detection when run standalone.
+if [ -z "${UTF_OS:-}" ]; then
+    . "$REPO_ROOT/../scripts/detect-os.sh"
+fi
+
 SRCROOT=${SRCROOT:-/usr/src}
 
 DEVDEST="$SRCROOT/sys/dev/drawfs"
 MODDEST="$SRCROOT/sys/modules/drawfs"
 KMODDIR="$MODDEST"
+
+# ---------------------------------------------------------------------------
+# DRM gating
+#
+# The kernel Makefile uses make(1) variables (not cpp macros) to decide
+# whether to compile drawfs_drm.c. We translate the shell boolean into a
+# MAKEFLAGS setting that both the dev and modules Makefiles observe. The
+# C-side macro name is DRAWFS_DRM_ENABLED (preserved — it already appears
+# in #ifdef blocks in drawfs.c). The build-system name is DRAWFS_DRM.
+# ---------------------------------------------------------------------------
+
+# Inherit DRAWFS_DRM from environment; fall back to reading the root .config.
+DRAWFS_DRM="${DRAWFS_DRM:-}"
+if [ -z "$DRAWFS_DRM" ]; then
+    UTF_CONFIG="$REPO_ROOT/../.config"
+    if [ -f "$UTF_CONFIG" ]; then
+        # shellcheck disable=SC1090
+        . "$UTF_CONFIG"
+        DRAWFS_DRM="${DRAWFS_DRM:-false}"
+    else
+        DRAWFS_DRM=false
+    fi
+fi
+
+# Build the make(1) flag set. Empty string = pure swap build.
+# The [OS] tag in the banner helps in build logs when .config has been
+# moved between a FreeBSD and a GhostBSD host.
+if [ "$DRAWFS_DRM" = "true" ]; then
+    DRM_MAKE_FLAGS="DRAWFS_DRM_ENABLED=1"
+    DRM_BANNER="[DRM/KMS backend: ENABLED — requires drm-kmod headers] [${UTF_OS:-unknown}]"
+else
+    DRM_MAKE_FLAGS=""
+    DRM_BANNER="[DRM/KMS backend: disabled (default, swap-only)] [${UTF_OS:-unknown}]"
+fi
 
 need_root() {
   if [ "$(id -u)" -ne 0 ]; then
@@ -48,6 +97,7 @@ Commands:
 
 Environment:
   SRCROOT=/usr/src   Root of FreeBSD source tree (default: /usr/src)
+  DRAWFS_DRM=true    Build with optional DRM/KMS backend (default: false)
 USAGE
 }
 
@@ -62,6 +112,7 @@ case "$cmd" in
   install)
     need_root "$cmd"
     echo "Installing drawfs sources into $SRCROOT"
+    echo "$DRM_BANNER"
     mkdir -p "$DEVDEST" "$MODDEST"
     rsync -a --delete "$REPO_ROOT/sys/dev/drawfs/" "$DEVDEST/"
     rsync -a --delete "$REPO_ROOT/sys/modules/drawfs/" "$MODDEST/"
@@ -71,13 +122,16 @@ case "$cmd" in
   build)
     need_root "$cmd"
     echo "Building kernel module in $KMODDIR"
-    ( cd "$KMODDIR" && make clean && make )
+    echo "$DRM_BANNER"
+    # DRM_MAKE_FLAGS is intentionally unquoted: empty string must vanish,
+    # and "DRAWFS_DRM_ENABLED=1" must be a single argv entry.
+    ( cd "$KMODDIR" && make clean && make $DRM_MAKE_FLAGS )
     echo "OK: build"
     ;;
 
   load)
     need_root "$cmd"
-    OBJDIR=$(make -C "$KMODDIR" -V .OBJDIR)
+    OBJDIR=$(make -C "$KMODDIR" $DRM_MAKE_FLAGS -V .OBJDIR)
     KO="$OBJDIR/drawfs.ko"
     if [ ! -f "$KO" ]; then
       echo "ERROR: missing $KO"
@@ -93,12 +147,13 @@ case "$cmd" in
   deploy)
     need_root "$cmd"
     echo "Installing drawfs.ko to /boot/modules/"
+    echo "$DRM_BANNER"
 
     # Find the built module
     KO=""
 
     # Try make install first (cleanest approach)
-    if ( cd "$KMODDIR" && make install ) 2>/dev/null; then
+    if ( cd "$KMODDIR" && make $DRM_MAKE_FLAGS install ) 2>/dev/null; then
         echo "OK: deploy (via make install)"
         kldxref /boot/modules
         echo ""
@@ -108,7 +163,7 @@ case "$cmd" in
     fi
 
     # Fall back to locating the .ko manually
-    OBJDIR=$(make -C "$KMODDIR" -V .OBJDIR 2>/dev/null || echo "")
+    OBJDIR=$(make -C "$KMODDIR" $DRM_MAKE_FLAGS -V .OBJDIR 2>/dev/null || echo "")
     if [ -n "$OBJDIR" ] && [ -f "$OBJDIR/drawfs.ko" ]; then
         KO="$OBJDIR/drawfs.ko"
     fi
@@ -177,6 +232,8 @@ case "$cmd" in
   verify)
     echo "Repo root: $REPO_ROOT"
     echo "SRCROOT:   $SRCROOT"
+    echo "Host OS:   ${UTF_OS:-unknown} ${UTF_OS_VERSION:-}"
+    echo "$DRM_BANNER"
     echo
     echo "Repo dev drawfs.c:"
     ls -l "$REPO_ROOT/sys/dev/drawfs/drawfs.c" 2>/dev/null || echo "  not found"
@@ -189,7 +246,7 @@ case "$cmd" in
     fi
     echo
     echo "Module OBJDIR:"
-    OBJDIR=$(make -C "$KMODDIR" -V .OBJDIR 2>/dev/null || echo "unknown")
+    OBJDIR=$(make -C "$KMODDIR" $DRM_MAKE_FLAGS -V .OBJDIR 2>/dev/null || echo "unknown")
     echo "  $OBJDIR"
     echo "Built module:"
     ls -l "$OBJDIR/drawfs.ko" 2>/dev/null || echo "  not found — run: sudo ./build.sh build"

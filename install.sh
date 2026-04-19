@@ -25,6 +25,11 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 UNINSTALL=0
 CHECK_ONLY=0
 
+# Detect OS early so all downstream messages and the drawfs build inherit
+# UTF_OS and UTF_OS_VERSION via the environment.
+. "$SCRIPT_DIR/scripts/detect-os.sh"
+echo "Host OS: $UTF_OS $UTF_OS_VERSION"
+
 BINARIES="semaaud semainputd semadrawd chrono_dump"
 
 # ============================================================================
@@ -131,6 +136,18 @@ fi
 
 echo "=== Building UTF (optimize=ReleaseSafe) ==="
 
+# Read .config early so drawfs/build.sh sees DRAWFS_DRM via environment.
+# Default is false: swap-only kernel build, zero drm-kmod dependency.
+CONFIG="$SCRIPT_DIR/.config"
+DRAWFS_DRM="${DRAWFS_DRM:-false}"
+if [ -f "$CONFIG" ]; then
+    echo "Reading configuration from $CONFIG"
+    . "$CONFIG"
+    DRAWFS_DRM="${DRAWFS_DRM:-false}"
+fi
+export DRAWFS_DRM
+echo "drawfs DRM/KMS backend: ${DRAWFS_DRM}"
+
 # Build drawfs kernel module first
 echo ""
 echo "--- Building drawfs kernel module ---"
@@ -142,12 +159,10 @@ else
     echo "WARNING: drawfs/build.sh not found — skipping kernel module"
 fi
 
-# Read backend configuration from .config if present
-CONFIG="$SCRIPT_DIR/.config"
+# Semadraw backend flags. DRAWFS_DRM was already consumed above for the kernel
+# build; here we pick up the semadraw userspace backend selections.
 SEMADRAW_FLAGS=""
 if [ -f "$CONFIG" ]; then
-    echo "Reading configuration from $CONFIG"
-    . "$CONFIG"
     [ "${SEMADRAW_VULKAN:-false}"   = "true"  ] && SEMADRAW_FLAGS="$SEMADRAW_FLAGS -Dvulkan=true"
     [ "${SEMADRAW_VULKAN:-false}"   = "false" ] && SEMADRAW_FLAGS="$SEMADRAW_FLAGS -Dvulkan=false"
     [ "${SEMADRAW_X11:-false}"      = "true"  ] && SEMADRAW_FLAGS="$SEMADRAW_FLAGS -Dx11=true"

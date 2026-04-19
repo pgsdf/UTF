@@ -14,6 +14,13 @@ set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# Re-detect OS at build time rather than trusting .config. Catches the case
+# where .config was generated on a different host and copied over. The
+# detection is fast and has no side effects.
+. "$SCRIPT_DIR/scripts/detect-os.sh"
+BUILD_HOST_OS="$UTF_OS"
+BUILD_HOST_OS_VERSION="$UTF_OS_VERSION"
+
 # Handle --check before setting up the log
 if [ "${1:-}" = "--check" ]; then
     echo "=== UTF dependency check ==="
@@ -24,6 +31,7 @@ if [ "${1:-}" = "--check" ]; then
         echo "  MISSING  zig — install from https://ziglang.org/download/"
         OK=0
     fi
+    echo "  ok  host: $BUILD_HOST_OS $BUILD_HOST_OS_VERSION"
     if [ -f "$SCRIPT_DIR/.config" ]; then
         echo "  ok  .config found"
         cat "$SCRIPT_DIR/.config"
@@ -40,6 +48,13 @@ LATEST="$SCRIPT_DIR/build-latest.log"
 # Read configuration from .config if present and no args given
 CONFIG="$SCRIPT_DIR/.config"
 BUILD_FLAGS=""
+# DRAWFS_DRM is exported so that drawfs/build.sh and any nested make(1)
+# invocations see it without us having to plumb it through every call site.
+# Default: unset/false → swap-only kernel build with zero DRM references.
+DRAWFS_DRM="${DRAWFS_DRM:-false}"
+# Preserve any UTF_OS the caller set in the environment before we overwrite
+# it from .config; we use it below to detect a stale .config.
+CONFIG_UTF_OS=""
 if [ -f "$CONFIG" ] && [ $# -eq 0 ]; then
     . "$CONFIG"
     [ "${SEMADRAW_VULKAN:-false}"  = "true" ] && BUILD_FLAGS="$BUILD_FLAGS -Dvulkan=true"
@@ -48,7 +63,26 @@ if [ -f "$CONFIG" ] && [ $# -eq 0 ]; then
     [ "${SEMADRAW_WAYLAND:-false}" = "true" ] && BUILD_FLAGS="$BUILD_FLAGS -Dwayland=true"
     [ "${SEMADRAW_BSDINPUT:-false}" = "true" ] && BUILD_FLAGS="$BUILD_FLAGS -Dbsdinput=true"
     [ "${SEMADRAW_BSDINPUT:-false}" = "false" ] && BUILD_FLAGS="$BUILD_FLAGS -Dbsdinput=false"
+    # DRAWFS_DRM does not go through zig build; it's consumed only by the
+    # kernel Makefiles via drawfs/build.sh. Export it for child processes.
+    DRAWFS_DRM="${DRAWFS_DRM:-false}"
+    # Record the UTF_OS .config claimed, for the stale-config warning below.
+    CONFIG_UTF_OS="${UTF_OS:-}"
 fi
+export DRAWFS_DRM
+
+# Warn loudly if .config claims a different OS family than the host we're
+# actually running on. .config may have been copied from another machine.
+# We then force UTF_OS back to the detected value for the rest of this run.
+if [ -n "$CONFIG_UTF_OS" ] && [ "$CONFIG_UTF_OS" != "$BUILD_HOST_OS" ] \
+   && [ "$CONFIG_UTF_OS" != "unknown" ] && [ "$BUILD_HOST_OS" != "unknown" ]; then
+    echo "WARNING: .config records UTF_OS=$CONFIG_UTF_OS but this host is $BUILD_HOST_OS."
+    echo "         .config may have been copied from another machine."
+    echo "         Re-run: sh configure.sh"
+    echo ""
+fi
+export UTF_OS="$BUILD_HOST_OS"
+export UTF_OS_VERSION="$BUILD_HOST_OS_VERSION"
 
 echo "UTF build — $(date)"
 echo "Log: $LOG"
@@ -60,9 +94,11 @@ echo ""
     echo "Date:      $(date)"
     echo "Host:      $(uname -n)"
     echo "OS:        $(uname -sr)"
+    echo "OS family: $BUILD_HOST_OS $BUILD_HOST_OS_VERSION"
     echo "Zig:       $(zig version 2>/dev/null || echo 'not found')"
     echo "Config:    ${CONFIG} ($([ -f "$CONFIG" ] && echo found || echo not found))"
     echo "Flags:     ${BUILD_FLAGS:-none}"
+    echo "DRAWFS_DRM:${DRAWFS_DRM}"
     echo "Args:      $*"
     echo ""
 
