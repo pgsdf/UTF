@@ -474,25 +474,45 @@ updated with matching constants. Struct sizes verified by compile:
 A pre-existing cosmetic drift on `EVT_POINTER`'s description was fixed
 as a side effect of running the generator.
 
-### `[ ]` B3.3–B3.5 — Damage / partial-update implementation  *(Deferred, P2; depends: B3.2)*
+### `[x]` B3.3 — Damage / partial-update swap-path implementation  *(Done; depends: B3.2)*
 
-The remaining implementation chain. Wire format and opcodes are now
-committed; everything below is code against that contract:
+Three-pass implementation of `DRAWFS_REQ_SURFACE_PRESENT_REGION` in
+the swap-backed kernel path:
 
-1. **B3.3** — Swap-path implementation. Request validator in
-   `drawfs_frame.c` enforcing the error table from the design doc.
-   Dispatch branch in `drawfs.c` on `DRAWFS_REQ_SURFACE_PRESENT_REGION`.
-   Event emission with coalescing governed by
-   `hw.drawfs.region_coalesce_threshold` (new sysctl, default 75). Add
-   `drawfs/tests/test_surface_present_region.py` covering the error
-   table, coalescing behaviour, and the N=1-full-surface equivalence
-   invariant.
-2. **B3.4** — DRM path. `drmModeDirtyFB` when the kernel DRM driver
-   supports it, full-present fallback otherwise. Only meaningful with
-   `DRAWFS_DRM_ENABLED`.
-3. **B3.5** — semadraw emitter. Extend
-   `semadraw/src/backend/drawfs.zig` to emit region presents when the
-   compositor's damage tracker produces a bounded rect set.
+1. **Pass 1** (validator): pure function
+   `drawfs_req_surface_present_region_validate` in `drawfs_frame.c`
+   enforcing the full error table from the design doc. 15 userspace
+   unit tests pass; kernel compile clean on GhostBSD 15.
+2. **Pass 2** (dispatch + coalescing + sysctl): handler
+   `drawfs_reply_surface_present_region` in `drawfs.c` with rect
+   clamping, area-sum threshold coalescing, and event emission. New
+   sysctl `hw.drawfs.region_coalesce_threshold` (int 0–100,
+   default 75). 18 userspace unit tests on clamp and threshold
+   arithmetic pass; kernel compile clean, sysctl exposed on target.
+3. **Pass 3** (integration tests): `test_surface_present_region.py`
+   exercising 18 cases — 8 error-table rows, 9
+   happy-path/clamping/coalescing scenarios (including both
+   threshold extremes), and the N=1-full-surface equivalence
+   invariant. All pass on GhostBSD 15 target.
+
+Design choices documented in
+`drawfs/docs/DESIGN-surface-present-region.md`:
+sum-of-areas coalescing (not true union), single event type
+(`EVT_SURFACE_PRESENTED_REGION`) regardless of collapse, no
+cross-request region-event coalescing.
+
+### `[ ]` B3.4–B3.5 — Damage / partial-update: DRM path and semadraw emitter  *(Deferred, P2; depends: B3.3)*
+
+With the swap path complete (B3.3), the remaining implementation is:
+
+1. **B3.4** — DRM path. `drmModeDirtyFB` when the kernel DRM driver
+   supports it, full-present fallback otherwise. Only meaningful
+   with `DRAWFS_DRM_ENABLED`. Requires access to a drm-kmod-enabled
+   FreeBSD 15 host to exercise end-to-end.
+2. **B3.5** — semadraw emitter. Extend
+   `semadraw/src/backend/drawfs.zig` to emit region presents when
+   the compositor's damage tracker produces a bounded rect set.
+   Requires B3.4 to be landed first for end-to-end testing.
 
 **Non-goals** and **acceptance criteria** are documented in full at
 `drawfs/docs/DESIGN-surface-present-region.md`.

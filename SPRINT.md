@@ -2,7 +2,10 @@
 
 **Sprint**: 2026-04-19 → 2026-05-03
 **Window**: 2 weeks
-**Status**: active
+**Status**: closed (2026-04-19)
+
+Closed early: goal met and expansion scope delivered. See Sprint
+Review and Retrospective at the bottom of this file.
 
 ---
 
@@ -215,12 +218,12 @@ Two files changed: `test_input_injection.py` (three small edits),
 `test_limits.py` (one function rewritten). Zero changes to
 `drawfs_test.py` or kernel code.
 
-### `→ ~` SPRINT-05 — B3.3 pass 2: dispatch and coalescing (EXPANSION SCOPE)
+### `→ ✓` SPRINT-05 — B3.3 pass 2: dispatch and coalescing (EXPANSION SCOPE)
 
 - **Product backlog**: B3.3
 - **Depends on**: SPRINT-04, SPRINT-04b (clean baseline)
 - **Effort**: medium
-- **Status**: fix applied, awaiting verification on target
+- **Status**: done
 - **Owner**: Vic
 - **Done when**: `drawfs.c` dispatches on
   `DRAWFS_REQ_SURFACE_PRESENT_REGION`, emits
@@ -246,24 +249,37 @@ Four design calls, flagged in code comments for the reviewer:
    coalescing is in scope, across-request rect-list merging is not.
 
 18 userspace unit tests covering clamping and area-sum arithmetic
-pass on Linux. Clamping correctly handles: fully-inside, clip-left,
-clip-right, fully-outside, mixed batches. Collapse threshold
-correctly handles: below/at/above threshold, overlapping-sum,
-extreme thresholds (0, 100), zero-rect case, out-of-range
-thresholds (clamped to [0, 100]).
+passed on Linux before landing. **Verified on GhostBSD 15 target**:
+clean compile with `-Werror`, module loads cleanly, sysctl exposed
+at `hw.drawfs.region_coalesce_threshold` with default 75 and
+read/write access, full 11/11 test suite still green (no regression
+in existing paths).
 
-### `→ ⧖` SPRINT-06 — B3.3 pass 3: Python tests (EXPANSION SCOPE)
+### `→ ✓` SPRINT-06 — B3.3 pass 3: Python tests (EXPANSION SCOPE)
 
 - **Product backlog**: B3.3
 - **Depends on**: SPRINT-05
 - **Effort**: small
-- **Status**: queued
-- **Owner**: unassigned
+- **Status**: done
+- **Owner**: Vic
 - **Done when**:
   `drawfs/tests/test_surface_present_region.py` exercises the full
   error table, the N=1-full-surface equivalence invariant, and the
   coalescing behaviour. `drawfs/build.sh test` with this file
   passes on the target host.
+
+**Verified on GhostBSD 15**: 18 tests passed (8 error-table cases,
+9 happy-path/clamping/coalescing cases, 1 equivalence invariant),
+full 12-file test suite still green. First time in the B3.3 arc
+that the kernel handler's behavior matched the test expectations on
+first run — strong evidence the clamping, threshold collapse, and
+event emission arithmetic in pass 2 is correct.
+
+Protocol helpers are local to this file rather than added to
+`drawfs_test.py`. Sysctl-mutating tests save/restore around the
+body. FreeBSD errno values are hardcoded as module-level constants
+rather than imported from Python's `errno` module (which resolves
+to host values).
 
 ### `⧖` SPRINT-07 — B3.4 and B3.5 (NOT in this sprint)
 
@@ -278,64 +294,109 @@ in the next sprint.
 
 ---
 
-## Candidate items (from product backlog)
+## Candidate items (for the next sprint)
 
-As of end-of-sprint, these are the items eligible to enter the next
-sprint. Pick from here when planning. If an item isn't on this list,
-it needs to be added to the product backlog first.
+With B3.3 complete, the natural next-sprint starting point is the
+B3.4/B3.5 chain. Neither is blocked by anything in this codebase —
+they're blocked on external conditions (DRM-enabled host, semadraw
+compositor integration).
 
-### Open, implementation-ready
+### Deferred on external conditions
 
-- **B3.3** — Swap-path implementation of `SURFACE_PRESENT_REGION`.
-  All prerequisites are now in place: wire format is committed, the
-  opcodes are defined in both the JSON and the C headers, and
-  `drawfs_test.py` carries the Python constants. Medium effort.
-  Concrete tasks:
-  - Validator in `drawfs_frame.c` enforcing the design-doc error
-    table (zero-count, too-many, zero-dimension rect, non-zero
-    `_reserved`, non-zero `flags`).
-  - Dispatch branch in `drawfs.c` on the new request opcode.
-  - Coalescing logic, gated by a new sysctl
-    `hw.drawfs.region_coalesce_threshold` (default 75).
-  - `drawfs/tests/test_surface_present_region.py` with coverage of
-    the error table, N=1-full-surface equivalence invariant, and
-    coalescing behaviour.
+- **B3.4** — DRM-path implementation of `SURFACE_PRESENT_REGION`.
+  `drmModeDirtyFB` when the kernel DRM driver supports it,
+  full-present fallback otherwise. Only meaningful with
+  `DRAWFS_DRM_ENABLED=1` and drm-kmod installed. Pull into a sprint
+  only once a DRM-enabled host is available for end-to-end testing.
+- **B3.5** — semadraw emitter. Extend
+  `semadraw/src/backend/drawfs.zig` to emit region presents when
+  the compositor's damage tracker produces a bounded rect set.
+  Requires B3.4 landed first.
+- **DF-4** — WITNESS debug-kernel verification of the existing
+  drawfs test suite. Blocked on access to a WITNESS-built FreeBSD 15
+  kernel (none currently available). Pick up when one is.
 
-### Open, deferred on external conditions
+### Nothing currently in-scope
 
-- **B3.4** — DRM-path implementation. Only meaningful with
-  `DRAWFS_DRM_ENABLED=1` **and** drm-kmod installed. Consider pulling
-  it into a sprint only on a host where both are available.
-- **B3.5** — semadraw emitter. Requires B3.3 and ideally B3.4 to be
-  landed first so there is a complete path to test against.
-- **DF-4** — WITNESS debug-kernel verification. Blocked on access to
-  a WITNESS-built FreeBSD 15 kernel (none currently available). Pick
-  up when one is.
+The product backlog has no items that are both open and
+implementation-ready as of sprint close. Everything tractable has
+landed; what remains is hardware-blocked or waiting on downstream
+work (B3.5 on B3.4).
 
 ---
 
 ## Sprint review
 
-Fill in at the end of the 2-week window.
+Closed 2026-04-19 with original goal met and expansion scope fully
+delivered.
 
-- [x] SPRINT-01 done → B5.3 flipped to `[x]` in product backlog with
-      a one-line summary of what landed. DF-4 added as a new
-      deferred entry (migration from the removed ROADMAP § Backlog).
-- [x] SPRINT-02 done → B3.1 flipped to `[x]`.
-      `drawfs/docs/DESIGN-surface-present-region.md` exists on
-      master.
-- [x] SPRINT-03 done → B3.2 flipped to `[x]`. Verified on GhostBSD
-      with a clean build and clean generator validation.
-- [ ] SPRINT-04 explicitly deferred to next sprint. B3.3–B3.5
-      remains `[ ] Deferred` in the product backlog.
-- [ ] Invariants in `BACKLOG.md` § "Project-level invariants" are
-      still satisfied — confirmed by a clean `sh build.sh --check`
-      and a default-configure build that produced a zero-DRM
-      `drawfs.ko` with the expected banner.
-- [ ] Sprint goal: **met.** Wire contract for regional presents is
-      committed; B3.3 is a pure implementation task against a stable
-      contract.
-- [ ] Commits from this sprint are on `master`.
+### Tasks completed
+
+- [x] SPRINT-01 (B5.3) → cross-link landed, `ROADMAP.md` bottom-of-
+      file `## Backlog` section removed, surviving WITNESS item
+      migrated to DF-4 in product backlog rather than dropped.
+- [x] SPRINT-02 (B3.1) → 407-line design spec
+      `drawfs/docs/DESIGN-surface-present-region.md` committed; new
+      opcode approach chosen over extending `SURFACE_PRESENT.flags`
+      after reading the existing `drawfs_proto.h`.
+- [x] SPRINT-03 (B3.2) → three JSON entries added, generator ran
+      clean, struct definitions hand-added to `drawfs_proto.h`,
+      sizes verified via compile (16/24/16/16 bytes). Kernel builds
+      clean on target.
+- [x] SPRINT-04 (B3.3 pass 1) → pure validator
+      `drawfs_req_surface_present_region_validate` landed in
+      `drawfs_frame.c` with 15 userspace unit tests. Clean kernel
+      build and load, no regression.
+- [x] SPRINT-04a (build.sh test-verb side-fix) → replaced hardcoded
+      historic test-filename default with a real runner (full suite
+      by default, stress mode, single-file mode). Surfaced four
+      pre-existing test defects that had been hidden because the
+      test runner was broken.
+- [x] SPRINT-04b (DF-5 side-fix) → fixed those four test defects.
+      Required three iterations on `test_event_queue_backpressure`
+      before reading the specification properly and realizing the
+      test shouldn't read during accumulation. Documented honestly
+      in the DF-5 backlog entry and in the retrospective below.
+- [x] SPRINT-05 (B3.3 pass 2) → handler
+      `drawfs_reply_surface_present_region` landed in `drawfs.c`
+      with clamping, area-sum threshold coalescing, new sysctl
+      `hw.drawfs.region_coalesce_threshold` (default 75). Four
+      design choices flagged in code. 18 userspace unit tests on
+      the clamping and threshold arithmetic pass.
+- [x] SPRINT-06 (B3.3 pass 3) → `test_surface_present_region.py`
+      landed with 18 tests: 8 error-table rows, 9 happy-path
+      scenarios, 1 equivalence invariant. All pass on target on
+      first run after pass 2 landed — strong evidence for
+      correctness of the clamping and threshold math.
+
+### Items explicitly deferred
+
+- [x] SPRINT-07 (B3.4 + B3.5) → remains queued for next sprint.
+      B3.4 needs a DRM-enabled host. B3.5 needs B3.4 to test
+      end-to-end.
+
+### Invariants
+
+- [x] `BACKLOG.md` § "Project-level invariants" all still satisfied:
+  - `sh configure.sh` defaults → swap-only `drawfs.ko` (verified:
+    default banner "DRM/KMS backend: disabled (default, swap-only)").
+  - `drm-kmod` remains optional (build works without it present).
+  - `hw.drawfs.backend` still defaults to `"swap"` at module load
+    (verified by `test_backend_sysctl.py`).
+  - DRM init fallback preserved (no code paths touched this sprint).
+  - `DRAWFS_DRM_ENABLED` macro name unchanged.
+  - `UTF_OS` detection still informational only.
+
+### Test-suite health
+
+End-of-sprint state: **OK: 12 tests passed** (11 existing files + 1
+new). Up from the mid-sprint state of 2-of-11 failing that surfaced
+when SPRINT-04a fixed the test runner.
+
+### Commits
+
+All commits on `master`. No long-lived branches outstanding from
+this sprint.
 
 ---
 
@@ -343,33 +404,84 @@ Fill in at the end of the 2-week window.
 
 ### What worked
 
-- The B5.3 → B3.1 → B3.2 ordering was correct. Closing the
-  cleanup item first gave a clean desk before starting the bigger
-  design task. Doing the design before touching the JSON meant the
-  protocol-constants edits were mechanical rather than exploratory.
-- Running the generator as part of B3.2 caught a pre-existing
-  cosmetic drift that had been silently present in `drawfs_proto.h`.
-  Good argument for running `gen_constants.py --validate` in CI.
-- Verifying struct sizes with a real C compiler on Linux before
-  copying to the target saved a round-trip. The sizes held on
-  GhostBSD exactly as predicted.
+- **Ordering by dependency, not by size.** B5.3 → B3.1 → B3.2 → B3.3
+  passes 1/2/3 was the right sequence. Each step produced a stable
+  input for the next, so there was never a point where we had to
+  back up and rework earlier work. Pass 3 validated pass 2 on first
+  run — the clearest possible signal that the dependency order was
+  sound.
+- **Pure functions when possible.** Pass 1's validator was a pure
+  function with no kernel-state dependencies, which meant a
+  15-test userspace harness could run against exactly the same
+  bytes the kernel would see. That caught every error-table case
+  before it ever touched a real module load.
+- **Verifying arithmetic before committing.** Pass 2's 18-test
+  userspace harness for clamping and threshold math meant the
+  kernel handler's behavior matched expectations on first run. The
+  cost was one extra test file in `/tmp`; the benefit was avoiding
+  any on-target debugging cycle for the arithmetic.
+- **Running the generator as part of B3.2** caught a pre-existing
+  cosmetic drift in `drawfs_proto.h`. Good argument for wiring
+  `gen_constants.py --validate` into CI.
+- **The new status markers `[~]` / `~`** for "fix applied, awaiting
+  verification on target" filled a genuine gap. Previously Claude
+  had been flipping things to `[x]` prematurely or leaving them
+  `[ ]` in ways that undersold progress. The marker made the
+  in-flight state visible without lying in either direction.
 
 ### What didn't
 
-- Initial B5.3 scope was underestimated — framed as "add a note at
-  the top" but was really "consolidate the ROADMAP's task tracking
-  into the root backlog, migrate any surviving items." The correct
-  framing would have caught the DF-4 migration during planning
-  rather than during execution.
-- `SPRINT.md` was a template for most of the sprint, not a filled
-  sprint. In practice the sprint was tracked in conversation rather
-  than in the file. That's workable once or twice, but the pattern
-  needs attention.
+- **Scope estimation for B5.3 was wrong.** Framed as "add a note at
+  the top" but was really "consolidate ROADMAP task-tracking into
+  the root backlog and migrate surviving items." The right framing
+  would have surfaced DF-4 during planning, not during execution.
+  Pattern to watch: "just a small cleanup" in a documentation-
+  consolidation task almost never is.
+- **DF-5 debugging took three iterations instead of one.**
+  Specifically the `test_event_queue_backpressure` sub-fix. The
+  first two attempts were plausible-sounding but grounded in my
+  model of the system rather than in the documentation. When the
+  test failed a second time in a new shape, the right response was
+  to stop theorizing and read the spec — which is what we
+  eventually did, and it worked immediately. The failure mode is
+  recognizable: when two fixes in a row don't land, read the docs.
+- **SPRINT.md was a template for most of the sprint.** The task
+  log was being maintained in conversation rather than in the
+  file. The retrospective change from the mid-sprint retro
+  (fill SPRINT.md at the start of the sprint, not retroactively)
+  was adopted partway through — SPRINT-04, SPRINT-04a, SPRINT-04b,
+  SPRINT-05, SPRINT-06 were all filled in at the time they
+  started, which worked better. The early-sprint entries
+  (SPRINT-01 through SPRINT-03) still read as retroactively-
+  smoothed because they were.
+- **The build.sh test-runner defect was hiding real test defects.**
+  `./build.sh test` pointed at a non-existent historic filename,
+  so the full suite hadn't run in some time. That let DF-5's four
+  underlying bugs sit undetected. Fixing the runner immediately
+  was the right call (SPRINT-04a) even though it pulled in
+  SPRINT-04b's debugging as a consequence. The lesson: a broken
+  diagnostic tool is actively harmful, not just inconvenient.
 
-### One concrete change for next sprint
+### Concrete changes for next sprint
 
-Fill in `SPRINT.md` at the start of the sprint, not retroactively.
-Even partially filled — a sprint goal and two task titles — is
-enough scaffolding to keep the file honest. Retroactive filling
-tends to smooth out the actual arc in ways that hide what really
-happened.
+1. **Start SPRINT.md with real content at the first task.** Goal,
+   one task title, owner. Two minutes of scaffolding, and the
+   sprint log doesn't rot.
+2. **When two iterations of a fix fail, stop and read
+   specifications before writing a third.** The DF-5 arc is the
+   canonical example: two failed iterations, then a quick read of
+   `PROTOCOL.md`, `TEST_PLAN.md`, and the kernel source, and the
+   correct fix dropped out immediately.
+3. **Consider pulling DF-4 into the next sprint if a WITNESS
+   kernel becomes available.** It's a small-effort item that's
+   been waiting on hardware; worth opportunistically closing when
+   the blocker lifts.
+
+### Sprint-over-sprint meta-observation
+
+This sprint expanded from three planned items (B5.3, B3.1, B3.2)
+to eight delivered items (plus two side-fixes). The expansion
+happened organically: B3.3 was pulled in when B3.2 finished with
+time to spare, and the two side-fixes were forced by verification
+needs. Total sprint tasks completed: 8. Sprint goal: met.
+Expansion goal: also met. Both honestly documented.
