@@ -142,15 +142,17 @@ make(1)**, which is the build-system change tracked under the
 DRM-optional theme below. Actual hardware bring-up is deferred until
 someone has matching hardware to exercise it.
 
-### `[ ]` DF-4 — Verify on FreeBSD 15 debug kernel (WITNESS)  *(Open, Small)*
+### `[ ]` DF-4 — Verify on FreeBSD 15 debug kernel (WITNESS)  *(Deferred, Small)*
 
 Rerun the drawfs test suite against a FreeBSD 15 kernel built with
-`WITNESS` enabled. This stresses the locking-order discipline in
-`drawfs.c` and `drawfs_surface.c` (session mutex, surface mutex,
-vm_object lock) in a way that the release kernel does not. Precondition:
-access to a host or VM running a debug-built FreeBSD 15 kernel —
-currently deferred because no such host is available. Migrated from
-`drawfs/docs/ROADMAP.md` as part of B5.3.
+`WITNESS`, `WITNESS_SKIPSPIN`, and `INVARIANTS` enabled. This stresses
+the locking-order discipline in `drawfs.c` and `drawfs_surface.c`
+(session mutex, surface mutex, vm_object lock) in a way that the
+release kernel does not.
+
+**Deferred**: requires access to a host or VM running a debug-built
+FreeBSD 15 kernel. None currently available. Pick this up when one is.
+Migrated from `drawfs/docs/ROADMAP.md` as part of B5.3.
 
 ---
 
@@ -384,21 +386,42 @@ DF-4 above.
 
 ## Deferred
 
-### `[ ]` Damage / partial-update protocol (was B3.1–B3.5)  *(Deferred, P2)*
+### `[x]` B3.1 — Design `DRAWFS_REQ_SURFACE_PRESENT_REGION`  *(Done)*
 
-Beneficial for both backends but scoped out of current work because
-it is a wire-format change that requires its own design pass. Plan:
+Opcode assignment, wire format, semantics, error conditions, backward-
+compatibility analysis, and design-alternatives writeup. Full spec lives
+at `drawfs/docs/DESIGN-surface-present-region.md`. Key choices:
 
-1. Design `DRAWFS_REQ_SURFACE_PRESENT_REGION` opcode in
-   `shared/protocol_constants.json`: surface_id + list of rects,
-   capped at N=16 per request.
-2. Regenerate C and Zig headers via `gen_constants.py` (S-1).
-3. Implement in the **swap path first**: rect list accepted,
-   validated, coalesced, emitted back as `SURFACE_PRESENTED_REGION`.
-   Swap semantics unchanged — this is pure metadata.
-4. Implement in the DRM path: `drmModeDirtyFB` when supported, full
-   present otherwise.
-5. Extend `semadraw`'s drawfs backend to emit region presents when
+- New opcode `0x0023` with reply `0x8023` and event `0x9003`, rather
+  than extending `SURFACE_PRESENT` (0x0022) via its reserved `flags`
+  field. Preserves the fixed-size invariant of the existing struct.
+- New shared `drawfs_rect` type (16 bytes).
+- `DRAWFS_MAX_PRESENT_RECTS = 16` as a protocol-level cap.
+- Server-side coalescing controlled by a 75% area threshold
+  (`hw.drawfs.region_coalesce_threshold`).
+- Clients are free to receive `EVT_SURFACE_PRESENTED_REGION` even for
+  requests made via the old opcode (server-side flexibility).
+
+Implementation (B3.2–B3.5) remains deferred pending sprint scheduling.
+
+### `[ ]` B3.2–B3.5 — Damage / partial-update implementation  *(Deferred, P2; depends: B3.1)*
+
+Now that B3.1 is complete, the implementation chain is:
+
+1. **B3.2** — Add the three opcode entries to
+   `shared/protocol_constants.json` and regenerate C + Zig headers via
+   `gen_constants.py` (S-1). No generator changes needed.
+2. **B3.3** — Implement in the swap path: struct definitions in
+   `drawfs_proto.h`, validator in `drawfs_frame.c`, dispatch in
+   `drawfs.c`, coalescing and event emission. Add
+   `drawfs/tests/test_surface_present_region.py` covering the error
+   table, coalescing behaviour, and the N=1-full-surface equivalence
+   invariant.
+3. **B3.4** — DRM path: `drmModeDirtyFB` when the kernel DRM driver
+   supports it, full-present fallback otherwise. Only meaningful with
+   `DRAWFS_DRM_ENABLED`.
+4. **B3.5** — Extend semadraw's drawfs backend
+   (`semadraw/src/backend/drawfs.zig`) to emit region presents when
    the compositor's damage tracker produces a bounded rect set.
 
 **Non-goals for this work:**
@@ -407,12 +430,8 @@ it is a wire-format change that requires its own design pass. Plan:
 - Triple-buffering or front/back buffer management. Present semantics
   remain immediate.
 
-**Acceptance criteria:**
-
-- Full-surface present (current behaviour) remains identical on the
-  wire — zero regression for clients that don't use the new opcode.
-- A region present with N=1 full-surface rect produces pixel-identical
-  output to a full present.
+**Acceptance criteria** are documented in full at the end of
+`drawfs/docs/DESIGN-surface-present-region.md`.
 
 ---
 
