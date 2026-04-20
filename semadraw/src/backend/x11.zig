@@ -620,6 +620,10 @@ pub const X11Backend = struct {
 
         self.width = new_width;
         self.height = new_height;
+        if (self.display) |disp| {
+            _ = c.XResizeWindow(disp, self.window, new_width, new_height);
+            _ = c.XFlush(disp);
+        }
 
         // Create new XImage
         self.ximage = c.XCreateImage(

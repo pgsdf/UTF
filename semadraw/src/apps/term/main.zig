@@ -436,6 +436,7 @@ fn run(allocator: std.mem.Allocator, config: Config) !void {
 
     const blink_ms: i64 = 500;
     var last_blink  = std.time.milliTimestamp();
+    var last_pty_ms = std.time.milliTimestamp();
     var blink_vis   = true;
     var running     = true;
 
@@ -455,9 +456,9 @@ fn run(allocator: std.mem.Allocator, config: Config) !void {
         }
         _ = posix.poll(pfds[0..nfds], 16) catch continue;
 
-        // Cursor blink
+        // Cursor blink — only trigger if PTY has been quiet for at least one blink interval
         const now = std.time.milliTimestamp();
-        if (sess.scr.shouldCursorBlink() and now - last_blink >= blink_ms) {
+        if (sess.scr.shouldCursorBlink() and now - last_blink >= blink_ms and now - last_pty_ms >= blink_ms) {
             blink_vis   = !blink_vis;
             last_blink  = now;
             sess.scr.dirty = true;
@@ -474,9 +475,20 @@ fn run(allocator: std.mem.Allocator, config: Config) !void {
                 const pfd = pfds[pfi];
 
                 if (pfd.revents & posix.POLL.IN != 0) {
-                    if (s.shell.read() catch null) |data| {
-                        s.parser.feedSlice(data);
-                        if (si == state.active) needs_render = true else s.bell = true;
+                    // Drain all available PTY data before rendering to avoid
+                    // rendering mid-sequence (e.g. cursor at col 0 before prompt)
+                    while (true) {
+                        const data = s.shell.read() catch break;
+                        if (data == null) break;
+                        s.parser.feedSlice(data.?);
+                        if (si == state.active) {
+                            needs_render = true;
+                            last_pty_ms = std.time.milliTimestamp();
+                        } else s.bell = true;
+                        // Check if more data is available
+                        var check = [1]posix.pollfd{.{ .fd = s.shell.getFd(), .events = posix.POLL.IN, .revents = 0 }};
+                        const r = posix.poll(&check, 0) catch break;
+                        if (r == 0) break;
                     }
                 }
 
