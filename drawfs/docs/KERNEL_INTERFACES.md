@@ -35,8 +35,27 @@ This document describes the FreeBSD kernel behavior of `/dev/draw`.
 
 Implemented ioctls.
 
-* STATS: returns counters for frames, messages, and bytes.
-* MAP_SURFACE (Step 11): selects a surface for `mmap` on this fd.
+`DRAWFSGIOC_STATS` — returns per-session counters for frames, messages, events,
+and bytes, plus current resource usage (surfaces_count, surfaces_bytes,
+evq_bytes).
+
+`DRAWFSGIOC_MAP_SURFACE` — selects a surface for `mmap` on this file descriptor.
+The caller sets `surface_id`; the kernel fills `stride_bytes` and `bytes_total`.
+
+`DRAWFSGIOC_INJECT_INPUT` — injects an input event into the session that owns
+a given surface. Used by semainputd to route keyboard, pointer, scroll, and
+touch events to the correct client.
+
+`DRAWFSGIOC_GET_EFIFB_INFO` — queries EFI framebuffer geometry when the efifb
+backend is active. Returns width, height, stride, bits per pixel, and total
+size. Returns `ENODEV` if no EFI framebuffer is available.
+
+`DRAWFSGIOC_BLIT_TO_EFIFB` — copies a userspace pixel buffer to the EFI
+framebuffer via `copyin`. The caller provides a pointer to the rendered pixel
+data, source stride, dimensions, and destination offset. The kernel copies
+each row to the write-combining framebuffer mapping. Called by semadrawd after
+each `SURFACE_PRESENT` when the efifb backend is active. Returns `ENODEV` if
+efifb is not initialised, `EFAULT` on bad pointer.
 
 ## mmap
 

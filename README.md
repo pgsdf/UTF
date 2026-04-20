@@ -274,11 +274,14 @@ not a compositor; policy lives in userspace.
 
 Completed: full surface lifecycle protocol, input event injection
 (`DRAWFSGIOC_INJECT_INPUT`), per-session resource limits, event queue
-backpressure. Verified operational on bare metal FreeBSD 15 at 1920x1080.
+backpressure. Phase 2 EFI framebuffer backend (`drawfs_efifb.c`) maps the
+UEFI GOP framebuffer from preload metadata and exposes `DRAWFSGIOC_BLIT_TO_EFIFB`
+so semadrawd can write rendered frames directly to the physical display without
+X11, Wayland, or DRM/KMS. Verified operational on bare metal FreeBSD 15 at
+1024x768 under UEFI boot.
 
-A DRM/KMS backend skeleton (`drawfs_drm.c`) exists for Phase 2 but requires
-`drm-kmod` headers and is excluded from the default build. The default backend
-uses the swap path which is fully functional.
+A DRM/KMS backend skeleton (`drawfs_drm.c`) exists for future GPU-accelerated
+bring-up but requires `drm-kmod` headers and is excluded from the default build.
 
 See `drawfs/docs/` for the protocol specification and architecture.
 
@@ -388,7 +391,7 @@ All seven implementation waves are complete.
 | Component  | Status |
 |------------|--------|
 | `shared/`  | ✓ Complete |
-| `drawfs`   | ✓ Phase 1 complete. Phase 2 DRM/KMS skeleton complete (hardware bring-up pending) |
+| `drawfs`   | ✓ Phase 1 complete. Phase 2 EFI framebuffer backend complete. DRM/KMS skeleton complete (hardware bring-up pending) |
 | `semaaud`  | ✓ Complete |
 | `semainput`| ✓ Complete |
 | `semadraw` | ✓ Complete |

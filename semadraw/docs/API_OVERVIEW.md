@@ -2,7 +2,92 @@
 
 The Zig module exposes a small semantic API and SDCS helpers.
 
-## SDCS Encoding
+## App Framework
+
+The `App` struct provides a high-level event loop abstraction for application
+code. It manages the connection, surface, encoder, and frame pacing so
+applications only implement drawing and input handling.
+
+```zig
+const semadraw = @import("semadraw");
+const App      = semadraw.App;
+const AppEvent = semadraw.AppEvent;
+const Encoder  = semadraw.Encoder;
+
+const WIDTH:  f32 = 1366;
+const HEIGHT: f32 = 768;
+
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+
+    var app = try App.init(gpa.allocator(), .{
+        .title      = "My App",
+        .width      = WIDTH,
+        .height     = HEIGHT,
+        .x          = 0,
+        .y          = 0,
+        .target_fps = 60,
+    });
+    defer app.deinit();
+
+    var state: MyState = .{};
+    try app.run(&state, onDraw, onEvent);
+}
+
+fn onDraw(ctx: *anyopaque, enc: *Encoder, frame: u64) !void {
+    _ = frame;
+    const s: *MyState = @ptrCast(@alignCast(ctx));
+    try enc.fillRect(0, 0, WIDTH, HEIGHT, 0.0, 0.0, 0.2, 1.0);
+    _ = s;
+}
+
+fn onEvent(ctx: *anyopaque, event: AppEvent) !bool {
+    _ = ctx;
+    return switch (event) {
+        .quit        => false,
+        .key   => |k| if (k.pressed) false else true,
+        .mouse => |_| true,
+        .frame => |_| true,
+    };
+}
+```
+
+### AppDesc
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `title` | `[]const u8` | `"SemaDraw App"` | Surface title |
+| `width` | `f32` | `1280` | Surface width in pixels |
+| `height` | `f32` | `720` | Surface height in pixels |
+| `scale` | `f32` | `1.0` | Pixel scale factor |
+| `z_order` | `i32` | `0` | Surface stacking order |
+| `x` | `f32` | `0` | Initial X position |
+| `y` | `f32` | `0` | Initial Y position |
+| `socket_path` | `?[]const u8` | `null` | Socket override (null = default) |
+| `target_fps` | `u32` | `60` | Frame rate target (0 = unlimited) |
+
+### AppEvent
+
+```zig
+pub const AppEvent = union(enum) {
+    quit,
+    frame: struct { frame_number: u64, timestamp_ns: u64 },
+    key:   struct { key_code: u32, pressed: bool, modifiers: u8 },
+    mouse: struct { x: f32, y: f32, button: u8, pressed: bool, modifiers: u8 },
+};
+```
+
+Return `true` from `onEvent` to continue running, `false` to quit.
+
+### Display size
+
+The App framework does not yet query the display size automatically. Applications
+should set width and height to match the physical display. On the FreeBSD
+console with the drawfs EFI framebuffer backend, the display size is reported
+in `dmesg` as `VT(efifb): resolution WxH`.
+
+
 
 The primary entry point for stream creation is `semadraw.Encoder`.
 
