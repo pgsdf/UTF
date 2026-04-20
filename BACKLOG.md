@@ -533,3 +533,83 @@ as an audit trail; every item is now closed above.
 | 5 | I-2, I-3, D-4, DF-3, C-2 | Wave 4 |
 | 6 | C-3 | Wave 5 |
 | 7 | C-4, C-5 | Wave 6 |
+
+---
+
+## Long-term: Quartz Equivalent on UTF
+
+These items represent the path toward a native GNUstep/AppKit display
+stack on UTF — a Quartz equivalent that requires no X11. They are
+long-term architectural goals, not near-term sprint items.
+
+**Background.** UTF already provides the lower half of this stack:
+drawfs owns the framebuffer (`/dev/draw`), semadrawd is the compositor,
+SDCS is the drawing command stream, and the EFI framebuffer backend
+means the stack runs on any UEFI machine without a GPU driver. What is
+missing is the retained-mode layer model above SDCS that Quartz
+Compositor provides, and a GNUstep display backend that targets
+semadraw rather than X11.
+
+### `[ ]` LT-1 — Layer Tree Protocol on top of SDCS  *(Open, Large)*
+
+**Depends on**: SDCS stable, semadrawd compositor operational
+
+Surfaces become layers with transform, opacity, clip, and z-order
+properties. Clients describe a retained scene graph rather than pushing
+raw pixel commands each frame. semadrawd composites the layer tree
+rather than blitting each surface independently.
+
+Key design points:
+
+- Extend the semadraw IPC protocol with `SET_LAYER_TRANSFORM`,
+  `SET_LAYER_OPACITY`, `SET_LAYER_CLIP` messages
+- semadrawd maintains a retained layer tree per client session
+- Only damaged layers are re-rendered each frame
+- Layer properties are animatable (see LT-2)
+- Implementation lives in `semadraw/src/daemon/layer_tree.zig`
+
+### `[ ]` LT-2 — Animation Engine driven by the chronofs Clock  *(Open, Large)*
+
+**Depends on**: LT-1, chronofs `ChronofsClockSource` wired into
+semadrawd frame scheduler
+
+An animation engine that interpolates layer properties between frames,
+driven by the chronofs audio-hardware clock. This is the UTF equivalent
+of Core Animation's display link and implicit transaction model.
+
+Key design points:
+
+- Animations are submitted as `(property, from, to, duration, curve)`
+  tuples via the semadraw IPC protocol
+- The frame scheduler calls `nextFrameTarget()` from chronofs to
+  determine the next sample-aligned frame boundary
+- Property values are interpolated at each frame boundary and applied
+  to the layer tree before compositing
+- Animations are drift-free by construction — clocked against audio
+  hardware rather than wall time, eliminating audio/visual skew
+- Easing curves: linear, ease-in, ease-out, ease-in-out, spring
+
+### `[ ]` LT-3 — GNUstep Backend targeting semadraw instead of X11  *(Open, Large)*
+
+**Depends on**: LT-1, LT-2; libs-opal and libs-quartzcore in GNUstep
+upstream
+
+A GNUstep display backend (`back-semadraw`) that implements
+`GSDisplayServer` against semadraw rather than X11. This allows the
+full GNUstep/AppKit application stack to run natively on UTF without
+X11 as an intermediary — on any UEFI machine including older hardware
+with no GPU driver.
+
+Key design points:
+
+- `back-semadraw` implements `GSDisplayServer` using the semadraw
+  client library (`libsemadraw`)
+- Opal (2D drawing, PDF model) maps its drawing operations to SDCS
+  commands
+- QuartzCore (layer compositing, Core Animation) maps to the LT-1
+  layer tree protocol and LT-2 animation engine
+- Applications run unmodified on bare metal FreeBSD via any UTF
+  backend: EFI framebuffer (any UEFI machine, no GPU driver required),
+  Vulkan (GPU-accelerated), or X11 (compatibility mode)
+- Makes UTF the FreeBSD analog of Quartz Compositor on macOS, with
+  GNUstep as the application framework above it
