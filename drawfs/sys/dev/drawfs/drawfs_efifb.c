@@ -134,7 +134,7 @@ void
 drawfs_efifb_fini(void)
 {
     if (drawfs_efifb.fb_vaddr != 0) {
-        pmap_unmapdev(drawfs_efifb.fb_vaddr, drawfs_efifb.fb_size);
+        pmap_unmapdev((void *)drawfs_efifb.fb_vaddr, drawfs_efifb.fb_size);
         drawfs_efifb.fb_vaddr = 0;
     }
     drawfs_efifb.initialized = 0;

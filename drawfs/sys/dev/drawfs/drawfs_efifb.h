@@ -22,6 +22,9 @@ void     drawfs_efifb_blit_full(const uint8_t *src, uint32_t src_stride);
 
 /* Get pointer to a destination row in the EFI framebuffer (for kernel blit). */
 uint8_t *drawfs_efifb_dst_row(uint32_t row);
+
+/* Query */
+int      drawfs_efifb_available(void);
 uint32_t drawfs_efifb_width(void);
 uint32_t drawfs_efifb_height(void);
 uint32_t drawfs_efifb_stride(void);
