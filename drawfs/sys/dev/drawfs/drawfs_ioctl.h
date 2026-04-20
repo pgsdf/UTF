@@ -91,4 +91,40 @@ struct drawfs_inject_input {
 
 #define DRAWFSGIOC_INJECT_INPUT _IOWR('D', 0x03, struct drawfs_inject_input)
 
+/*
+ * Blit a userspace pixel buffer to the EFI framebuffer.
+ *
+ * semadrawd passes a pointer to its mmap'd surface buffer and the
+ * kernel copies it row by row to the write-combining EFI framebuffer.
+ *
+ * Returns:
+ *   0       success
+ *   ENODEV  EFI framebuffer not initialised
+ *   EFAULT  bad userspace pointer
+ */
+struct drawfs_blit_to_efifb {
+    const uint8_t *src;       /* userspace pointer to pixel buffer */
+    uint32_t       src_stride; /* bytes per scanline in src */
+    uint32_t       width;      /* pixels to copy per row */
+    uint32_t       height;     /* rows to copy */
+    uint32_t       dst_x;      /* destination x offset in framebuffer */
+    uint32_t       dst_y;      /* destination y offset in framebuffer */
+};
+
+#define DRAWFSGIOC_BLIT_TO_EFIFB _IOW('D', 0x04, struct drawfs_blit_to_efifb)
+
+/*
+ * Get EFI framebuffer geometry (for informational use).
+ */
+struct drawfs_efifb_info {
+    uint64_t fb_size;
+    uint32_t fb_width;
+    uint32_t fb_height;
+    uint32_t fb_stride;
+    uint32_t fb_bpp;
+    uint32_t _pad;
+};
+
+#define DRAWFSGIOC_GET_EFIFB_INFO _IOR('D', 0x05, struct drawfs_efifb_info)
+
 #endif

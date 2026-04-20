@@ -91,6 +91,31 @@ comptime {
     }
 }
 
+// DRAWFSGIOC_BLIT_TO_EFIFB — copy surface pixels to the EFI framebuffer.
+// _IOW('D', 0x04, struct drawfs_blit_to_efifb)
+const BlitToEfifb = extern struct {
+    src:        u64,    // userspace pointer (const uint8_t *)
+    src_stride: u32,
+    width:      u32,
+    height:     u32,
+    dst_x:      u32,
+    dst_y:      u32,
+    _pad:       u32 = 0,
+};
+const DRAWFSGIOC_BLIT_TO_EFIFB: u32 = ioc(IOC_IN, 'D', 0x04, BlitToEfifb);
+
+// DRAWFSGIOC_GET_EFIFB_INFO — query EFI framebuffer geometry.
+// _IOR('D', 0x05, struct drawfs_efifb_info)
+const EfifbInfo = extern struct {
+    fb_size:   u64,
+    fb_width:  u32,
+    fb_height: u32,
+    fb_stride: u32,
+    fb_bpp:    u32,
+    _pad:      u32 = 0,
+};
+const DRAWFSGIOC_GET_EFIFB_INFO: u32 = ioc(IOC_OUT, 'D', 0x05, EfifbInfo);
+
 // ============================================================================
 // Protocol helpers
 // ============================================================================
@@ -237,6 +262,13 @@ pub const DrawfsBackend = struct {
     frame_count: u64,
     render_state: RenderState,
 
+    // EFI framebuffer info (zeroed if not available)
+    efifb_width:  u32,
+    efifb_height: u32,
+    efifb_stride: u32,
+    efifb_bpp:    u32,
+    efifb_avail:  bool,
+
     // Read buffer for protocol
     read_buf: [4096]u8,
 
@@ -268,6 +300,11 @@ pub const DrawfsBackend = struct {
             .render_state = .{},
             .read_buf = undefined,
             .input = null,
+            .efifb_width  = 0,
+            .efifb_height = 0,
+            .efifb_stride = 0,
+            .efifb_bpp    = 0,
+            .efifb_avail  = false,
         };
 
         // Open device
@@ -288,6 +325,9 @@ pub const DrawfsBackend = struct {
         try self.doDisplayOpen();
 
         log.info("connected to drawfs: display {}x{}", .{ self.display_width, self.display_height });
+
+        // Probe EFI framebuffer availability
+        self.probeEfifb();
 
         // Initialize input devices via bsdinput module (libinput preferred)
         self.input = bsdinput.BsdInput.init(allocator, self.display_width, self.display_height) catch |err| blk: {
@@ -503,6 +543,46 @@ pub const DrawfsBackend = struct {
         }
     }
 
+    /// Query the kernel for EFI framebuffer availability and geometry.
+    /// Non-fatal — if the ioctl fails (ENODEV) we stay in swap-only mode.
+    fn probeEfifb(self: *Self) void {
+        var info = std.mem.zeroes(EfifbInfo);
+        const result = doIoctl(self.fd, DRAWFSGIOC_GET_EFIFB_INFO, @intFromPtr(&info));
+        if (result != 0) {
+            log.info("efifb not available (ioctl returned {})", .{result});
+            return;
+        }
+        self.efifb_width  = info.fb_width;
+        self.efifb_height = info.fb_height;
+        self.efifb_stride = info.fb_stride;
+        self.efifb_bpp    = info.fb_bpp;
+        self.efifb_avail  = true;
+        log.info("efifb available: {}x{} stride={} bpp={}", .{
+            info.fb_width, info.fb_height, info.fb_stride, info.fb_bpp,
+        });
+    }
+
+    /// Blit the mmap'd surface buffer to the EFI framebuffer via kernel ioctl.
+    /// Called after each successful present() when efifb is available.
+    fn blitToEfifb(self: *Self) void {
+        if (!self.efifb_avail) return;
+        const map = self.surface_map orelse return;
+
+        const req = BlitToEfifb{
+            .src        = @intFromPtr(map.ptr),
+            .src_stride = self.surface_stride,
+            .width      = @min(self.width, self.efifb_width),
+            .height     = @min(self.height, self.efifb_height),
+            .dst_x      = 0,
+            .dst_y      = 0,
+        };
+
+        const result = doIoctl(self.fd, DRAWFSGIOC_BLIT_TO_EFIFB, @intFromPtr(&req));
+        if (result != 0) {
+            log.warn("BLIT_TO_EFIFB failed: {}", .{result});
+        }
+    }
+
     fn present(self: *Self) !void {
         if (self.surface_id == 0) return error.NoSurface;
 
@@ -600,6 +680,9 @@ pub const DrawfsBackend = struct {
         self.present() catch |err| {
             log.warn("present failed: {}", .{err});
         };
+
+        // Blit to EFI framebuffer for bare console display
+        self.blitToEfifb();
 
         self.frame_count += 1;
         const end = std.time.nanoTimestamp();
