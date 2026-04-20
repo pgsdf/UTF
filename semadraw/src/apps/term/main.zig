@@ -432,7 +432,7 @@ fn run(allocator: std.mem.Allocator, config: Config) !void {
     rend.scr = &state.sessions[0].?.scr;
 
     log.info("session 1 started", .{});
-    try renderFrame(allocator, &state, &rend, &surface, conn, true);
+    try renderFrame(allocator, &state, &rend, surface, conn, true);
 
     const blink_ms: i64 = 500;
     var last_blink  = std.time.milliTimestamp();
@@ -528,7 +528,7 @@ fn run(allocator: std.mem.Allocator, config: Config) !void {
                             &state.activeSession().scr,
                             conn, m, &rend);
                         if (chord_menu.visible and state.activeSession().scr.dirty) {
-                            try renderFrame(allocator, &state, &rend, &surface, conn, blink_vis);
+                            try renderFrame(allocator, &state, &rend, surface, conn, blink_vis);
                             state.activeSession().scr.dirty = false;
                         }
                     },
@@ -543,7 +543,7 @@ fn run(allocator: std.mem.Allocator, config: Config) !void {
         }
 
         if (state.activeSession().scr.dirty or needs_render) {
-            try renderFrame(allocator, &state, &rend, &surface, conn, blink_vis);
+            try renderFrame(allocator, &state, &rend, surface, conn, blink_vis);
             state.activeSession().scr.dirty = false;
         }
     }
@@ -833,7 +833,7 @@ fn handleMouseEvent(
                         } else if (idx == 1) scr.clearSelection();
                     },
                     .paste => {
-                        const sel: client.ClipboardSelection = if (idx == 0) .clipboard else .primary;
+                        const sel: client.protocol.ClipboardSelection = if (idx == 0) .clipboard else .primary;
                         conn.requestClipboard(sel) catch |e| log.warn("paste: {}", .{e});
                     },
                 }

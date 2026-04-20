@@ -460,47 +460,42 @@ pub const Renderer = struct {
         for (0..max) |si| {
             const label = labels[si] orelse continue;
             const slot_w: f32 = @floatFromInt(self.cell_width * 4);
-            const slot_x: f32 = @floatFromInt(si) * slot_w;
+            const slot_x: f32 = @as(f32, @floatFromInt(si)) * slot_w;
 
             // Highlight active session
             if (si == active) {
                 try self.encoder.fillRect(slot_x, bar_y, slot_w, bar_h, 0.2, 0.4, 0.8, 1.0);
             }
 
-            // Draw label characters
-            var glyph_x = slot_x;
-            for (label) |ch| {
-                const glyph_idx: usize = if (ch >= 32 and ch < 128) ch - 32 else 0;
-                const col_in_atlas = glyph_idx % font.Font.GLYPHS_PER_ROW;
-                const row_in_atlas = glyph_idx / font.Font.GLYPHS_PER_ROW;
-                const atlas_x = col_in_atlas * font.Font.GLYPH_WIDTH;
-                const atlas_y = row_in_atlas * font.Font.GLYPH_HEIGHT;
+            // Draw label characters as a glyph run
+            const fg_r: f32 = if (si == active) 1.0 else 0.75;
+            const fg_g: f32 = if (si == active) 1.0 else 0.75;
+            const fg_b: f32 = if (si == active) 1.0 else 0.75;
 
-                // Foreground color: white for active, gray for others
-                const fg_r: f32 = if (si == active) 1.0 else 0.75;
-                const fg_g: f32 = if (si == active) 1.0 else 0.75;
-                const fg_b: f32 = if (si == active) 1.0 else 0.75;
-
-                const glyphs = [1]semadraw.Encoder.Glyph{.{
-                    .x            = @intFromFloat(glyph_x),
-                    .y            = @intFromFloat(bar_y),
-                    .atlas_x      = @intCast(atlas_x * self.scale),
-                    .atlas_y      = @intCast(atlas_y * self.scale),
-                    .atlas_w      = @intCast(font.Font.GLYPH_WIDTH  * self.scale),
-                    .atlas_h      = @intCast(font.Font.GLYPH_HEIGHT * self.scale),
-                    .advance      = @intCast(self.cell_width),
-                    .bearing_x    = 0,
-                    .bearing_y    = 0,
-                }};
-                try self.encoder.drawGlyphRun(
-                    self.atlas,
-                    font.Font.ATLAS_WIDTH  * self.scale,
-                    font.Font.ATLAS_HEIGHT * self.scale,
-                    &glyphs,
-                    fg_r, fg_g, fg_b, 1.0,
-                );
-                glyph_x += @floatFromInt(self.cell_width);
+            var glyphs_buf: [8]semadraw.Encoder.Glyph = undefined;
+            var glyph_count: usize = 0;
+            for (label, 0..) |ch, ci| {
+                const glyph_idx: u32 = if (ch >= 32 and ch < 128) ch - 32 else 0;
+                glyphs_buf[glyph_count] = .{
+                    .index    = glyph_idx,
+                    .x_offset = @as(f32, @floatFromInt(ci)) * @as(f32, @floatFromInt(self.cell_width)),
+                    .y_offset = 0,
+                };
+                glyph_count += 1;
             }
+
+            try self.encoder.drawGlyphRun(
+                slot_x,
+                bar_y,
+                fg_r, fg_g, fg_b, 1.0,
+                self.cell_width,
+                self.cell_height,
+                font.Font.ATLAS_COLS,
+                font.Font.ATLAS_WIDTH,
+                font.Font.ATLAS_HEIGHT,
+                glyphs_buf[0..glyph_count],
+                self.atlas,
+            );
         }
 
         try self.encoder.end();
