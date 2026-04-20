@@ -99,8 +99,13 @@ pub const Encoder = struct {
     /// Suitable for inline buffer transmission to the daemon.
     /// Caller owns the returned memory.
     pub fn finishBytesWithHeader(self: *Encoder) ![]u8 {
-        // Append END command if not already present
-        try appendCmdAlloc(&self.cmds, self.allocator, sdcs.Op.END, &[_]u8{});
+        // Append END opcode only if not already present as the last command.
+        const end_size = 8; // CmdHdr size
+        const already_has_end = self.cmds.items.len >= end_size and
+            std.mem.readInt(u16, self.cmds.items[self.cmds.items.len - end_size ..][0..2], .little) == sdcs.Op.END;
+        if (!already_has_end) {
+            try appendCmdAlloc(&self.cmds, self.allocator, sdcs.Op.END, &[_]u8{});
+        }
 
         const payload_len = self.cmds.items.len;
         const payload_pad = sdcs.pad8Len(payload_len);
