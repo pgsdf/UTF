@@ -412,6 +412,101 @@ pub const Renderer = struct {
     pub fn getCellHeight(self: *const Self) u32 {
         return self.cell_height;
     }
+
+    /// Render with optional chord menu overlay and a status bar at the bottom.
+    ///
+    /// `labels`  — one entry per session slot; null = empty, non-null = label string
+    /// `active`  — index of the active session (highlighted)
+    ///
+    /// The status bar is drawn as an extra row below the terminal content.
+    pub fn renderWithOverlayAndStatusBar(
+        self:    *Self,
+        menu:    ?MenuOverlay,
+        labels:  []const ?[]const u8,
+        active:  usize,
+    ) ![]u8 {
+        try self.encoder.reset();
+
+        // Terminal background
+        try self.encoder.setBlend(semadraw.Encoder.BlendMode.Src);
+        try self.encoder.fillRect(
+            0, 0,
+            @floatFromInt(self.width_px),
+            @floatFromInt(self.height_px),
+            0.0, 0.0, 0.0, 1.0,
+        );
+        try self.encoder.setBlend(semadraw.Encoder.BlendMode.SrcOver);
+
+        try self.renderCells();
+
+        if (self.scr.cursor_visible and !self.scr.isViewingScrollback()) {
+            try self.renderCursor();
+        }
+
+        if (menu) |m| {
+            try self.renderChordMenu(m.x, m.y, m.width, m.height, m.item_height, m.labels, m.selected_idx);
+        }
+
+        // Status bar — drawn below the terminal rows
+        const bar_y: f32 = @floatFromInt(self.height_px);
+        const bar_h: f32 = @floatFromInt(self.cell_height);
+        const bar_w: f32 = @floatFromInt(self.width_px);
+
+        // Dark gray background for status bar
+        try self.encoder.fillRect(0, bar_y, bar_w, bar_h, 0.15, 0.15, 0.15, 1.0);
+
+        // Draw session labels
+        const max = @min(labels.len, 8);
+        for (0..max) |si| {
+            const label = labels[si] orelse continue;
+            const slot_w: f32 = @floatFromInt(self.cell_width * 4);
+            const slot_x: f32 = @floatFromInt(si) * slot_w;
+
+            // Highlight active session
+            if (si == active) {
+                try self.encoder.fillRect(slot_x, bar_y, slot_w, bar_h, 0.2, 0.4, 0.8, 1.0);
+            }
+
+            // Draw label characters
+            var glyph_x = slot_x;
+            for (label) |ch| {
+                const glyph_idx: usize = if (ch >= 32 and ch < 128) ch - 32 else 0;
+                const col_in_atlas = glyph_idx % font.Font.GLYPHS_PER_ROW;
+                const row_in_atlas = glyph_idx / font.Font.GLYPHS_PER_ROW;
+                const atlas_x = col_in_atlas * font.Font.GLYPH_WIDTH;
+                const atlas_y = row_in_atlas * font.Font.GLYPH_HEIGHT;
+
+                // Foreground color: white for active, gray for others
+                const fg_r: f32 = if (si == active) 1.0 else 0.75;
+                const fg_g: f32 = if (si == active) 1.0 else 0.75;
+                const fg_b: f32 = if (si == active) 1.0 else 0.75;
+
+                const glyphs = [1]semadraw.Encoder.Glyph{.{
+                    .x            = @intFromFloat(glyph_x),
+                    .y            = @intFromFloat(bar_y),
+                    .atlas_x      = @intCast(atlas_x * self.scale),
+                    .atlas_y      = @intCast(atlas_y * self.scale),
+                    .atlas_w      = @intCast(font.Font.GLYPH_WIDTH  * self.scale),
+                    .atlas_h      = @intCast(font.Font.GLYPH_HEIGHT * self.scale),
+                    .advance      = @intCast(self.cell_width),
+                    .bearing_x    = 0,
+                    .bearing_y    = 0,
+                }};
+                try self.encoder.drawGlyphRun(
+                    self.atlas,
+                    font.Font.ATLAS_WIDTH  * self.scale,
+                    font.Font.ATLAS_HEIGHT * self.scale,
+                    &glyphs,
+                    fg_r, fg_g, fg_b, 1.0,
+                );
+                glyph_x += @floatFromInt(self.cell_width);
+            }
+        }
+
+        try self.encoder.end();
+        self.scr.clearDirtyRows();
+        return self.encoder.finishBytesWithHeader();
+    }
 };
 
 // ============================================================================
