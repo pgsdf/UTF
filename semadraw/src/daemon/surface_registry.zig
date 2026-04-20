@@ -225,6 +225,9 @@ pub const SurfaceRegistry = struct {
                 buf.deinit();
             }
             self.allocator.destroy(surface);
+            // Clear the cached composition order immediately to prevent
+            // stale pointer dereference on the next composite call.
+            self.composition_order.clearRetainingCapacity();
             self.order_dirty = true;
         }
     }
