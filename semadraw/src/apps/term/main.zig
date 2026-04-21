@@ -391,14 +391,86 @@ pub fn main() !void {
 // run
 // ============================================================================
 
+// ============================================================================
+// Display size auto-detection via drawfs EFI framebuffer ioctl
+// ============================================================================
+
+const DRAWFS_DEV = "/dev/draw";
+
+// _IOR('D', 0x05, EfifbInfo) — matches drawfs_ioctl.h
+const EfifbInfoIoctl = extern struct {
+    fb_size:   u64,
+    fb_width:  u32,
+    fb_height: u32,
+    fb_stride: u32,
+    fb_bpp:    u32,
+    _pad:      u32 = 0,
+};
+
+fn iocOut(typ: u8, nr: u8, comptime T: type) u64 {
+    const IOC_OUT: u64 = 0x40000000;
+    const size: u64 = @sizeOf(T);
+    return IOC_OUT | (size << 16) | (@as(u64, typ) << 8) | nr;
+}
+
+const DRAWFSGIOC_GET_EFIFB_INFO: u64 = iocOut('D', 0x05, EfifbInfoIoctl);
+
+extern "c" fn ioctl(fd: c_int, request: c_ulong, ...) c_int;
+
+const DisplaySize = struct {
+    fb_width:  u32,
+    fb_height: u32,
+    cols:      u32,
+    rows:      u32,
+};
+
+/// Query the drawfs EFI framebuffer for the display dimensions and
+/// calculate terminal cols/rows from cell size. Returns null if the
+/// device is unavailable or efifb is not initialised.
+fn queryDisplaySize(cell_w: u32, cell_h: u32) ?DisplaySize {
+    const fd = posix.open(DRAWFS_DEV, .{ .ACCMODE = .RDONLY }, 0) catch return null;
+    defer posix.close(fd);
+
+    var info = std.mem.zeroes(EfifbInfoIoctl);
+    const result = ioctl(@intCast(fd), @intCast(DRAWFSGIOC_GET_EFIFB_INFO), @intFromPtr(&info));
+    if (result != 0) return null;
+    if (info.fb_width == 0 or info.fb_height == 0) return null;
+
+    const cols = info.fb_width  / cell_w;
+    // Subtract one row for the status bar
+    const rows = (info.fb_height / cell_h) -| 1;
+    if (cols == 0 or rows == 0) return null;
+
+    return .{
+        .fb_width  = info.fb_width,
+        .fb_height = info.fb_height,
+        .cols      = cols,
+        .rows      = rows,
+    };
+}
+
 fn run(allocator: std.mem.Allocator, config: Config) !void {
     log.info("starting semadraw-term {}x{} scale={}", .{ config.cols, config.rows, config.scale });
 
     const cell_w = font.Font.GLYPH_WIDTH  * config.scale;
     const cell_h = font.Font.GLYPH_HEIGHT * config.scale;
-    const width_px  = config.cols * cell_w;
+
+    // Auto-detect display size from drawfs EFI framebuffer if cols/rows are default
+    var actual_cols = config.cols;
+    var actual_rows = config.rows;
+    if (actual_cols == 80 and actual_rows == 24) {
+        if (queryDisplaySize(cell_w, cell_h)) |size| {
+            actual_cols = size.cols;
+            actual_rows = size.rows;
+            log.info("auto-detected display: {}x{} -> {}x{} cells", .{
+                size.fb_width, size.fb_height, actual_cols, actual_rows,
+            });
+        }
+    }
+
+    const width_px  = actual_cols * cell_w;
     // Extra row at bottom for the session status bar
-    const height_px = config.rows * cell_h + cell_h;
+    const height_px = actual_rows * cell_h + cell_h;
 
     var conn = if (config.socket_path) |p|
         try client.connectTo(allocator, p)
@@ -414,15 +486,19 @@ fn run(allocator: std.mem.Allocator, config: Config) !void {
     log.info("surface created {}x{}", .{ width_px, height_px });
 
     // Build initial session
-    var initial = try Session.init(allocator, config.shell, config.cols, config.rows);
+    var initial = try Session.init(allocator, config.shell, actual_cols, actual_rows);
 
     // Renderer is sized to terminal rows only (status bar is drawn as an overlay)
     var rend = renderer.Renderer.initWithScale(allocator, &initial.scr, config.scale);
     defer rend.deinit();
 
+    var state_config = config;
+    state_config.cols = actual_cols;
+    state_config.rows = actual_rows;
+
     var state = TermState{
         .allocator     = allocator,
-        .config        = config,
+        .config        = state_config,
         .sessions      = [_]?Session{null} ** MAX_SESSIONS,
         .active        = 0,
         .session_count = 1,
@@ -436,7 +512,6 @@ fn run(allocator: std.mem.Allocator, config: Config) !void {
 
     const blink_ms: i64 = 500;
     var last_blink  = std.time.milliTimestamp();
-    var last_pty_ms = std.time.milliTimestamp();
     var blink_vis   = true;
     var running     = true;
 
@@ -845,7 +920,7 @@ fn handleMouseEvent(
                         } else if (idx == 1) scr.clearSelection();
                     },
                     .paste => {
-                        const sel: client.protocol.ClipboardSelection = if (idx == 0) .clipboard else .primary;
+                        const sel: client.ClipboardSelection = if (idx == 0) .clipboard else .primary;
                         conn.requestClipboard(sel) catch |e| log.warn("paste: {}", .{e});
                     },
                 }
