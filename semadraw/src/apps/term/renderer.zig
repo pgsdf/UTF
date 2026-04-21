@@ -291,7 +291,7 @@ pub const Renderer = struct {
         // reset between shell output lines, not the true cursor position.
         if (self.scr.cursor_col == 0 and self.scr.cursor_row == 0) {
             const cell = self.scr.getCell(0, 0);
-            if (cell.char != 0 and cell.char != 32) return;
+            if (cell.char != 0 and cell.char != 32 and self.scr.cursor_col == 0) return;
         }
         const cursor_x: f32 = @floatFromInt(self.scr.cursor_col * self.cell_width);
         const cursor_y: f32 = @floatFromInt(self.scr.cursor_row * self.cell_height);
