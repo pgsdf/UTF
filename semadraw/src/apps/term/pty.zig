@@ -108,8 +108,17 @@ pub const Pty = struct {
                 null,
             };
 
-            // Set TERM environment variable for proper terminal behavior
+            // Set TERM, LINES, COLUMNS for proper terminal behavior
             _ = setenv("TERM", "xterm-256color", 1);
+
+            // Export LINES and COLUMNS so programs like top(1) and sh(1)
+            // see the correct terminal dimensions without needing to query tput.
+            var lines_buf: [16]u8 = undefined;
+            var cols_buf: [16]u8 = undefined;
+            const lines_str = std.fmt.bufPrintZ(&lines_buf, "{}", .{rows}) catch "24";
+            const cols_str  = std.fmt.bufPrintZ(&cols_buf,  "{}", .{cols})  catch "80";
+            _ = setenv("LINES",   lines_str.ptr, 1);
+            _ = setenv("COLUMNS", cols_str.ptr,  1);
 
             const envp = std.c.environ;
 
