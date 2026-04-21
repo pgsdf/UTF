@@ -28,6 +28,11 @@ pub const BTN_MIDDLE: u16 = 0x112;
 pub const BTN_TOUCH: u16 = 330;
 pub const BTN_TOOL_FINGER: u16 = 325;
 
+// EVIOCGRAB — grab exclusive access to evdev device, preventing vt(4) from
+// also receiving the events. Value: _IOW('E', 0x90, c_int) = 0x40044590.
+const EVIOCGRAB: c_ulong = 0x40044590;
+extern "c" fn ioctl(fd: c_int, request: c_ulong, ...) c_int;
+
 pub const InputEvent = extern struct {
     time_sec: i64,
     time_usec: i64,
@@ -153,6 +158,17 @@ pub fn openAllEventDevices(allocator: std.mem.Allocator) !DeviceList {
             std.debug.print("evdev: failed to open {s}: {s}\n", .{ full_path, @errorName(err) });
             continue;
         };
+
+        // Grab exclusive access so vt(4) does not also receive these events.
+        // This allows semainput to receive F-keys and modifier combinations
+        // that vt(4) would otherwise intercept. Failure is non-fatal — the
+        // device will still work, just without exclusive access.
+        const grab_result = ioctl(@intCast(file.handle), EVIOCGRAB, @as(c_int, 1));
+        if (grab_result != 0) {
+            std.debug.print("evdev: EVIOCGRAB failed for {s} (non-fatal)\n", .{full_path});
+        } else {
+            std.debug.print("evdev: grabbed {s}\n", .{full_path});
+        }
 
         try result.add(full_path, file);
         std.debug.print("evdev: opened {s}\n", .{full_path});
