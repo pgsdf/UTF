@@ -30,7 +30,9 @@ pub const BTN_TOOL_FINGER: u16 = 325;
 
 // EVIOCGRAB — grab exclusive access to evdev device, preventing vt(4) from
 // also receiving the events. Value: _IOW('E', 0x90, c_int) = 0x40044590.
-const EVIOCGRAB: c_ulong = 0x40044590;
+// FreeBSD: _IOWINT('E', 0x90) = _IOC(IOC_VOID=0x20000000, 'E'=0x45, 0x90, sizeof(int)=4)
+// = 0x20000000 | (4<<16) | (0x45<<8) | 0x90 = 0x20044590
+const EVIOCGRAB: c_ulong = 0x20044590;
 extern "c" fn ioctl(fd: c_int, request: c_ulong, ...) c_int;
 
 pub const InputEvent = extern struct {
