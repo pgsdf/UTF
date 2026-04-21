@@ -205,7 +205,7 @@ pub const Renderer = struct {
                     // Use cached glyph index from cell (computed once when character was written)
                     try self.glyph_buffer.append(self.allocator, .{
                         .index = cell.glyph_idx,
-                        .x_offset = @floatFromInt((col - start_col) * self.cell_width),
+                        .x_offset = @floatFromInt((col - start_col) * font.Font.GLYPH_WIDTH),
                         .y_offset = 0,
                     });
                 }
