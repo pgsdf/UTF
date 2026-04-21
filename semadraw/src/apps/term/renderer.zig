@@ -205,7 +205,7 @@ pub const Renderer = struct {
                     // Use cached glyph index from cell (computed once when character was written)
                     try self.glyph_buffer.append(self.allocator, .{
                         .index = cell.glyph_idx,
-                        .x_offset = @floatFromInt((col - start_col) * font.Font.GLYPH_WIDTH),
+                        .x_offset = @floatFromInt((col - start_col) * self.cell_width),
                         .y_offset = 0,
                     });
                 }
@@ -240,8 +240,8 @@ pub const Renderer = struct {
                 @as(f32, @floatFromInt(fg_rgb.g)) / 255.0,
                 @as(f32, @floatFromInt(fg_rgb.b)) / 255.0,
                 1.0,
-                font.Font.GLYPH_WIDTH,
-                font.Font.GLYPH_HEIGHT,
+                self.cell_width,
+                self.cell_height,
                 font.Font.ATLAS_COLS,
                 font.Font.ATLAS_WIDTH,
                 font.Font.ATLAS_HEIGHT,
@@ -398,8 +398,8 @@ pub const Renderer = struct {
                 1.0,
                 1.0,
                 1.0, // White text
-                font.Font.GLYPH_WIDTH,
-                font.Font.GLYPH_HEIGHT,
+                self.cell_width,
+                self.cell_height,
                 font.Font.ATLAS_COLS,
                 font.Font.ATLAS_WIDTH,
                 font.Font.ATLAS_HEIGHT,
@@ -494,8 +494,8 @@ pub const Renderer = struct {
                 slot_x,
                 bar_y,
                 fg_r, fg_g, fg_b, 1.0,
-                font.Font.GLYPH_WIDTH,
-                font.Font.GLYPH_HEIGHT,
+                self.cell_width,
+                self.cell_height,
                 font.Font.ATLAS_COLS,
                 font.Font.ATLAS_WIDTH,
                 font.Font.ATLAS_HEIGHT,

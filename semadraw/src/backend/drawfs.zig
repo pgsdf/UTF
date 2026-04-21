@@ -864,17 +864,29 @@ pub const DrawfsBackend = struct {
                         // Atlas cell origin for this glyph.
                         const glyph_row = glyph_index / atlas_cols;
                         const glyph_col = glyph_index % atlas_cols;
-                        const atlas_x: usize = @as(usize, glyph_col) * @as(usize, cell_w);
-                        const atlas_y: usize = @as(usize, glyph_row) * @as(usize, cell_h);
+                        // Unscaled glyph dimensions derived from atlas and cell dimensions.
+                        // glyph_w = atlas_w / atlas_cols
+                        // glyph_h = cell_h * glyph_w / cell_w  (preserves aspect via scale)
+                        const glyph_w_u: usize = @as(usize, atlas_w) / @as(usize, atlas_cols);
+                        const glyph_h_u: usize = if (cell_w > 0)
+                            @as(usize, cell_h) * glyph_w_u / @as(usize, cell_w)
+                            else glyph_w_u * 2;
+                        const atlas_x: usize = @as(usize, glyph_col) * glyph_w_u;
+                        const atlas_y: usize = @as(usize, glyph_row) * glyph_h_u;
 
                         // Destination top-left pixel (no transform matrix in drawfs backend).
                         const dst_x_f = base_x + x_off;
                         const dst_y_f = base_y + y_off;
 
+                        // Derive pixel scale from glyph dimensions already computed above.
+                        const glyph_scale: usize = if (glyph_w_u > 0)
+                            @as(usize, cell_w) / glyph_w_u
+                            else 1;
+
                         var py: usize = 0;
-                        while (py < cell_h) : (py += 1) {
+                        while (py < glyph_h_u) : (py += 1) {
                             var px: usize = 0;
-                            while (px < cell_w) : (px += 1) {
+                            while (px < glyph_w_u) : (px += 1) {
                                 const src_x = atlas_x + px;
                                 const src_y = atlas_y + py;
                                 if (src_x >= atlas_w or src_y >= atlas_h) continue;
@@ -888,19 +900,26 @@ pub const DrawfsBackend = struct {
                                 const ca8 = clampU8(final_alpha);
                                 if (ca8 == 0) continue;
 
-                                const dx: isize = @as(isize, @intFromFloat(dst_x_f)) +
-                                                  @as(isize, @intCast(px));
-                                const dy: isize = @as(isize, @intFromFloat(dst_y_f)) +
-                                                  @as(isize, @intCast(py));
+                                // Expand each atlas pixel to glyph_scale x glyph_scale output pixels.
+                                var sy: usize = 0;
+                                while (sy < glyph_scale) : (sy += 1) {
+                                    var sx: usize = 0;
+                                    while (sx < glyph_scale) : (sx += 1) {
+                                        const dx: isize = @as(isize, @intFromFloat(dst_x_f)) +
+                                                          @as(isize, @intCast(px * glyph_scale + sx));
+                                        const dy: isize = @as(isize, @intFromFloat(dst_y_f)) +
+                                                          @as(isize, @intCast(py * glyph_scale + sy));
 
-                                if (dx < 0 or dy < 0) continue;
-                                if (dx >= @as(isize, @intCast(fb_w)) or
-                                    dy >= @as(isize, @intCast(fb_h))) continue;
+                                        if (dx < 0 or dy < 0) continue;
+                                        if (dx >= @as(isize, @intCast(fb_w)) or
+                                            dy >= @as(isize, @intCast(fb_h))) continue;
 
-                                const idx = @as(usize, @intCast(dy)) * stride +
-                                            @as(usize, @intCast(dx)) * 4;
-                                writePixel(fb, idx, cr8, cg8, cb8, ca8,
-                                           self.render_state.blend_mode);
+                                        const idx = @as(usize, @intCast(dy)) * stride +
+                                                    @as(usize, @intCast(dx)) * 4;
+                                        writePixel(fb, idx, cr8, cg8, cb8, ca8,
+                                                   self.render_state.blend_mode);
+                                    }
+                                }
                             }
                         }
                     }
