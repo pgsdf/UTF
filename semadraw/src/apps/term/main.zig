@@ -512,6 +512,7 @@ fn run(allocator: std.mem.Allocator, config: Config) !void {
 
     const blink_ms: i64 = 500;
     var last_blink  = std.time.milliTimestamp();
+    var last_pty_ms = std.time.milliTimestamp();
     var blink_vis   = true;
     var running     = true;
 
@@ -920,7 +921,7 @@ fn handleMouseEvent(
                         } else if (idx == 1) scr.clearSelection();
                     },
                     .paste => {
-                        const sel: client.ClipboardSelection = if (idx == 0) .clipboard else .primary;
+                        const sel: client.protocol.ClipboardSelection = if (idx == 0) .clipboard else .primary;
                         conn.requestClipboard(sel) catch |e| log.warn("paste: {}", .{e});
                     },
                 }
