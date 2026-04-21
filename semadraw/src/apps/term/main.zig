@@ -513,6 +513,7 @@ fn run(allocator: std.mem.Allocator, config: Config) !void {
     const blink_ms: i64 = 500;
     var last_blink  = std.time.milliTimestamp();
     var last_pty_ms = std.time.milliTimestamp();
+    var last_switch_ms: i64 = 0; // debounce session switch keys
     var blink_vis   = true;
     var running     = true;
 
@@ -599,9 +600,15 @@ fn run(allocator: std.mem.Allocator, config: Config) !void {
                     .error_reply  => |e| log.err("daemon error: {}", .{e.code}),
                     .key_press    => |k| {
                         if (k.pressed == 1) {
-                            if (handleSessionSwitch(&state, k.key_code, k.modifiers)) {
-                                rend.scr = &state.activeSession().scr;
-                                needs_render = true;
+                            const now_sw = std.time.milliTimestamp();
+                            const is_switch = handleSessionSwitch(&state, k.key_code, k.modifiers);
+                            if (is_switch) {
+                                // Debounce: ignore session switch repeats within 300ms
+                                if (now_sw - last_switch_ms >= 300) {
+                                    last_switch_ms = now_sw;
+                                    rend.scr = &state.activeSession().scr;
+                                    needs_render = true;
+                                }
                             } else {
                                 handleKeyPress(
                                     &state.activeSession().shell,
@@ -655,8 +662,7 @@ fn handleSessionSwitch(state: *TermState, key_code: u32, modifiers: u8) bool {
         else   => null,
     };
     if (target) |t| {
-        if (state.sessions[t] != null) state.switchTo(t)
-        else log.info("session {} does not exist (Alt+N to create)", .{t + 1});
+        if (state.sessions[t] != null) state.switchTo(t);
         return true;
     }
     if (key_code == Key.N) {
