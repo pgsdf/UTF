@@ -613,3 +613,88 @@ Key design points:
   Vulkan (GPU-accelerated), or X11 (compatibility mode)
 - Makes UTF the FreeBSD analog of Quartz Compositor on macOS, with
   GNUstep as the application framework above it
+
+---
+
+## NDE — Native Desktop Environment
+
+NDE is the policy and user experience layer above semadraw and drawfs.
+It lives at https://github.com/pgsdf/NDE and defines versioned contracts
+for windowing policy, input, settings, session management, and
+compatibility. NDE does not redefine kernel graphics transport or
+semantic rendering — those remain the responsibility of drawfs and
+semadraw respectively.
+
+NDE Milestone 0 (vocabulary freeze, charter, design specification,
+repository skeleton) is complete. The items below correspond to NDE
+Milestone 1 (substrate validation) and beyond.
+
+**Relationship to LT-1 through LT-3.** NDE is usable today without
+the long-term Quartz equivalent items — it can manage semadraw-term
+sessions and basic SDCS applications using the current immediate-mode
+rendering model. LT-1 (layer tree) would make NDE's own UI smoother
+and enable proper animated transitions. LT-3 (GNUstep backend) would
+make GNUstep applications first-class NDE citizens without X11.
+
+### `[ ]` NDE-1 — Surface Manager  *(Open, Medium)*
+
+**Depends on**: semadrawd compositor operational (done)
+**Tracks**: NDE Milestone 1 — substrate validation
+
+Implement the NDE windowing policy contract (DESIGN.md §3.2): toplevel
+surfaces, popups, stacking rules, focus transitions, server-side
+decorations. NDE acts as a privileged semadraw client that manages
+surface z-order and focus on behalf of all other clients.
+
+Key design points:
+
+- NDE registers with semadrawd as the window manager client
+- Surface stacking is controlled via `SET_Z_ORDER` messages
+- Focus ownership follows DESIGN.md §3.2 semantics
+- Server-side decorations rendered as NDE-owned surfaces overlaid on
+  application surfaces
+
+### `[ ]` NDE-2 — System Bar  *(Open, Small–Medium)*
+
+**Depends on**: NDE-1
+**Tracks**: NDE Milestone 2 — daily driver core
+
+A persistent surface at a fixed screen edge showing: active
+application name, workspace indicator, clock, and system status.
+Rendered entirely in SDCS via libsemadraw.
+
+### `[ ]` NDE-3 — Launcher  *(Open, Medium)*
+
+**Depends on**: NDE-1
+**Tracks**: NDE Milestone 2 — daily driver core
+
+Application discovery and launch. Reads a manifest of installed NDE
+applications, presents a keyboard-navigable launcher surface, and
+spawns selected applications as managed semadraw clients.
+
+### `[ ]` NDE-4 — Session Manager  *(Open, Small–Medium)*
+
+**Depends on**: NDE-1
+**Tracks**: NDE Milestone 1 — substrate validation
+
+Startup sequence, lifecycle events, crash recovery. Integrates with
+UTF's `start.sh` / rc.d startup order: semaaud → semainputd →
+semadrawd → NDE. Handles application crash restart and clean shutdown.
+
+### `[ ]` NDE-5 — X11 Compatibility Bridge  *(Open, Large)*
+
+**Depends on**: NDE-1, NDE-4
+**Tracks**: NDE Milestone 3 — compatibility
+
+Rootless X11 server integration: map X windows to semadraw surfaces,
+translate input and clipboard, integrate drag and drop. IME integration
+path required for international use.
+
+**Classification note**: the NDE DESIGN.md originally described the
+X11 bridge as "mandatory for usability." This has been revised to
+**required for compatibility**. UTF now has a native terminal
+(`semadraw-term`) and the long-term path (LT-3) provides native
+GNUstep application support without X11. The X11 bridge remains
+important for running existing legacy X11 applications but is no
+longer a prerequisite for the environment to be usable.
+
