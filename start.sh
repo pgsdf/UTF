@@ -46,6 +46,11 @@ if [ "$STOP" -eq 1 ]; then
             echo "  skip     $daemon (not running)"
         fi
     done
+    if kldstat -q -n drawfs 2>/dev/null; then
+        sudo kldunload drawfs && echo "  unloaded drawfs"
+    else
+        echo "  skip     drawfs (not loaded)"
+    fi
     exit 0
 fi
 
@@ -76,6 +81,34 @@ for bin in "$SEMAAUD" "$SEMAINPUT" "$SEMADRAW"; do
         exit 1
     fi
 done
+
+# ============================================================================
+# drawfs kernel module — load if backend is drawfs
+# ============================================================================
+
+if [ "$BACKEND" = "drawfs" ]; then
+    DRAWFS_KO=""
+    if [ -f "$SCRIPT_DIR/drawfs/sys/modules/drawfs/drawfs.ko" ]; then
+        DRAWFS_KO="$SCRIPT_DIR/drawfs/sys/modules/drawfs/drawfs.ko"
+    elif [ -f "/boot/modules/drawfs.ko" ]; then
+        DRAWFS_KO="/boot/modules/drawfs.ko"
+    fi
+
+    if [ -n "$DRAWFS_KO" ]; then
+        if kldstat -q -n drawfs 2>/dev/null; then
+            echo "Reloading drawfs kernel module..."
+            sudo kldunload drawfs 2>/dev/null || true
+        else
+            echo "Loading drawfs kernel module..."
+        fi
+        sudo kldload "$DRAWFS_KO"
+        echo "  drawfs.ko loaded"
+    else
+        echo "WARNING: drawfs.ko not found — build it first with:" >&2
+        echo "  cd drawfs && make" >&2
+    fi
+    echo ""
+fi
 
 # ============================================================================
 # Start
