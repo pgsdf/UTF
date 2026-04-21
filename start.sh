@@ -133,13 +133,29 @@ sleep 1
 echo "  pid $SEMAINPUT_PID (log: /var/log/semainputd.log)"
 
 # 3. semadrawd — requires semaaud clock
+# For drawfs backend, detect display resolution from efifb via dmesg
+RESOLUTION=""
+if [ "$BACKEND" = "drawfs" ] && kldstat -q -n drawfs 2>/dev/null; then
+    EFIFB_LINE=$(dmesg | grep "drawfs_efifb:" | tail -1)
+    if [ -n "$EFIFB_LINE" ]; then
+        RESOLUTION=$(echo "$EFIFB_LINE" | grep -o "[0-9]*x[0-9]*" | head -1)
+        if [ -n "$RESOLUTION" ]; then
+            echo "  Detected display: ${RESOLUTION}"
+        fi
+    fi
+fi
+
 echo "Starting semadrawd (backend: $BACKEND)..."
 if [ "$TIMELINE" -eq 1 ] && [ -n "$CHRONO_DUMP" ]; then
     echo ""
     echo "=== Live timeline (ctrl-c to stop) ==="
-    { sudo "$SEMADRAW" -b "$BACKEND" 2>&1; } | "$CHRONO_DUMP"
+    SEMADRAW_ARGS="-b $BACKEND"
+    if [ -n "$RESOLUTION" ]; then SEMADRAW_ARGS="$SEMADRAW_ARGS -r $RESOLUTION"; fi
+    { sudo "$SEMADRAW" $SEMADRAW_ARGS 2>&1; } | "$CHRONO_DUMP"
 else
-    sudo "$SEMADRAW" -b "$BACKEND" >>/var/log/semadrawd.log 2>&1 &
+    SEMADRAW_ARGS="-b $BACKEND"
+    if [ -n "$RESOLUTION" ]; then SEMADRAW_ARGS="$SEMADRAW_ARGS -r $RESOLUTION"; fi
+    sudo "$SEMADRAW" $SEMADRAW_ARGS >>/var/log/semadrawd.log 2>&1 &
     SEMADRAW_PID=$!
     echo "  pid $SEMADRAW_PID (log: /var/log/semadrawd.log)"
     echo ""
