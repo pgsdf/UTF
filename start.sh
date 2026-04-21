@@ -8,8 +8,10 @@
 #   4. chrono_dump — optional live timeline viewer
 #
 # Usage:
-#   sh start.sh                        # start all daemons, drawfs backend
+#   sh start.sh                        # start all daemons and semadraw-term
 #   sh start.sh --backend software     # use software backend
+#   sh start.sh --scale N              # set semadraw-term font scale (default: 2)
+#   sh start.sh --no-term              # start daemons only, no semadraw-term
 #   sh start.sh --timeline             # pipe output to chrono_dump
 #   sh start.sh --stop                 # stop all running UTF daemons
 
@@ -18,8 +20,10 @@ set -eu
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PREFIX="${PREFIX:-/usr/local}"
 BACKEND="${BACKEND:-drawfs}"
+SCALE="${SCALE:-2}"
 TIMELINE=0
 STOP=0
+NO_TERM=0
 
 for arg in "$@"; do
     case "$arg" in
@@ -27,6 +31,9 @@ for arg in "$@"; do
         --backend)   shift; BACKEND="$1" ;;
         --timeline)  TIMELINE=1 ;;
         --stop)      STOP=1 ;;
+        --no-term)   NO_TERM=1 ;;
+        --scale=*)   SCALE="${arg#--scale=}" ;;
+        --scale)     shift; SCALE="$1" ;;
         --help|-h)
             sed -n '2,15p' "$0" | sed 's/^# \?//'
             exit 0 ;;
@@ -46,6 +53,11 @@ if [ "$STOP" -eq 1 ]; then
             echo "  skip     $daemon (not running)"
         fi
     done
+    if pgrep -x "semadraw-term" >/dev/null 2>&1; then
+        pkill -x "semadraw-term" && echo "  stopped  semadraw-term"
+    else
+        echo "  skip     semadraw-term (not running)"
+    fi
     if kldstat -q -n drawfs 2>/dev/null; then
         sudo kldunload drawfs && echo "  unloaded drawfs"
     else
@@ -73,6 +85,7 @@ find_bin() {
 SEMAAUD=$(find_bin semaaud semaaud)
 SEMAINPUT=$(find_bin semainputd semainput)
 SEMADRAW=$(find_bin semadrawd semadraw)
+SEMADRAW_TERM=$(find_bin semadraw-term semadraw)
 CHRONO_DUMP=$(find_bin chrono_dump chronofs)
 
 for bin in "$SEMAAUD" "$SEMAINPUT" "$SEMADRAW"; do
@@ -164,6 +177,15 @@ else
     echo "  semainputd: pid $SEMAINPUT_PID"
     echo "  semadrawd:  pid $SEMADRAW_PID"
     echo ""
+    echo "  semadraw-term: pid (launching...)"
     echo "To view timeline: $CHRONO_DUMP"
     echo "To stop:          sh start.sh --stop"
+
+    # 4. semadraw-term — launch after semadrawd is ready
+    if [ "$NO_TERM" -eq 0 ] && [ -n "$SEMADRAW_TERM" ]; then
+        sleep 1
+        sudo "$SEMADRAW_TERM" --scale "$SCALE" >>/var/log/semadraw-term.log 2>&1 &
+        TERM_PID=$!
+        echo "  semadraw-term: pid $TERM_PID (log: /var/log/semadraw-term.log)"
+    fi
 fi

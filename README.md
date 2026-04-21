@@ -170,24 +170,26 @@ cd semainput && zig build
 cd chronofs && zig build
 ```
 
-**Start all daemons** (drawfs backend, auto-detects display resolution):
+**Start all daemons and terminal** (drawfs backend, auto-detects display resolution):
 
 ```
-sudo sh start.sh
+sudo sh start.sh                  # full stack + terminal at scale 2
+sudo sh start.sh --scale 4        # full stack + terminal at scale 4
+sudo sh start.sh --no-term        # daemons only, no terminal
 ```
 
-**Run the terminal emulator**:
-
-```
-sudo semadraw/zig-out/bin/semadraw-term
-sudo semadraw/zig-out/bin/semadraw-term --scale 2   # HiDPI
-sudo semadraw/zig-out/bin/semadraw-term --scale 4   # 4K/5K
-```
-
-**Stop all daemons**:
+**Stop everything**:
 
 ```
 sudo sh start.sh --stop
+```
+
+**Run the terminal emulator manually**:
+
+```
+sudo semadraw/zig-out/bin/semadraw-term            # auto-detects display size
+sudo semadraw/zig-out/bin/semadraw-term --scale 2  # HiDPI
+sudo semadraw/zig-out/bin/semadraw-term --scale 4  # 4K/5K
 ```
 
 ---
