@@ -35,6 +35,7 @@ const DRAWFSGIOC_STATS: c_ulong = 0x40604401;
 // Event types from drawfs_proto.h
 const DRAWFS_EVT_KEY:     u16 = 0x9010;
 const DRAWFS_EVT_POINTER: u16 = 0x9011;
+const DRAWFS_EVT_SCROLL:  u16 = 0x9012;
 
 const DRAWFS_INPUT_PAYLOAD_MAX: usize = 32;
 
@@ -51,6 +52,36 @@ const DrawfsEvtKey = extern struct {
     code:       u32,
     state:      u32,   // 1=down, 0=up
     mods:       u32,
+    ts_wall_ns: i64,
+};
+
+// drawfs_evt_pointer payload (32 bytes, exactly fills DRAWFS_INPUT_PAYLOAD_MAX).
+//
+// Mirrors `struct drawfs_evt_pointer` in drawfs_proto.h. The kernel struct
+// is __packed but every field is naturally aligned, so the Zig extern
+// struct layout matches without packing tricks.
+//
+// x, y carry the cumulative cursor position; dx, dy carry the delta for
+// this event. For mouse_move events, both are populated. For mouse_button
+// events, dx/dy are zero (no motion in this event) and x/y reflect the
+// current cursor position. The buttons bitmask reflects the *current
+// state* of all buttons after this event (not just the one that
+// changed): bit 0 = left, bit 1 = right, bit 2 = middle.
+const DrawfsEvtPointer = extern struct {
+    surface_id: u32,
+    x:          i32,
+    y:          i32,
+    dx:         i32,
+    dy:         i32,
+    buttons:    u32,
+    ts_wall_ns: i64,
+};
+
+// drawfs_evt_scroll payload (20 bytes).
+const DrawfsEvtScroll = extern struct {
+    surface_id: u32,
+    dx:         i32,
+    dy:         i32,
     ts_wall_ns: i64,
 };
 
@@ -92,15 +123,8 @@ pub const DrawfsInjector = struct {
                 .{ DRAWFS_DEV, @errorName(err) });
             return err;
         };
-        // surface_id=1 is the first surface any session (including semadrawd's)
-        // creates, and DRAWFSGIOC_INJECT_INPUT in the kernel looks up the target
-        // session from a global surface registry — our own session's surfaces
-        // are irrelevant, so no stats-query gate is needed. If the surface
-        // doesn't exist yet, INJECT_INPUT returns ENOENT and the call is a
-        // no-op until semadraw-term creates it.
-        // TODO: replace with focus-tracking once semadrawd publishes focused_surface_id.
-        std.debug.print("drawfs_inject: opened {s}, targeting surface_id=1\n", .{DRAWFS_DEV});
-        return .{ .fd = fd, .surface_id = 1 };
+        std.debug.print("drawfs_inject: opened {s}\n", .{DRAWFS_DEV});
+        return .{ .fd = fd, .surface_id = 0 };
     }
 
     pub fn deinit(self: *DrawfsInjector) void {
@@ -109,14 +133,6 @@ pub const DrawfsInjector = struct {
 
     /// Query DRAWFSGIOC_STATS to find a live surface to inject into.
     /// Returns true if a surface was found.
-    ///
-    /// Currently unused — `init()` hardcodes surface_id=1 and the kernel
-    /// validates existence via its global registry on each INJECT_INPUT.
-    /// Retained as scaffolding for focus-tracking: the correct future
-    /// behaviour is to read focused_surface_id from a surface published by
-    /// semadrawd, not to query our own session's stats (which will always
-    /// show surfaces_count=0 because the injector session doesn't create
-    /// surfaces).
     fn refreshSurface(self: *DrawfsInjector) bool {
         var stats = std.mem.zeroes(DrawfsStats);
         const r = ioctl(@intCast(self.fd), DRAWFSGIOC_STATS, @intFromPtr(&stats));
@@ -125,6 +141,9 @@ pub const DrawfsInjector = struct {
             self.surface_id = 0;
             return false;
         }
+        // Use surface_id = 1 (first surface). drawfs assigns IDs starting at 1.
+        // A more robust implementation would enumerate surfaces, but semadraw-term
+        // always creates exactly one surface with id=1.
         if (self.surface_id == 0) {
             self.surface_id = 1;
             std.debug.print("drawfs_inject: targeting surface_id=1\n", .{});
@@ -133,11 +152,9 @@ pub const DrawfsInjector = struct {
     }
 
     pub fn injectKey(self: *DrawfsInjector, code: u16, state: u32, mods: u8) void {
-        // If a prior call cleared surface_id after an error, restore it. The
-        // kernel rejects injection for surfaces that don't exist yet (ENOENT)
-        // and for sessions whose queue is full (ENOSPC); neither is fatal,
-        // so we keep trying with surface_id=1.
-        if (self.surface_id == 0) self.surface_id = 1;
+        if (self.surface_id == 0) {
+            if (!self.refreshSurface()) return;
+        }
 
         var key_payload = std.mem.zeroes(DrawfsEvtKey);
         key_payload.surface_id = self.surface_id;
@@ -155,12 +172,68 @@ pub const DrawfsInjector = struct {
 
         const r = ioctl(@intCast(self.fd), DRAWFSGIOC_INJECT_INPUT, @intFromPtr(&req));
         if (r != 0) {
-            // ENOENT if the surface doesn't exist yet (semadraw-term hasn't
-            // started or just crashed); ENOSPC if its event queue is full.
-            // Either way we log once and continue — the next keypress retries.
-            const errno: c_int = std.c._errno().*;
-            std.debug.print("drawfs_inject: INJECT_INPUT errno={d} (code={d} state={d})\n",
-                .{ errno, code, state });
+            // Surface may have been destroyed — clear so we refresh next time.
+            std.debug.print("drawfs_inject: INJECT_INPUT failed ({}), will refresh\n", .{r});
+            self.surface_id = 0;
+        }
+    }
+
+    /// Inject a pointer event carrying current cursor position, this-event
+    /// motion delta, and the cumulative button state. Called for both
+    /// mouse_move (where dx/dy carry the motion and buttons reflects
+    /// existing state) and mouse_button (where dx/dy are 0 and buttons
+    /// reflects the new state after the press or release).
+    pub fn injectPointer(self: *DrawfsInjector, x: i32, y: i32, dx: i32, dy: i32, buttons: u32) void {
+        if (self.surface_id == 0) {
+            if (!self.refreshSurface()) return;
+        }
+
+        var ptr_payload = std.mem.zeroes(DrawfsEvtPointer);
+        ptr_payload.surface_id = self.surface_id;
+        ptr_payload.x          = x;
+        ptr_payload.y          = y;
+        ptr_payload.dx         = dx;
+        ptr_payload.dy         = dy;
+        ptr_payload.buttons    = buttons;
+        ptr_payload.ts_wall_ns = @intCast(std.time.nanoTimestamp());
+
+        var req = std.mem.zeroes(DrawfsInjectInput);
+        req.surface_id = self.surface_id;
+        req.event_type = DRAWFS_EVT_POINTER;
+        const payload_bytes = std.mem.asBytes(&ptr_payload);
+        const copy_len = @min(payload_bytes.len, DRAWFS_INPUT_PAYLOAD_MAX);
+        @memcpy(req.payload[0..copy_len], payload_bytes[0..copy_len]);
+
+        const r = ioctl(@intCast(self.fd), DRAWFSGIOC_INJECT_INPUT, @intFromPtr(&req));
+        if (r != 0) {
+            std.debug.print("drawfs_inject: INJECT_INPUT (pointer) failed ({}), will refresh\n", .{r});
+            self.surface_id = 0;
+        }
+    }
+
+    /// Inject a scroll event carrying horizontal and vertical scroll deltas.
+    pub fn injectScroll(self: *DrawfsInjector, dx: i32, dy: i32) void {
+        if (self.surface_id == 0) {
+            if (!self.refreshSurface()) return;
+        }
+
+        var scr_payload = std.mem.zeroes(DrawfsEvtScroll);
+        scr_payload.surface_id = self.surface_id;
+        scr_payload.dx         = dx;
+        scr_payload.dy         = dy;
+        scr_payload.ts_wall_ns = @intCast(std.time.nanoTimestamp());
+
+        var req = std.mem.zeroes(DrawfsInjectInput);
+        req.surface_id = self.surface_id;
+        req.event_type = DRAWFS_EVT_SCROLL;
+        const payload_bytes = std.mem.asBytes(&scr_payload);
+        const copy_len = @min(payload_bytes.len, DRAWFS_INPUT_PAYLOAD_MAX);
+        @memcpy(req.payload[0..copy_len], payload_bytes[0..copy_len]);
+
+        const r = ioctl(@intCast(self.fd), DRAWFSGIOC_INJECT_INPUT, @intFromPtr(&req));
+        if (r != 0) {
+            std.debug.print("drawfs_inject: INJECT_INPUT (scroll) failed ({}), will refresh\n", .{r});
+            self.surface_id = 0;
         }
     }
 };

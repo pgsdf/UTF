@@ -178,6 +178,21 @@ pub fn main() !void {
     var stabilized = false;
     var last_summary_ns: u64 = 0;
 
+    // Pointer state for kernel injection. The cursor accumulates from
+    // mouse_move deltas; button_state is a bitmask (bit 0=left, bit 1=
+    // right, bit 2=middle) updated on each mouse_button event. Both are
+    // sent with every EVT_POINTER injection so the kernel sees the full
+    // current state, not just the field that changed.
+    //
+    // Note: this is a single shared cursor/state across all pointing
+    // devices. With multiple mice, the events interleave naturally; with
+    // touchpads and mice both active, the cursor follows whichever was
+    // most recent. Per-device cursor tracking is a future refinement
+    // tied to multi-pointer focus, which UTF does not yet support.
+    var cursor_x: i32 = 0;
+    var cursor_y: i32 = 0;
+    var button_state: u32 = 0;
+
     while (true) {
         try queue.drainTo(&drained, allocator);
         const now_ns = @as(u64, @intCast(@as(i64, @intCast(std.time.nanoTimestamp()))));
@@ -207,11 +222,42 @@ pub fn main() !void {
                 try output_mod.emitSemanticEvent(&aggregator, smoothed);
                 try gestures.handleEvent(&aggregator, smoothed, now_ns);
 
-                // Inject key events into drawfs kernel for semadrawd delivery.
+                // Inject key and pointer events into drawfs kernel for
+                // semadrawd delivery. The pointer cursor and button state
+                // accumulators live in this scope; see their declarations.
                 if (injector) |*inj| {
                     switch (smoothed) {
                         .key_down => |e| inj.injectKey(e.code, 1, e.mods),
                         .key_up   => |e| inj.injectKey(e.code, 0, e.mods),
+                        .mouse_move => |e| {
+                            cursor_x += e.dx;
+                            cursor_y += e.dy;
+                            inj.injectPointer(cursor_x, cursor_y, e.dx, e.dy, button_state);
+                        },
+                        .mouse_button => |e| {
+                            // Button name → bit mapping matches the kernel's
+                            // documented EVT_POINTER bitmask: left=0, right=1,
+                            // middle=2. Unknown button names produce a
+                            // bit-zero update (no state change).
+                            const bit: u32 = blk: {
+                                if (std.mem.eql(u8, e.button, "left"))   break :blk 0x1;
+                                if (std.mem.eql(u8, e.button, "right"))  break :blk 0x2;
+                                if (std.mem.eql(u8, e.button, "middle")) break :blk 0x4;
+                                break :blk 0;
+                            };
+                            if (e.pressed) {
+                                button_state |= bit;
+                            } else {
+                                button_state &= ~bit;
+                            }
+                            // Sync cursor to the event's reported position
+                            // in case the dispatch loop missed an
+                            // intervening mouse_move (rare but possible).
+                            cursor_x = e.x;
+                            cursor_y = e.y;
+                            inj.injectPointer(cursor_x, cursor_y, 0, 0, button_state);
+                        },
+                        .mouse_scroll => |e| inj.injectScroll(e.dx, e.dy),
                         else => {},
                     }
                 }
