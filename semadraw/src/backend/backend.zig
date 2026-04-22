@@ -154,6 +154,11 @@ pub const Backend = struct {
         /// Get pending mouse events (empties the queue)
         /// Returns slice of events, caller should not free
         getMouseEvents: ?*const fn (ctx: *anyopaque) []const MouseEvent = null,
+        /// Return a file descriptor the daemon should include in its main
+        /// poll() set, or null if the backend has no pollable event source.
+        /// Waking on this fd lets semadrawd drain injected input events
+        /// immediately instead of after the next poll timeout.
+        getPollFd: ?*const fn (ctx: *anyopaque) ?std.posix.fd_t = null,
         /// Set clipboard content (selection: 0=CLIPBOARD, 1=PRIMARY)
         setClipboard: ?*const fn (ctx: *anyopaque, selection: u8, text: []const u8) anyerror!void = null,
         /// Request clipboard content (async - data available after pollEvents)
@@ -208,6 +213,20 @@ pub const Backend = struct {
             return func(self.ptr);
         }
         return &[_]MouseEvent{};
+    }
+
+    /// Return a file descriptor the daemon should include in its main
+    /// poll() set, or null if the backend has no pollable event source.
+    /// Backends that push events via pollEvents() alone (X11, Wayland,
+    /// Vulkan with polling) return null. Backends where an external
+    /// process enqueues events on a file descriptor (drawfs, via kernel
+    /// DRAWFSGIOC_INJECT_INPUT) return that fd so the daemon wakes
+    /// immediately on input.
+    pub fn getPollFd(self: Backend) ?std.posix.fd_t {
+        if (self.vtable.getPollFd) |func| {
+            return func(self.ptr);
+        }
+        return null;
     }
 
     /// Set clipboard content (selection: 0=CLIPBOARD, 1=PRIMARY)

@@ -1202,6 +1202,16 @@ pub const DrawfsBackend = struct {
         self.deinit();
     }
 
+    /// Return the /dev/draw file descriptor so semadrawd's main event loop
+    /// can include it in its poll() set. This lets the daemon wake
+    /// immediately on injected input events instead of waiting out the
+    /// poll timeout.
+    fn getPollFdImpl(ctx: *anyopaque) ?posix.fd_t {
+        const self: *Self = @ptrCast(@alignCast(ctx));
+        if (self.fd < 0) return null;
+        return self.fd;
+    }
+
     pub const vtable = backend.Backend.VTable{
         .getCapabilities = getCapabilitiesImpl,
         .initFramebuffer = initFramebufferImpl,
@@ -1211,6 +1221,7 @@ pub const DrawfsBackend = struct {
         .pollEvents = pollEventsImpl,
         .getKeyEvents = getKeyEventsImpl,
         .getMouseEvents = getMouseEventsImpl,
+        .getPollFd = getPollFdImpl,
         .deinit = deinitImpl,
     };
 

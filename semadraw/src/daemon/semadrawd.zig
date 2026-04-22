@@ -184,7 +184,28 @@ pub const Daemon = struct {
                 });
             }
 
-            // Wait for events (100ms timeout for periodic tasks)
+            // Add the backend event fd if it has one. For the drawfs backend
+            // this is /dev/draw, which receives injected EVT_KEY/POINTER/
+            // SCROLL/TOUCH frames from semainputd. Including it here means
+            // the daemon wakes immediately on an injected event instead of
+            // waiting out the poll timeout — input latency drops from
+            // (timeout_ms / 2) average to effectively zero. Backends with
+            // no pollable fd (X11, Wayland, Vulkan, software, headless)
+            // return null and we skip.
+            const backend_fd: ?posix.fd_t = self.comp.getPollFd();
+            if (backend_fd) |fd| {
+                try poll_fds.append(self.allocator, .{
+                    .fd = fd,
+                    .events = std.posix.POLL.IN,
+                    .revents = 0,
+                });
+            }
+
+            // Wait for events. 100ms timeout bounds how often we re-check
+            // periodic tasks (composition scheduling, clipboard polling)
+            // when nothing else is happening. Input responsiveness does
+            // not depend on this timeout — see the backend_fd addition
+            // above.
             const poll_slice: []posix.pollfd = @ptrCast(poll_fds.items);
             const n = posix.poll(poll_slice, 100) catch |err| {
                 log.err("poll error: {}", .{err});
