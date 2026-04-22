@@ -1026,15 +1026,24 @@ pub const Daemon = struct {
 
     /// Forward keyboard events to the top visible surface's client
     fn forwardKeyEvents(self: *Daemon, key_events: []const backend.KeyEvent) void {
+        // TEMPORARY DIAGNOSTIC: log every key forwarding decision.
+        const top_opt = self.surfaces.getTopVisibleSurface();
+        std.debug.print("semadrawd-fwd: {d} events, top_surface={?d}\n",
+            .{ key_events.len, top_opt });
+
         // Get the top visible surface to send keyboard input to
-        const top_surface_id = self.surfaces.getTopVisibleSurface() orelse {
+        const top_surface_id = top_opt orelse {
+            std.debug.print("semadrawd-fwd: NO TOP VISIBLE SURFACE, dropping\n", .{});
             log.debug("forwardKeyEvents: no top visible surface", .{});
             return;
         };
         const surface = self.surfaces.getSurface(top_surface_id) orelse {
+            std.debug.print("semadrawd-fwd: surface {d} LOOKUP FAILED, dropping\n", .{top_surface_id});
             log.debug("forwardKeyEvents: surface {} not found", .{top_surface_id});
             return;
         };
+        std.debug.print("semadrawd-fwd: routing to surface {d} owner {d}\n",
+            .{ top_surface_id, surface.owner });
         log.debug("forwardKeyEvents: {} events to surface {} (owner {})", .{ key_events.len, top_surface_id, surface.owner });
 
         for (key_events) |event| {
@@ -1050,8 +1059,12 @@ pub const Daemon = struct {
             // Try to send to local client first
             if (self.clients.findById(surface.owner)) |session| {
                 session.send(.key_press, &payload) catch |err| {
+                    std.debug.print("semadrawd-fwd: SEND FAILED code={d} err={s}\n",
+                        .{ event.key_code, @errorName(err) });
                     log.warn("failed to send key event to client {}: {}", .{ surface.owner, err });
                 };
+                std.debug.print("semadrawd-fwd: sent code={d} state={s} to local client {d}\n",
+                    .{ event.key_code, if (event.pressed) "down" else "up", surface.owner });
                 log.debug("sent key event to local client {}", .{surface.owner});
             } else if (self.remote_clients.get(surface.owner)) |remote_session| {
                 // Try remote client
@@ -1060,6 +1073,7 @@ pub const Daemon = struct {
                 };
                 log.debug("sent key event to remote client {}", .{surface.owner});
             } else {
+                std.debug.print("semadrawd-fwd: NO CLIENT for surface owner {d}\n", .{surface.owner});
                 log.warn("no client found for surface owner {}", .{surface.owner});
             }
         }
