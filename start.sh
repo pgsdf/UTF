@@ -53,6 +53,13 @@ if [ "$STOP" -eq 1 ]; then
             echo "  skip     $daemon (not running)"
         fi
     done
+    # Restore vt(4) keyboard interception
+    sysctl kern.vt.kbd_halt=1      >/dev/null 2>&1 || true
+    sysctl kern.vt.kbd_poweroff=1  >/dev/null 2>&1 || true
+    sysctl kern.vt.kbd_reboot=1    >/dev/null 2>&1 || true
+    sysctl kern.vt.kbd_debug=1     >/dev/null 2>&1 || true
+    sysctl kern.vt.enable_altgr=1  >/dev/null 2>&1 || true
+
     if pgrep -x "semadraw-term" >/dev/null 2>&1; then
         pkill -x "semadraw-term" && echo "  stopped  semadraw-term"
     else
@@ -121,6 +128,18 @@ if [ "$BACKEND" = "drawfs" ]; then
         echo "  cd drawfs && make" >&2
     fi
     echo ""
+fi
+
+# ============================================================================
+# vt(4) keyboard interception — disable so evdev gets clean input
+# ============================================================================
+
+if [ "$BACKEND" = "drawfs" ]; then
+    sysctl kern.vt.kbd_halt=0      >/dev/null 2>&1 || true
+    sysctl kern.vt.kbd_poweroff=0  >/dev/null 2>&1 || true
+    sysctl kern.vt.kbd_reboot=0    >/dev/null 2>&1 || true
+    sysctl kern.vt.kbd_debug=0     >/dev/null 2>&1 || true
+    sysctl kern.vt.enable_altgr=0  >/dev/null 2>&1 || true
 fi
 
 # ============================================================================
