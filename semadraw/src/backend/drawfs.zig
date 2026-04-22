@@ -386,9 +386,17 @@ pub const DrawfsBackend = struct {
     /// not a case we need to handle gracefully.
     fn stashEvtKey(self: *Self, frame: []const u8, n: usize) void {
         if (n < 32 + 20) return; // short frame, drop
-        if (self.injected_keys_len >= backend.MAX_KEY_EVENTS) return;
-        self.injected_keys[self.injected_keys_len] = parseEvtKey(frame);
+        if (self.injected_keys_len >= backend.MAX_KEY_EVENTS) {
+            std.debug.print("drawfs-backend: stash buffer full, dropping key\n", .{});
+            return;
+        }
+        const ev = parseEvtKey(frame);
+        self.injected_keys[self.injected_keys_len] = ev;
         self.injected_keys_len += 1;
+        // TEMPORARY DIAGNOSTIC: log every key we stash, and who stashed it.
+        // Remove once the key-loss issue is understood.
+        std.debug.print("drawfs-backend: stash code={d} state={s} len={d}\n",
+            .{ ev.key_code, if (ev.pressed) "down" else "up", self.injected_keys_len });
     }
 
     fn sendAndRecv(self: *Self, msg_type: u16, payload: []const u8, expected_reply: u16) ![]const u8 {
@@ -1185,6 +1193,12 @@ pub const DrawfsBackend = struct {
     /// These are enqueued by semainput via DRAWFSGIOC_INJECT_INPUT and
     /// delivered back to the session as framed protocol messages.
     ///
+    /// Appends to injected_keys; does NOT reset the buffer. The buffer
+    /// is consumed and reset by getKeyEventsImpl. This matters because
+    /// sendAndRecv can also stash EVT_KEY frames into injected_keys
+    /// during protocol transactions — resetting here would wipe keys
+    /// that the compositor's own read path has already captured.
+    ///
     /// Any EVT_SURFACE_PRESENTED frames we encounter here are leftovers
     /// from a previous compositor transaction (normally sendAndRecv
     /// consumes them inline); they are discarded. Any protocol *reply*
@@ -1192,7 +1206,6 @@ pub const DrawfsBackend = struct {
     /// outlive the sendAndRecv call that expected them — but we discard
     /// them silently rather than crash the compositor loop.
     fn drainInjectedEvents(self: *Self) void {
-        self.injected_keys_len = 0;
         var pfd = [1]posix.pollfd{.{
             .fd = self.fd,
             .events = posix.POLL.IN,
@@ -1224,7 +1237,17 @@ pub const DrawfsBackend = struct {
     fn getKeyEventsImpl(ctx: *anyopaque) []const backend.KeyEvent {
         const self: *Self = @ptrCast(@alignCast(ctx));
         if (self.injected_keys_len > 0) {
-            return self.injected_keys[0..self.injected_keys_len];
+            // TEMPORARY DIAGNOSTIC: log every consumption.
+            std.debug.print("drawfs-backend: consume {d} events\n", .{self.injected_keys_len});
+            // Snapshot the current contents and reset the buffer so the next
+            // drain or sendAndRecv stash starts fresh. The returned slice is
+            // safe to hold: injected_keys is a stack-allocated fixed array,
+            // so resetting injected_keys_len does not invalidate the memory.
+            // The caller (forwardKeyEvents) consumes the slice synchronously
+            // before any further backend work can write to injected_keys.
+            const events = self.injected_keys[0..self.injected_keys_len];
+            self.injected_keys_len = 0;
+            return events;
         }
         return &[_]backend.KeyEvent{};
     }
