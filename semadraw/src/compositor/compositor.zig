@@ -356,6 +356,16 @@ pub const Compositor = struct {
         return &[_]backend_mod.MouseEvent{};
     }
 
+    /// Return a file descriptor the daemon should include in its main
+    /// poll() set, or null if the backend has no pollable event source.
+    /// See backend.Backend.getPollFd for the rationale.
+    pub fn getPollFd(self: *Self) ?std.posix.fd_t {
+        if (self.output) |*out| {
+            return out.be.getPollFd();
+        }
+        return null;
+    }
+
     /// Set clipboard content (selection: 0=CLIPBOARD, 1=PRIMARY)
     pub fn setClipboard(self: *Self, selection: u8, text: []const u8) !void {
         if (self.output) |*out| {
