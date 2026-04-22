@@ -89,11 +89,11 @@ pub fn emitSemanticEvent(aggregator: *aggregate.Aggregator, event: semantic.Sema
         },
         .key_down => |e| {
             try writeHeader(writer, "key_down", mapping.stable_name, e.path);
-            try writer.print(",\"code\":{d}}}\n", .{e.code});
+            try writer.print(",\"code\":{d},\"mods\":{d}}}\n", .{ e.code, e.mods });
         },
         .key_up => |e| {
             try writeHeader(writer, "key_up", mapping.stable_name, e.path);
-            try writer.print(",\"code\":{d}}}\n", .{e.code});
+            try writer.print(",\"code\":{d},\"mods\":{d}}}\n", .{ e.code, e.mods });
         },
         .touch_down => |e| {
             try writeHeader(writer, "touch_down", mapping.stable_name, e.path);

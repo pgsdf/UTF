@@ -35,6 +35,39 @@ pub const BTN_TOOL_FINGER: u16 = 325;
 const EVIOCGRAB: c_ulong = 0x20044590;
 extern "c" fn ioctl(fd: c_int, request: c_ulong, ...) c_int;
 
+// Modifier key evdev codes
+const KEY_LEFTSHIFT:  u16 = 42;
+const KEY_RIGHTSHIFT: u16 = 54;
+const KEY_LEFTCTRL:   u16 = 29;
+const KEY_RIGHTCTRL:  u16 = 97;
+const KEY_LEFTALT:    u16 = 56;
+const KEY_RIGHTALT:   u16 = 100;
+const KEY_LEFTMETA:   u16 = 125;
+const KEY_RIGHTMETA:  u16 = 126;
+
+// Modifier bitmask — matches drawfs_evt_key mods field (Shift=1, Ctrl=2, Alt=4, Meta=8)
+pub const MOD_SHIFT: u8 = 1;
+pub const MOD_CTRL:  u8 = 2;
+pub const MOD_ALT:   u8 = 4;
+pub const MOD_META:  u8 = 8;
+
+fn isModifier(code: u16) bool {
+    return code == KEY_LEFTSHIFT or code == KEY_RIGHTSHIFT or
+           code == KEY_LEFTCTRL  or code == KEY_RIGHTCTRL  or
+           code == KEY_LEFTALT   or code == KEY_RIGHTALT   or
+           code == KEY_LEFTMETA  or code == KEY_RIGHTMETA;
+}
+
+fn modBit(code: u16) u8 {
+    return switch (code) {
+        KEY_LEFTSHIFT, KEY_RIGHTSHIFT => MOD_SHIFT,
+        KEY_LEFTCTRL,  KEY_RIGHTCTRL  => MOD_CTRL,
+        KEY_LEFTALT,   KEY_RIGHTALT   => MOD_ALT,
+        KEY_LEFTMETA,  KEY_RIGHTMETA  => MOD_META,
+        else => 0,
+    };
+}
+
 pub const InputEvent = extern struct {
     time_sec: i64,
     time_usec: i64,
@@ -75,6 +108,7 @@ pub const ReaderContext = struct {
     file: *std.fs.File,
     queue: *queue_mod.EventQueue,
     classifier: *classify.Classifier,
+    mods: u8 = 0,  // current modifier bitmask
 };
 
 const PendingPointer = struct {
@@ -198,7 +232,8 @@ fn touchEmit(path: []const u8, queue: *queue_mod.EventQueue, touch: *PendingTouc
     }
 }
 
-pub fn readerMain(ctx: ReaderContext) !void {
+pub fn readerMain(ctx_val: ReaderContext) !void {
+    var ctx = ctx_val;
     var buf: [16]InputEvent = undefined;
     var pending = PendingPointer{};
     var touch = PendingTouch{};
@@ -277,12 +312,19 @@ pub fn readerMain(ctx: ReaderContext) !void {
                     } else if (isTouchMarker(ev.code)) {
                         // Touch marker keys are intentionally absorbed here.
                     } else {
+                        // Update modifier state before emitting events.
+                        if (isModifier(ev.code)) {
+                            const bit = modBit(ev.code);
+                            if (ev.value == 1) ctx.mods |= bit
+                            else if (ev.value == 0) ctx.mods &= ~bit;
+                        }
+
                         // ev.value: 1=press, 0=release, 2=repeat (autorepeat).
                         // Suppress repeats — emit key_down only on initial press.
                         if (ev.value == 1) {
-                            try ctx.queue.push(.{ .key_down = .{ .path = ctx.path, .code = ev.code } });
+                            try ctx.queue.push(.{ .key_down = .{ .path = ctx.path, .code = ev.code, .mods = ctx.mods } });
                         } else if (ev.value == 0) {
-                            try ctx.queue.push(.{ .key_up = .{ .path = ctx.path, .code = ev.code } });
+                            try ctx.queue.push(.{ .key_up = .{ .path = ctx.path, .code = ev.code, .mods = ctx.mods } });
                         }
                         // ev.value == 2 (repeat) is intentionally ignored.
                     }

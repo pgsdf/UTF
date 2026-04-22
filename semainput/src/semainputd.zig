@@ -8,6 +8,7 @@ const activity_mod = @import("device_activity.zig");
 const gesture_mod = @import("gesture.zig");
 const smoother_mod = @import("smoother.zig");
 const output_mod = @import("output.zig");
+const drawfs_inject = @import("adapters/drawfs_inject.zig");
 const globals = @import("globals.zig");
 
 fn writeStdout(bytes: []const u8) !void {
@@ -157,6 +158,14 @@ pub fn main() !void {
 
     var drained = std.ArrayList(semantic.SemanticEvent){};
     defer drained.deinit(allocator);
+    // Initialize drawfs injector — connects semainput to the kernel input path.
+    var injector = drawfs_inject.DrawfsInjector.init() catch |err| blk: {
+        std.debug.print("drawfs_inject: init failed ({s}), key injection disabled\n", .{@errorName(err)});
+        break :blk null;
+    };
+    if (injector) |*inj| _ = inj; // suppress unused warning if no events
+    defer if (injector) |*inj| inj.deinit();
+
     var staging = std.ArrayList(semantic.SemanticEvent){};
     defer staging.deinit(allocator);
     var snapshot = std.ArrayList(classify.DeviceObservation){};
@@ -197,6 +206,15 @@ pub fn main() !void {
                 const smoothed = try smoother.smoothEvent(&aggregator, event);
                 try output_mod.emitSemanticEvent(&aggregator, smoothed);
                 try gestures.handleEvent(&aggregator, smoothed, now_ns);
+
+                // Inject key events into drawfs kernel for semadrawd delivery.
+                if (injector) |*inj| {
+                    switch (smoothed) {
+                        .key_down => |e| inj.injectKey(e.code, 1, e.mods),
+                        .key_up   => |e| inj.injectKey(e.code, 0, e.mods),
+                        else => {},
+                    }
+                }
             }
         }
         const had_events = drained.items.len > 0;
