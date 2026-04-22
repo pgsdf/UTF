@@ -156,6 +156,25 @@ fn makeFrame(allocator: std.mem.Allocator, frame_id: u32, msg_type: u16, msg_id:
     return buf;
 }
 
+/// A read that does not panic on unknown errnos. std.posix.read carries a
+/// fixed list of "known" errnos for read(2) and routes anything else
+/// through unexpectedErrno, which dumps a stack trace and propagates a
+/// panic-style error. Some legitimate errno values fall outside that
+/// list — notably ENXIO (errno 6) returned by the drawfs kernel module
+/// when the session is in its closing state — and would therefore
+/// crash the daemon during ordinary shutdown sequences.
+///
+/// This wrapper treats every errno uniformly: any failure returns
+/// error.ReadFailed with no panic, no stack trace, no log spam. Callers
+/// that want the byte count check it themselves; callers that just
+/// want "did the read succeed" use try / catch break.
+fn safeRead(fd: posix.fd_t, buf: []u8) !usize {
+    const rc = posix.system.read(fd, buf.ptr, buf.len);
+    const signed: isize = @bitCast(rc);
+    if (signed < 0) return error.ReadFailed;
+    return @intCast(signed);
+}
+
 fn readFrame(fd: posix.fd_t, buf: []u8) !usize {
     // Poll for data first (kernel requires poll before read)
     var poll_fds = [_]posix.pollfd{
@@ -174,8 +193,10 @@ fn readFrame(fd: posix.fd_t, buf: []u8) !usize {
         return error.PollError;
     }
 
-    // Read entire frame in one syscall (kernel expects atomic read)
-    const n = posix.read(fd, buf) catch |err| {
+    // Read entire frame in one syscall (kernel expects atomic read).
+    // Use safeRead so unknown errnos (e.g. ENXIO from drawfs session
+    // closing) don't crash the daemon during shutdown.
+    const n = safeRead(fd, buf) catch |err| {
         log.err("read failed: {}", .{err});
         return err;
     };
@@ -1332,7 +1353,7 @@ pub const DrawfsBackend = struct {
             if (r == 0) break;
             if (pfd[0].revents & posix.POLL.IN == 0) break;
             var frame_buf: [256]u8 = undefined;
-            const n = posix.read(self.fd, &frame_buf) catch break;
+            const n = safeRead(self.fd, &frame_buf) catch break;
             if (n < 40) continue;
             const msg_type = std.mem.readInt(u16, frame_buf[16..18], .little);
             switch (msg_type) {
