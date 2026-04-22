@@ -1,6 +1,6 @@
 pub const SemanticEvent = union(enum) {
     mouse_move: struct { path: []const u8, dx: i32, dy: i32 },
-    mouse_button: struct { path: []const u8, button: []const u8, pressed: bool },
+    mouse_button: struct { path: []const u8, button: []const u8, pressed: bool, x: i32, y: i32 },
     mouse_scroll: struct { path: []const u8, dx: i32, dy: i32 },
     key_down: struct { path: []const u8, code: u16, mods: u8 },
     key_up: struct { path: []const u8, code: u16, mods: u8 },

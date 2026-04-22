@@ -284,7 +284,7 @@ pub const Aggregator = struct {
 
         switch (event) {
             .mouse_move => |e| std.debug.print("semantic: dev={s} mouse_move dx={d} dy={d} source={s}\n", .{ mapping.stable_name, e.dx, e.dy, path }),
-            .mouse_button => |e| std.debug.print("semantic: dev={s} mouse_button button={s} state={s} source={s}\n", .{ mapping.stable_name, e.button, if (e.pressed) "down" else "up", path }),
+            .mouse_button => |e| std.debug.print("semantic: dev={s} mouse_button button={s} state={s} x={d} y={d} source={s}\n", .{ mapping.stable_name, e.button, if (e.pressed) "down" else "up", e.x, e.y, path }),
             .mouse_scroll => |e| std.debug.print("semantic: dev={s} mouse_scroll dx={d} dy={d} source={s}\n", .{ mapping.stable_name, e.dx, e.dy, path }),
             .key_down => |e| std.debug.print("semantic: dev={s} key_down code={d} source={s}\n", .{ mapping.stable_name, e.code, path }),
             .key_up => |e| std.debug.print("semantic: dev={s} key_up code={d} source={s}\n", .{ mapping.stable_name, e.code, path }),

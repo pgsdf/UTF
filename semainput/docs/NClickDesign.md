@@ -64,8 +64,8 @@ mouse_n_click: struct {
     path: []const u8,
     button: []const u8,       // "left", "right", "middle"
     count: u32,               // 2 = double, 3 = triple, etc.
-    x: i32,                   // surface-local position at the final click
-    y: i32,
+    x: i32,                   // device-accumulated position at the final click
+    y: i32,                   // (matches mouse_button x/y; see schema change)
     mods: u8,
 },
 ```
@@ -90,7 +90,7 @@ Per-device, in `GestureRecognizer`:
 const ClickState = struct {
     button: []const u8,
     surface_id: u32,
-    x: i32, y: i32,
+    x: i32, y: i32,           // device-accumulated raw units (see schema change)
     ts_audio_samples: u64,
     mods: u8,
     count: u32,
@@ -122,11 +122,11 @@ against the per-device `last_click`:
   `mouse_n_click` with the new count.
 
 The threshold for "click vs drag" is the same as the radius for "same
-click as the previous one." If the up event is more than `R` pixels from
-the down event, the gesture is a drag, not a click, and is *not* counted
-as part of any N-click sequence. This bears mentioning explicitly because
-without it, a user who drags slightly between presses will see their
-intended drag interpreted as a double-click.
+click as the previous one." If the up event is more than `R` device units
+from the down event, the gesture is a drag, not a click, and is *not*
+counted as part of any N-click sequence. This bears mentioning explicitly
+because without it, a user who drags slightly between presses will see
+their intended drag interpreted as a double-click.
 
 ## Configuration
 
@@ -137,8 +137,11 @@ this is currently undefined and worth settling alongside the recogniser):
 - `n_click_interval_samples`: default 24000 (= 500 ms at 48 kHz). Maximum
   audio-sample delta between successive clicks for them to be considered
   the same N-click sequence.
-- `n_click_radius_px`: default 8. Maximum surface-local pixel distance
-  between successive click positions for them to count as the same.
+- `n_click_radius_px`: default 8. Maximum device-unit distance between
+  successive click positions for them to count as the same. Despite the
+  `_px` suffix, the unit is device-accumulated raw input (see the
+  schema change section for the rationale); for typical mouse hardware
+  at typical DPI, 8 device-units approximates 8 pixels of motion.
 
 The defaults are the threshold for both "double-click vs two single
 clicks" and "click vs drag" — that is, `n_click_radius_px` doubles as the
@@ -176,41 +179,75 @@ follow-up about hardcoded `surface_id=1` in the drawfs injector).
 Until focus tracking is wired up, the recogniser uses the single
 hardcoded surface and the cross-surface case does not arise.
 
-## Schema change: `mouse_button` carries absolute coordinates
+## Schema change: `mouse_button` carries device-accumulated coordinates
 
-`SemanticEvent.mouse_button` is extended with `x, y` fields (absolute,
-surface-local pixels) at the same time the recogniser is implemented.
+`SemanticEvent.mouse_button` is extended with `x, y` fields. The units
+are **device-accumulated raw units** (the running sum of `REL_X` /
+`REL_Y` deltas seen by the evdev adapter for that device), not
+surface-local pixels.
 
 ```zig
 mouse_button: struct {
     path: []const u8,
     button: []const u8,
     pressed: bool,
-    x: i32,           // new — surface-local pixel position at event time
-    y: i32,           // new
+    x: i32,           // new — device-accumulated x at event time
+    y: i32,           // new — device-accumulated y at event time
 },
 ```
 
-Two consequences flow from this:
+### Why device units, not surface-local pixels
 
-- The recogniser reads click position directly from the event, with no
-  duplicated state. This is cleaner than the alternative (recogniser
-  accumulating `mouse_move` deltas itself).
-- Any downstream consumer that knows where the click occurred no longer
-  needs to join the `mouse_button` stream against `mouse_move`. The
-  serialised JSON `mouse_button` event grows two integer fields.
+The recogniser needs *some* coordinate space to compare click positions
+against the spatial radius. Three were considered:
 
-Adapter responsibility: the evdev adapter (and any future adapter) must
-populate these fields. The adapter already tracks pointer position to
-emit `mouse_move`; it now also stamps the current position into every
-`mouse_button` event it produces.
+- **Surface-local pixels.** Cleanest semantically. But surface mapping
+  happens in semadrawd's compositor, not in semainputd. Producing
+  surface-local coordinates in semainputd would require either
+  duplicating cursor placement logic from the compositor, or adding a
+  round-trip query, both of which break the layering and add coupling
+  semainputd does not currently have.
+- **Device-relative deltas only (no schema change).** The recogniser
+  could compare each up-event's accumulated motion-since-down against
+  the radius. This works for the click-vs-drag check but is awkward for
+  the click-position-stability check across multiple events, because
+  the recogniser would have to maintain its own per-device cursor.
+- **Device-accumulated raw units (chosen).** The evdev adapter already
+  observes every `REL_X` / `REL_Y` event; accumulating them into a
+  per-context cursor is a small change. The resulting x/y are honest:
+  they are not pixels, but for typical mouse hardware at typical DPI
+  they approximate pixels closely enough that an 8-unit radius reads
+  as roughly 8 pixels of motion. Downstream consumers that need true
+  surface-local coordinates (semadrawd's compositor, when pointer
+  injection is wired) translate device-units to surface-local-pixels
+  themselves, which is the same coordinate transform they would do
+  anyway for cursor placement.
 
-Backward compatibility with external consumers of the JSON event log is
-not preserved. This is acceptable at UTF's current maturity — the event
-schema is not yet under a stability contract, the unified envelope was
-itself a recent change, and there are no known external consumers
-beyond UTF's own daemons. If a stability contract is later adopted, this
-extension should be visible in any schema diff at that point.
+The chosen approach keeps the recogniser in semainputd, preserves the
+audio-clock proximity that motivated locating it there, avoids waiting
+on the compositor's surface-mapping infrastructure, and leaves the door
+open for semadrawd to do its own surface-local tracking without
+conflict.
+
+### Adapter responsibility
+
+The evdev adapter (and any future adapter) maintains a per-context
+cursor accumulator, advanced on every `REL_X` / `REL_Y` event. The
+adapter stamps the current accumulator value into every
+`mouse_button` event it emits. The accumulator is reset only when the
+adapter itself is reinitialised (e.g. device hot-unplug then replug).
+There is no "warp the cursor to origin" mechanism because device-units
+have no canonical origin: they are a relative sum.
+
+### Backward compatibility
+
+Backward compatibility with external consumers of the JSON event log
+is not preserved. This is acceptable at UTF's current maturity — the
+event schema is not yet under a stability contract, the unified
+envelope was itself a recent change, and there are no known external
+consumers beyond UTF's own daemons. If a stability contract is later
+adopted, this extension should be visible in any schema diff at that
+point.
 
 ## Implementation scope
 

@@ -81,7 +81,7 @@ pub fn emitSemanticEvent(aggregator: *aggregate.Aggregator, event: semantic.Sema
             try writeEscapedString(writer, e.button);
             try writer.writeAll(",\"state\":");
             try writeEscapedString(writer, if (e.pressed) "down" else "up");
-            try writer.writeAll("}\n");
+            try writer.print(",\"x\":{d},\"y\":{d}}}\n", .{ e.x, e.y });
         },
         .mouse_scroll => |e| {
             try writeHeader(writer, "mouse_scroll", mapping.stable_name, e.path);

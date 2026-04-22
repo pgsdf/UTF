@@ -238,6 +238,18 @@ pub fn readerMain(ctx_val: ReaderContext) !void {
     var pending = PendingPointer{};
     var touch = PendingTouch{};
 
+    // Per-device accumulated cursor in raw device units. Advanced on every
+    // REL_X / REL_Y event (immediately, not on SYN_REPORT) so that a click
+    // arriving in the same syn cycle as motion sees the post-motion
+    // position. The unit is whatever evdev reports — for typical mice this
+    // is approximately one pixel of screen motion at 1:1 mapping. There is
+    // no canonical origin: cursor_x/y are a running sum starting from 0
+    // when the reader starts. This is acceptable because the only
+    // consumer (the N-click recogniser) compares positions across events,
+    // not against any fixed reference.
+    var cursor_x: i32 = 0;
+    var cursor_y: i32 = 0;
+
     while (true) {
         const bytes = try ctx.file.read(std.mem.asBytes(&buf));
         if (bytes == 0) {
@@ -253,8 +265,14 @@ pub fn readerMain(ctx_val: ReaderContext) !void {
                 EV_REL => {
                     try ctx.classifier.observeRel(ctx.path, ev.code);
                     switch (ev.code) {
-                        REL_X => pending.dx += ev.value,
-                        REL_Y => pending.dy += ev.value,
+                        REL_X => {
+                            pending.dx += ev.value;
+                            cursor_x += ev.value;
+                        },
+                        REL_Y => {
+                            pending.dy += ev.value;
+                            cursor_y += ev.value;
+                        },
                         REL_HWHEEL => pending.scroll_x += ev.value,
                         REL_WHEEL => pending.scroll_y += ev.value,
                         else => {},
@@ -307,6 +325,8 @@ pub fn readerMain(ctx_val: ReaderContext) !void {
                                 .path = ctx.path,
                                 .button = buttonName(ev.code),
                                 .pressed = ev.value != 0,
+                                .x = cursor_x,
+                                .y = cursor_y,
                             },
                         });
                     } else if (isTouchMarker(ev.code)) {
