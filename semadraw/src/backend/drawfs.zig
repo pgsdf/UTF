@@ -362,6 +362,35 @@ pub const DrawfsBackend = struct {
         return id;
     }
 
+    /// Parse an EVT_KEY frame into the backend's KeyEvent representation.
+    /// Caller must have already verified msg_type == DRAWFS_EVT_KEY and
+    /// that the frame contains the full 24-byte payload.
+    fn parseEvtKey(frame: []const u8) backend.KeyEvent {
+        // EVT_KEY payload is at offset 32: surface_id(4), code(4), state(4),
+        // mods(4), ts(8). We only need code/state/mods.
+        const p = frame[32..];
+        const code  = std.mem.readInt(u32, p[4..8],  .little);
+        const state = std.mem.readInt(u32, p[8..12], .little);
+        const mods  = @as(u8, @truncate(std.mem.readInt(u32, p[12..16], .little)));
+        return .{
+            .key_code  = code,
+            .modifiers = mods,
+            .pressed   = state == 1,
+        };
+    }
+
+    /// Stash an EVT_KEY frame in the injected_keys buffer for later
+    /// delivery via getKeyEvents(). Silently drops the event if the
+    /// buffer is full — the buffer is large enough that this requires
+    /// several hundred keypresses between compositor frames, which is
+    /// not a case we need to handle gracefully.
+    fn stashEvtKey(self: *Self, frame: []const u8, n: usize) void {
+        if (n < 32 + 20) return; // short frame, drop
+        if (self.injected_keys_len >= backend.MAX_KEY_EVENTS) return;
+        self.injected_keys[self.injected_keys_len] = parseEvtKey(frame);
+        self.injected_keys_len += 1;
+    }
+
     fn sendAndRecv(self: *Self, msg_type: u16, payload: []const u8, expected_reply: u16) ![]const u8 {
         const frame_id = self.nextFrameId();
         const msg_id = self.nextMsgId();
@@ -377,13 +406,30 @@ pub const DrawfsBackend = struct {
             };
         }
 
-        // Read reply (may need to skip events)
+        // Read reply. The fd is multiplexed: protocol replies, EVT_SURFACE_PRESENTED
+        // events emitted by our own SURFACE_PRESENT requests, and EVT_KEY /
+        // EVT_POINTER / EVT_SCROLL / EVT_TOUCH events injected by semainputd
+        // via DRAWFSGIOC_INJECT_INPUT all arrive on this channel. We must
+        // handle all three: the reply we're waiting for, the frame events
+        // that are acknowledgements of our own activity, and the injected
+        // input events that are someone else's traffic passing through our
+        // queue.
         while (true) {
             const n = try readFrame(self.fd, &self.read_buf);
             const reply = parseReply(self.read_buf[0..n]);
 
-            // Skip events
+            // Skip compositor-acknowledgement events.
             if (reply.msg_type == EVT_SURFACE_PRESENTED) {
+                continue;
+            }
+
+            // Stash input events in injected_keys so drainInjectedEvents can
+            // return them later. Without this, an EVT_KEY arriving between
+            // our write and the kernel's reply would cause UnexpectedReply
+            // and silently swallow the keystroke — the root cause of the
+            // "sometimes first press is lost" behaviour.
+            if (reply.msg_type == DRAWFS_EVT_KEY) {
+                self.stashEvtKey(self.read_buf[0..n], n);
                 continue;
             }
 
@@ -1138,6 +1184,13 @@ pub const DrawfsBackend = struct {
     /// Drain any injected input events (EVT_KEY) from the drawfs fd.
     /// These are enqueued by semainput via DRAWFSGIOC_INJECT_INPUT and
     /// delivered back to the session as framed protocol messages.
+    ///
+    /// Any EVT_SURFACE_PRESENTED frames we encounter here are leftovers
+    /// from a previous compositor transaction (normally sendAndRecv
+    /// consumes them inline); they are discarded. Any protocol *reply*
+    /// we find here indicates a protocol state bug — replies must never
+    /// outlive the sendAndRecv call that expected them — but we discard
+    /// them silently rather than crash the compositor loop.
     fn drainInjectedEvents(self: *Self) void {
         self.injected_keys_len = 0;
         var pfd = [1]posix.pollfd{.{
@@ -1154,18 +1207,7 @@ pub const DrawfsBackend = struct {
             if (n < 40) continue;
             const msg_type = std.mem.readInt(u16, frame_buf[16..18], .little);
             if (msg_type != DRAWFS_EVT_KEY) continue;
-            // EVT_KEY payload offset 32: surface_id(4) + code(4) + state(4) + mods(4) + ts(8)
-            if (n < 32 + 20) continue;
-            const p = frame_buf[32..];
-            const code  = std.mem.readInt(u32, p[4..8],  .little);
-            const state = std.mem.readInt(u32, p[8..12], .little);
-            const mods  = @as(u8, @truncate(std.mem.readInt(u32, p[12..16], .little)));
-            self.injected_keys[self.injected_keys_len] = .{
-                .key_code  = code,
-                .modifiers = mods,
-                .pressed   = state == 1,
-            };
-            self.injected_keys_len += 1;
+            self.stashEvtKey(frame_buf[0..n], n);
         }
     }
 
