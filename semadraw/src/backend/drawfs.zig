@@ -386,17 +386,9 @@ pub const DrawfsBackend = struct {
     /// not a case we need to handle gracefully.
     fn stashEvtKey(self: *Self, frame: []const u8, n: usize) void {
         if (n < 32 + 20) return; // short frame, drop
-        if (self.injected_keys_len >= backend.MAX_KEY_EVENTS) {
-            std.debug.print("drawfs-backend: stash buffer full, dropping key\n", .{});
-            return;
-        }
-        const ev = parseEvtKey(frame);
-        self.injected_keys[self.injected_keys_len] = ev;
+        if (self.injected_keys_len >= backend.MAX_KEY_EVENTS) return;
+        self.injected_keys[self.injected_keys_len] = parseEvtKey(frame);
         self.injected_keys_len += 1;
-        // TEMPORARY DIAGNOSTIC: log every key we stash, and who stashed it.
-        // Remove once the key-loss issue is understood.
-        std.debug.print("drawfs-backend: stash code={d} state={s} len={d}\n",
-            .{ ev.key_code, if (ev.pressed) "down" else "up", self.injected_keys_len });
     }
 
     fn sendAndRecv(self: *Self, msg_type: u16, payload: []const u8, expected_reply: u16) ![]const u8 {
@@ -1237,8 +1229,6 @@ pub const DrawfsBackend = struct {
     fn getKeyEventsImpl(ctx: *anyopaque) []const backend.KeyEvent {
         const self: *Self = @ptrCast(@alignCast(ctx));
         if (self.injected_keys_len > 0) {
-            // TEMPORARY DIAGNOSTIC: log every consumption.
-            std.debug.print("drawfs-backend: consume {d} events\n", .{self.injected_keys_len});
             // Snapshot the current contents and reset the buffer so the next
             // drain or sendAndRecv stash starts fresh. The returned slice is
             // safe to hold: injected_keys is a stack-allocated fixed array,
