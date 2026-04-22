@@ -11,6 +11,14 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // shared/src/clock.zig — audio clock publication (ClockWriter).
+    // semaaud is the sole writer; other daemons consume via ClockReader.
+    const shared_clock_mod = b.createModule(.{
+        .root_source_file = b.path("../shared/src/clock.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const exe = b.addExecutable(.{
         .name = "semaaud",
         .root_module = b.createModule(.{
@@ -21,6 +29,7 @@ pub fn build(b: *std.Build) void {
     });
 
     exe.root_module.addImport("session", session_mod);
+    exe.root_module.addImport("shared_clock", shared_clock_mod);
 
     b.installArtifact(exe);
 

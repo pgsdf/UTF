@@ -12,6 +12,7 @@ const control_server = @import("control_server.zig");
 const state_mod = @import("state.zig");
 const stream_worker = @import("stream_worker.zig");
 const surfaces = @import("surfaces.zig");
+const shared_clock = @import("shared_clock");
 
 fn resolveOtherShared(
     current_name: []const u8,
@@ -133,6 +134,24 @@ pub fn main() !void {
     // Initialise session token for event log emission.
     default_shared.event_ctx.initSession();
     alt_shared.event_ctx.initSession();
+
+    // Clock publication. semaaud is the sole writer of /var/run/sema/clock;
+    // all other UTF daemons consume it via ClockReader. We designate the
+    // "default" target as the clock-owning target: its stream worker is
+    // the one that calls streamBegin() on first stream and update() after
+    // each PCM write. The "alt" target participates in audio routing but
+    // not in clock publication — when alt is active and default is idle,
+    // the clock region reports its last-known state. This is a known
+    // limitation; revisit once dual-active playback becomes a real use
+    // case (today it doesn't).
+    //
+    // Opening the clock writer is fatal if it fails: semaaud's role in
+    // UTF is precisely to publish this region, so a failure here is a
+    // startup failure, not a warning.
+    var clock_writer = try shared_clock.ClockWriter.init(shared_clock.CLOCK_PATH);
+    defer clock_writer.deinit();
+    default_shared.clock_writer = &clock_writer;
+    std.debug.print("clock region published at {s}\n", .{shared_clock.CLOCK_PATH});
 
     var ctl_server = try control_server.ControlServer.init(.{
         .socket_path = state_mod.CONTROL_SOCKET_PATH,

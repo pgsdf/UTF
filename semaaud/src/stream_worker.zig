@@ -6,6 +6,7 @@ const policy_mod = @import("policy.zig");
 const policy_state_mod = @import("policy_state.zig");
 const surfaces = @import("surfaces.zig");
 const oss = @import("oss_output.zig");
+const shared_clock = @import("shared_clock");
 
 pub const Shared = struct {
     mutex: std.Thread.Mutex = .{},
@@ -17,6 +18,22 @@ pub const Shared = struct {
     /// Never resets between streams — monotonically increasing for the lifetime
     /// of the daemon. This is the audio clock source for chronofs.
     samples_written: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+
+    /// Optional handle to the shared clock region at /var/run/sema/clock.
+    /// Only the "default" target publishes; "alt" leaves this null. See
+    /// main.zig for the assignment and the ADR-style comment describing
+    /// why default is the clock-owning target.
+    ///
+    /// The writer's lifetime is owned by main(); Shared only borrows a
+    /// pointer. Do not call deinit from here.
+    clock_writer: ?*shared_clock.ClockWriter = null,
+
+    /// Latch for ClockWriter.streamBegin. streamBegin flips clock_valid
+    /// from 0 to 1 and sets the sample_rate; both transitions are one-shot
+    /// for the lifetime of the daemon. We use an atomic bool so the first
+    /// stream worker to arrive wins the call without needing to hold the
+    /// mutex across a potentially slow file-backed write.
+    stream_begin_published: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
     pub fn snapshot(self: *Shared) state_mod.RuntimeState {
         self.mutex.lock();
@@ -101,6 +118,21 @@ fn run(args: WorkerArgs) !void {
         _ = posix.write(args.conn, msg) catch {};
         return err;
     };
+
+    // Publish the clock's sample_rate and mark it valid on the first stream
+    // of this daemon's lifetime. Subsequent streams keep the initial rate
+    // even if they negotiate a different one; consumers see a single stable
+    // rate for the life of the daemon. If later streams negotiate a
+    // different rate, samples_written continues to be accurate in frames,
+    // but consumers converting to nanoseconds via the published rate will
+    // see a scaling error for those streams. A future refinement may
+    // publish per-stream rate changes; for now, first-stream-wins.
+    if (args.shared.clock_writer) |writer| {
+        if (args.shared.stream_begin_published.cmpxchgStrong(false, true, .seq_cst, .seq_cst) == null) {
+            writer.streamBegin(desc.sample_rate);
+        }
+    }
+
     var stream_id: u64 = 0;
 
     {
@@ -154,7 +186,12 @@ fn run(args: WorkerArgs) !void {
         // partial frame, which is correct — we only count fully written frames.
         const frames: u64 = @as(u64, n) / bytes_per_frame;
         if (frames > 0) {
-            _ = args.shared.samples_written.fetchAdd(frames, .monotonic);
+            const new_total = args.shared.samples_written.fetchAdd(frames, .monotonic) + frames;
+            // Mirror the new count into the shared clock region so that
+            // semainput, semadrawd, and chronofs can read it via their
+            // ClockReader. The writer is lock-free (a single aligned u64
+            // store to mmap'd memory), so this is safe on the audio thread.
+            if (args.shared.clock_writer) |writer| writer.update(new_total);
         }
     }
 
