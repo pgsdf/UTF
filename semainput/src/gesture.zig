@@ -24,17 +24,26 @@ const MaxDeltaStep: i32 = 3;
 
 // N-click recogniser thresholds. See semainput/docs/NClickDesign.md.
 //
-// NClickIntervalSamples: maximum audio-sample delta between successive
-// clicks for them to be considered the same N-click sequence. Default is
-// 24000, which is 500 ms at 48 kHz. When the audio clock is unavailable,
-// the recogniser falls back to the wall clock and uses
-// NClickIntervalNs as the equivalent threshold.
+// These are compile-time constants, matching the existing pattern in this
+// file (TapMaxDurationNs, DragThreshold, etc.). semainputd has no runtime
+// configuration infrastructure today; introducing one for two new
+// thresholds in isolation would create a piecemeal config story.
 //
-// NClickRadiusUnits: maximum device-unit distance between successive
-// click positions for them to count as the same. Despite the name in the
-// design note ("n_click_radius_px"), the unit is raw evdev REL_X/REL_Y
-// counts, not pixels. For typical mouse hardware at typical DPI, 8
-// device-units approximates 8 pixels of motion.
+// TODO: move to runtime configuration when a daemon-wide config story
+// lands. The right shape is a single semainput.conf (likely JSON under
+// /etc/semainput/ or /var/run/sema/) loaded at startup that applies to
+// all thresholds in this file, not just these two.
+//
+// Until then: tune by editing this file and rebuilding.
+//
+// NClickIntervalSamples — maximum audio-sample delta between successive
+// clicks for them to be considered the same N-click sequence. 24000 is
+// 500 ms at 48 kHz. When the audio clock is unavailable, the recogniser
+// falls back to wall clock and uses NClickIntervalNs as the equivalent.
+//
+// NClickRadiusUnits — maximum device-unit distance between successive
+// click positions. The unit is raw evdev REL_X/REL_Y counts; for typical
+// mouse hardware at typical DPI, 8 units approximates 8 pixels of motion.
 const NClickIntervalSamples: u64 = 24_000;
 const NClickIntervalNs: u64 = 500 * std.time.ns_per_ms;
 const NClickRadiusUnits: i32 = 8;

@@ -154,6 +154,39 @@ These are policy, not per-application. Apps inherit consistent behaviour.
 A future per-app override mechanism is conceivable but explicitly out of
 scope for the initial implementation.
 
+## Deferred: runtime tunability
+
+The "Configuration" section above describes the intended endpoint —
+filesystem surfaces under `/var/run/sema/` (or wherever semainput's
+config layer lands) that publish `n_click_interval_samples` and
+`n_click_radius_px` for runtime tuning.
+
+That endpoint is not implemented in the initial recogniser. The
+thresholds are compile-time constants in `gesture.zig`, matching the
+pattern used by every other threshold in semainputd today
+(`TapMaxDurationNs`, `DragThreshold`, the various scroll/pinch/swipe
+constants). semainputd has no runtime configuration infrastructure; the
+daemon is intentionally minimal and stable, doing evdev-to-semantic
+translation without config-file or socket overhead beyond what already
+exists for the event log.
+
+Adding a config layer for two new thresholds in isolation would create
+a piecemeal config story: half the file's behaviour configurable, half
+not, with no clear principle for which is which. The cleaner path is to
+defer config until a daemon-wide story is settled, then move *all*
+thresholds (existing and new) to the same mechanism in one focused
+change.
+
+When that work happens, the natural shape is a single config file —
+JSON or a simple key=value format — loaded once at startup, with the
+existing compile-time constants serving as defaults for any missing
+keys. No hot reload required initially; daemon restart on config
+change is acceptable for thresholds that change rarely.
+
+Until then: tune by editing the constants in `gesture.zig` and
+rebuilding. The recogniser is fully functional with the defaults; the
+deferral affects only the ability to tune without recompilation.
+
 ## What is not handled
 
 Drag is the natural sibling of click and the same state machine can
