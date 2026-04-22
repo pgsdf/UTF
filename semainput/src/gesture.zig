@@ -22,6 +22,23 @@ const VelocityScaleNumerator: i32 = 1;
 const VelocityScaleDenominator: i32 = 2;
 const MaxDeltaStep: i32 = 3;
 
+// N-click recogniser thresholds. See semainput/docs/NClickDesign.md.
+//
+// NClickIntervalSamples: maximum audio-sample delta between successive
+// clicks for them to be considered the same N-click sequence. Default is
+// 24000, which is 500 ms at 48 kHz. When the audio clock is unavailable,
+// the recogniser falls back to the wall clock and uses
+// NClickIntervalNs as the equivalent threshold.
+//
+// NClickRadiusUnits: maximum device-unit distance between successive
+// click positions for them to count as the same. Despite the name in the
+// design note ("n_click_radius_px"), the unit is raw evdev REL_X/REL_Y
+// counts, not pixels. For typical mouse hardware at typical DPI, 8
+// device-units approximates 8 pixels of motion.
+const NClickIntervalSamples: u64 = 24_000;
+const NClickIntervalNs: u64 = 500 * std.time.ns_per_ms;
+const NClickRadiusUnits: i32 = 8;
+
 const AxisLock = enum {
     none,
     horizontal,
@@ -64,13 +81,41 @@ pub const DeviceGestureState = struct {
     last_swipe3_dy: i32,
 };
 
+/// Per-device record of the most recent completed click, used by the
+/// N-click recogniser to determine whether a new click extends an
+/// existing sequence or starts a fresh one.
+pub const ClickHistory = struct {
+    device_path: []const u8,
+    button: []const u8,
+    x: i32,
+    y: i32,
+    /// Audio-sample timestamp of the previous up-event in this sequence.
+    /// When the audio clock is unavailable, this is 0 and ts_wall_ns is
+    /// used instead.
+    ts_audio_samples: u64,
+    /// Wall-clock timestamp of the previous up-event in this sequence.
+    /// Always valid; used as the timing reference when audio is unavailable.
+    ts_wall_ns: u64,
+    /// Position of the most recent down-event in the in-progress click.
+    /// Compared against the up-event position to enforce click-vs-drag.
+    down_x: i32,
+    down_y: i32,
+    /// Number of clicks in the current sequence (1 = single click,
+    /// 2 = double, ...).
+    count: u32,
+};
+
 pub const GestureRecognizer = struct {
     allocator: std.mem.Allocator,
     contacts: std.ArrayList(ContactState),
     device_states: std.ArrayList(DeviceGestureState),
+    /// Per-device click history for the N-click recogniser. Keyed by
+    /// the source device path (e.g. "/dev/input/event6"). Different
+    /// physical mice maintain independent sequences.
+    click_history: std.ArrayList(ClickHistory),
 
     pub fn init(allocator: std.mem.Allocator) GestureRecognizer {
-        return .{ .allocator = allocator, .contacts = .{}, .device_states = .{} };
+        return .{ .allocator = allocator, .contacts = .{}, .device_states = .{}, .click_history = .{} };
     }
 
     pub fn deinit(self: *GestureRecognizer) void {
@@ -78,6 +123,11 @@ pub const GestureRecognizer = struct {
         self.contacts.deinit(self.allocator);
         for (self.device_states.items) |s| self.allocator.free(s.device_name);
         self.device_states.deinit(self.allocator);
+        for (self.click_history.items) |h| {
+            self.allocator.free(h.device_path);
+            self.allocator.free(h.button);
+        }
+        self.click_history.deinit(self.allocator);
     }
 
     fn emitGestureEvent(self: *GestureRecognizer, device_name: []const u8, gesture_type: []const u8, fields_json: []const u8) !void {
@@ -823,11 +873,160 @@ pub const GestureRecognizer = struct {
         try self.updateMultitouchScrollState(device_name);
     }
 
+    // ========================================================================
+    // N-click recogniser
+    // ========================================================================
+    //
+    // Per-device state machine that observes mouse_button events and emits
+    // mouse_n_click when the same button is clicked multiple times within
+    // a short interval at approximately the same position. Both raw button
+    // events and recognised n-click events are emitted; consumers choose
+    // which layer to handle. See semainput/docs/NClickDesign.md for the
+    // full design.
+
+    /// Look up the click history for a device, or null if no prior click
+    /// has been recorded. Uses linear search; with one or two mice
+    /// connected this is faster than a hashmap.
+    fn findClickHistory(self: *GestureRecognizer, device_path: []const u8) ?*ClickHistory {
+        for (self.click_history.items) |*h| {
+            if (std.mem.eql(u8, h.device_path, device_path)) return h;
+        }
+        return null;
+    }
+
+    /// Insert a fresh click history entry for a device, copying both the
+    /// device path and button name so the entry owns its strings.
+    fn insertClickHistory(self: *GestureRecognizer, device_path: []const u8, button: []const u8) !*ClickHistory {
+        const path_copy = try self.allocator.dupe(u8, device_path);
+        errdefer self.allocator.free(path_copy);
+        const button_copy = try self.allocator.dupe(u8, button);
+        errdefer self.allocator.free(button_copy);
+        try self.click_history.append(self.allocator, .{
+            .device_path = path_copy,
+            .button = button_copy,
+            .x = 0, .y = 0,
+            .ts_audio_samples = 0,
+            .ts_wall_ns = 0,
+            .down_x = 0, .down_y = 0,
+            .count = 0,
+        });
+        return &self.click_history.items[self.click_history.items.len - 1];
+    }
+
+    /// Replace an existing history entry's button (if it differs) so the
+    /// owned string stays correct. Cheap when the button is unchanged.
+    fn replaceHistoryButton(self: *GestureRecognizer, h: *ClickHistory, button: []const u8) !void {
+        if (std.mem.eql(u8, h.button, button)) return;
+        const button_copy = try self.allocator.dupe(u8, button);
+        self.allocator.free(h.button);
+        h.button = button_copy;
+    }
+
+    /// Compute the squared distance between two points. Avoids the sqrt
+    /// since the recogniser only cares about whether a distance is below
+    /// or above a threshold; squaring the threshold once is cheaper than
+    /// sqrt-ing on every comparison.
+    fn distSquared(ax: i32, ay: i32, bx: i32, by: i32) i64 {
+        const dx: i64 = @as(i64, ax) - @as(i64, bx);
+        const dy: i64 = @as(i64, ay) - @as(i64, by);
+        return dx * dx + dy * dy;
+    }
+
+    fn handleMouseButton(self: *GestureRecognizer, aggregator: *aggregate.Aggregator, e: anytype, now_ns: u64) !void {
+        const mapping = aggregator.findForPath(e.path) orelse return;
+        const globals = @import("globals.zig");
+
+        if (e.pressed) {
+            // Down event — record the press position so we can enforce the
+            // click-vs-drag check on the matching up event.
+            const h = self.findClickHistory(e.path) orelse try self.insertClickHistory(e.path, e.button);
+            h.down_x = e.x;
+            h.down_y = e.y;
+            return;
+        }
+
+        // Up event — the click is now complete. Decide whether it extends
+        // the existing sequence or starts a new one.
+        const h = self.findClickHistory(e.path) orelse {
+            // Up without a prior down (started while we were not watching).
+            // Record this as a count=1 click but do not emit; we have no
+            // press position to validate against.
+            const fresh = try self.insertClickHistory(e.path, e.button);
+            fresh.x = e.x;
+            fresh.y = e.y;
+            fresh.ts_wall_ns = now_ns;
+            fresh.ts_audio_samples = globals.readAudioSamples() orelse 0;
+            fresh.count = 1;
+            return;
+        };
+
+        // Click-vs-drag: if the up event moved more than the radius from
+        // the down event, this is a drag, not a click. Reset the
+        // sequence so a future click does not chain off the abandoned
+        // press. Do not emit.
+        const radius_sq: i64 = @as(i64, NClickRadiusUnits) * @as(i64, NClickRadiusUnits);
+        const drag_dist_sq = distSquared(e.x, e.y, h.down_x, h.down_y);
+        if (drag_dist_sq > radius_sq) {
+            h.count = 0;
+            return;
+        }
+
+        // Determine whether the new click extends the existing sequence.
+        // The sequence resets if any of: button differs, time delta
+        // exceeds the threshold, or position moved more than the radius
+        // from the previous click.
+        var extends = h.count > 0 and std.mem.eql(u8, h.button, e.button);
+        if (extends) {
+            const audio_now = globals.readAudioSamples();
+            if (audio_now) |samples_now| {
+                if (h.ts_audio_samples == 0 or samples_now < h.ts_audio_samples) {
+                    extends = false; // clock reset or out-of-order
+                } else {
+                    extends = (samples_now - h.ts_audio_samples) <= NClickIntervalSamples;
+                }
+            } else {
+                // Audio clock unavailable; fall back to wall clock.
+                extends = h.ts_wall_ns != 0 and now_ns >= h.ts_wall_ns and (now_ns - h.ts_wall_ns) <= NClickIntervalNs;
+            }
+        }
+        if (extends) {
+            const click_dist_sq = distSquared(e.x, e.y, h.x, h.y);
+            if (click_dist_sq > radius_sq) extends = false;
+        }
+
+        if (extends) {
+            h.count += 1;
+        } else {
+            // Fresh sequence. Update the button (in case it changed) and
+            // start the count over at 1.
+            try self.replaceHistoryButton(h, e.button);
+            h.count = 1;
+        }
+        h.x = e.x;
+        h.y = e.y;
+        h.ts_wall_ns = now_ns;
+        h.ts_audio_samples = globals.readAudioSamples() orelse 0;
+
+        // Emit mouse_n_click only when count >= 2. A single click is
+        // already represented by the raw mouse_button events; the
+        // recogniser exists to layer multi-click semantics on top.
+        if (h.count >= 2) {
+            var fields_buf: [128]u8 = undefined;
+            const fields = try std.fmt.bufPrint(
+                &fields_buf,
+                ",\"button\":\"{s}\",\"count\":{d},\"x\":{d},\"y\":{d},\"mods\":0",
+                .{ e.button, h.count, e.x, e.y },
+            );
+            try self.emitGestureEvent(mapping.stable_name, "mouse_n_click", fields);
+        }
+    }
+
     pub fn handleEvent(self: *GestureRecognizer, aggregator: *aggregate.Aggregator, event: semantic.SemanticEvent, now_ns: u64) !void {
         switch (event) {
             .touch_down => |e| try self.handleTouchDown(aggregator, e, now_ns),
             .touch_move => |e| try self.handleTouchMove(aggregator, e, now_ns),
             .touch_up => |e| try self.handleTouchUp(aggregator, e, now_ns),
+            .mouse_button => |e| try self.handleMouseButton(aggregator, e, now_ns),
             else => {},
         }
     }
