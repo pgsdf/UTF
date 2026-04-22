@@ -92,8 +92,15 @@ pub const DrawfsInjector = struct {
                 .{ DRAWFS_DEV, @errorName(err) });
             return err;
         };
-        std.debug.print("drawfs_inject: opened {s}\n", .{DRAWFS_DEV});
-        return .{ .fd = fd, .surface_id = 0 };
+        // surface_id=1 is the first surface any session (including semadrawd's)
+        // creates, and DRAWFSGIOC_INJECT_INPUT in the kernel looks up the target
+        // session from a global surface registry — our own session's surfaces
+        // are irrelevant, so no stats-query gate is needed. If the surface
+        // doesn't exist yet, INJECT_INPUT returns ENOENT and the call is a
+        // no-op until semadraw-term creates it.
+        // TODO: replace with focus-tracking once semadrawd publishes focused_surface_id.
+        std.debug.print("drawfs_inject: opened {s}, targeting surface_id=1\n", .{DRAWFS_DEV});
+        return .{ .fd = fd, .surface_id = 1 };
     }
 
     pub fn deinit(self: *DrawfsInjector) void {
@@ -102,6 +109,14 @@ pub const DrawfsInjector = struct {
 
     /// Query DRAWFSGIOC_STATS to find a live surface to inject into.
     /// Returns true if a surface was found.
+    ///
+    /// Currently unused — `init()` hardcodes surface_id=1 and the kernel
+    /// validates existence via its global registry on each INJECT_INPUT.
+    /// Retained as scaffolding for focus-tracking: the correct future
+    /// behaviour is to read focused_surface_id from a surface published by
+    /// semadrawd, not to query our own session's stats (which will always
+    /// show surfaces_count=0 because the injector session doesn't create
+    /// surfaces).
     fn refreshSurface(self: *DrawfsInjector) bool {
         var stats = std.mem.zeroes(DrawfsStats);
         const r = ioctl(@intCast(self.fd), DRAWFSGIOC_STATS, @intFromPtr(&stats));
@@ -110,9 +125,6 @@ pub const DrawfsInjector = struct {
             self.surface_id = 0;
             return false;
         }
-        // Use surface_id = 1 (first surface). drawfs assigns IDs starting at 1.
-        // A more robust implementation would enumerate surfaces, but semadraw-term
-        // always creates exactly one surface with id=1.
         if (self.surface_id == 0) {
             self.surface_id = 1;
             std.debug.print("drawfs_inject: targeting surface_id=1\n", .{});
@@ -121,9 +133,11 @@ pub const DrawfsInjector = struct {
     }
 
     pub fn injectKey(self: *DrawfsInjector, code: u16, state: u32, mods: u8) void {
-        if (self.surface_id == 0) {
-            if (!self.refreshSurface()) return;
-        }
+        // If a prior call cleared surface_id after an error, restore it. The
+        // kernel rejects injection for surfaces that don't exist yet (ENOENT)
+        // and for sessions whose queue is full (ENOSPC); neither is fatal,
+        // so we keep trying with surface_id=1.
+        if (self.surface_id == 0) self.surface_id = 1;
 
         var key_payload = std.mem.zeroes(DrawfsEvtKey);
         key_payload.surface_id = self.surface_id;
@@ -141,9 +155,12 @@ pub const DrawfsInjector = struct {
 
         const r = ioctl(@intCast(self.fd), DRAWFSGIOC_INJECT_INPUT, @intFromPtr(&req));
         if (r != 0) {
-            // Surface may have been destroyed — clear so we refresh next time.
-            std.debug.print("drawfs_inject: INJECT_INPUT failed ({}), will refresh\n", .{r});
-            self.surface_id = 0;
+            // ENOENT if the surface doesn't exist yet (semadraw-term hasn't
+            // started or just crashed); ENOSPC if its event queue is full.
+            // Either way we log once and continue — the next keypress retries.
+            const errno: c_int = std.c._errno().*;
+            std.debug.print("drawfs_inject: INJECT_INPUT errno={d} (code={d} state={d})\n",
+                .{ errno, code, state });
         }
     }
 };
