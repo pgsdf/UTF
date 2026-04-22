@@ -54,6 +54,7 @@ const FMT_XRGB8888: u32 = 1;
 
 const IOC_VOID: u32 = 0x20000000; // no parameters
 const IOC_OUT: u32 = 0x40000000; // copy out (read)
+const DRAWFS_EVT_KEY: u16 = 0x9010; // from drawfs_proto.h
 const IOC_IN: u32 = 0x80000000; // copy in (write)
 const IOC_INOUT: u32 = IOC_IN | IOC_OUT; // read+write (0xC0000000)
 
@@ -271,6 +272,8 @@ pub const DrawfsBackend = struct {
 
     // Read buffer for protocol
     read_buf: [4096]u8,
+    injected_keys: [32]backend.KeyEvent = undefined,
+    injected_keys_len: usize = 0,
 
     // Input handling via bsdinput module (libinput preferred)
     input: ?*bsdinput.BsdInput,
@@ -1127,16 +1130,54 @@ pub const DrawfsBackend = struct {
         try self.createSurface(width, height);
     }
 
+    /// Drain any injected input events (EVT_KEY) from the drawfs fd.
+    /// These are enqueued by semainput via DRAWFSGIOC_INJECT_INPUT and
+    /// delivered back to the session as framed protocol messages.
+    fn drainInjectedEvents(self: *Self) void {
+        self.injected_keys_len = 0;
+        var pfd = [1]posix.pollfd{.{
+            .fd = self.fd,
+            .events = posix.POLL.IN,
+            .revents = 0,
+        }};
+        while (self.injected_keys_len < backend.MAX_KEY_EVENTS) {
+            const r = posix.poll(&pfd, 0) catch break;
+            if (r == 0) break;
+            if (pfd[0].revents & posix.POLL.IN == 0) break;
+            var frame_buf: [256]u8 = undefined;
+            const n = posix.read(self.fd, &frame_buf) catch break;
+            if (n < 40) continue;
+            const msg_type = std.mem.readInt(u16, frame_buf[16..18], .little);
+            if (msg_type != DRAWFS_EVT_KEY) continue;
+            // EVT_KEY payload offset 32: surface_id(4) + code(4) + state(4) + mods(4) + ts(8)
+            if (n < 32 + 20) continue;
+            const p = frame_buf[32..];
+            const code  = std.mem.readInt(u32, p[4..8],  .little);
+            const state = std.mem.readInt(u32, p[8..12], .little);
+            const mods  = @as(u8, @truncate(std.mem.readInt(u32, p[12..16], .little)));
+            self.injected_keys[self.injected_keys_len] = .{
+                .key_code  = code,
+                .modifiers = mods,
+                .pressed   = state == 1,
+            };
+            self.injected_keys_len += 1;
+        }
+    }
+
     fn pollEventsImpl(ctx: *anyopaque) bool {
         const self: *Self = @ptrCast(@alignCast(ctx));
         if (self.input) |inp| {
             _ = inp.poll();
         }
+        self.drainInjectedEvents();
         return true;
     }
 
     fn getKeyEventsImpl(ctx: *anyopaque) []const backend.KeyEvent {
         const self: *Self = @ptrCast(@alignCast(ctx));
+        if (self.injected_keys_len > 0) {
+            return self.injected_keys[0..self.injected_keys_len];
+        }
         if (self.input) |inp| {
             return inp.getKeyEvents();
         }
