@@ -54,7 +54,9 @@ const FMT_XRGB8888: u32 = 1;
 
 const IOC_VOID: u32 = 0x20000000; // no parameters
 const IOC_OUT: u32 = 0x40000000; // copy out (read)
-const DRAWFS_EVT_KEY: u16 = 0x9010; // from drawfs_proto.h
+const DRAWFS_EVT_KEY:     u16 = 0x9010; // from drawfs_proto.h
+const DRAWFS_EVT_POINTER: u16 = 0x9011;
+const DRAWFS_EVT_SCROLL:  u16 = 0x9012;
 const IOC_IN: u32 = 0x80000000; // copy in (write)
 const IOC_INOUT: u32 = IOC_IN | IOC_OUT; // read+write (0xC0000000)
 
@@ -275,6 +277,20 @@ pub const DrawfsBackend = struct {
     injected_keys: [32]backend.KeyEvent = undefined,
     injected_keys_len: usize = 0,
 
+    /// Stashed mouse events parsed from injected EVT_POINTER and EVT_SCROLL
+    /// frames. Mirrors the injected_keys buffer; populated by
+    /// stashEvtPointer/stashEvtScroll (called from sendAndRecv and
+    /// drainInjectedEvents); consumed and reset by getMouseEventsImpl.
+    injected_mice: [backend.MAX_MOUSE_EVENTS]backend.MouseEvent = undefined,
+    injected_mice_len: usize = 0,
+
+    /// Previous cumulative button state, used to compute press/release
+    /// transitions from each EVT_POINTER's full-state bitmask. The kernel
+    /// reports buttons as a current-state bitmask; the backend wants
+    /// individual press and release events. Diffing new-state against
+    /// last_button_state gives the transitions to synthesize.
+    last_button_state: u32 = 0,
+
     // Retained for ABI compatibility with the Backend vtable. Always null
     // under -b drawfs — input arrives via DRAWFSGIOC_INJECT_INPUT from
     // semainputd, not via a local evdev/libinput reader. See init() for
@@ -391,6 +407,101 @@ pub const DrawfsBackend = struct {
         self.injected_keys_len += 1;
     }
 
+    /// Parse an EVT_POINTER frame and push up to 4 MouseEvents into the
+    /// injected_mice buffer: a motion event (if dx or dy is nonzero) and
+    /// one press or release event per button bit that changed since
+    /// last_button_state. Caller must have verified that msg_type ==
+    /// DRAWFS_EVT_POINTER. Updates last_button_state on success.
+    ///
+    /// Motion is emitted before button events: cursor moves, then any
+    /// click acts on the new position. Several buttons may transition in
+    /// one frame (e.g. user releases left and right simultaneously).
+    fn stashEvtPointer(self: *Self, frame: []const u8, n: usize) void {
+        // EVT_POINTER payload is at offset 32: surface_id(4), x(4), y(4),
+        // dx(4), dy(4), buttons(4), ts(8). 32 bytes total payload.
+        if (n < 32 + 32) return; // short frame, drop
+        const p = frame[32..];
+        const x       = std.mem.readInt(i32, p[4..8],   .little);
+        const y       = std.mem.readInt(i32, p[8..12],  .little);
+        const dx      = std.mem.readInt(i32, p[12..16], .little);
+        const dy      = std.mem.readInt(i32, p[16..20], .little);
+        const buttons = std.mem.readInt(u32, p[20..24], .little);
+
+        // Motion first: matches natural consumer expectation that the
+        // cursor is at its new position before any click acts on it.
+        if (dx != 0 or dy != 0) {
+            if (self.injected_mice_len >= backend.MAX_MOUSE_EVENTS) return;
+            self.injected_mice[self.injected_mice_len] = .{
+                .x = x, .y = y,
+                .button = .left, // unused for motion events
+                .event_type = .motion,
+                .modifiers = 0,
+            };
+            self.injected_mice_len += 1;
+        }
+
+        // Diff the button bitmask. A bit that went 0→1 is a press;
+        // 1→0 is a release. Only emit transitions, not the steady state.
+        const changed = buttons ^ self.last_button_state;
+        const button_map = [_]struct { bit: u32, btn: backend.MouseButton }{
+            .{ .bit = 0x1, .btn = .left },
+            .{ .bit = 0x2, .btn = .right },
+            .{ .bit = 0x4, .btn = .middle },
+        };
+        for (button_map) |entry| {
+            if (changed & entry.bit == 0) continue;
+            if (self.injected_mice_len >= backend.MAX_MOUSE_EVENTS) return;
+            const is_press = (buttons & entry.bit) != 0;
+            self.injected_mice[self.injected_mice_len] = .{
+                .x = x, .y = y,
+                .button = entry.btn,
+                .event_type = if (is_press) .press else .release,
+                .modifiers = 0,
+            };
+            self.injected_mice_len += 1;
+        }
+
+        self.last_button_state = buttons;
+    }
+
+    /// Parse an EVT_SCROLL frame and push press+release pairs of the
+    /// existing scroll_* MouseButton variants. The MouseEvent schema does
+    /// not carry scroll deltas; the established convention is to model
+    /// scroll as discrete button events (one tick per nonzero direction
+    /// in this first cut; magnitude-to-repetition is a later refinement).
+    fn stashEvtScroll(self: *Self, frame: []const u8, n: usize) void {
+        // EVT_SCROLL payload is at offset 32: surface_id(4), dx(4), dy(4),
+        // ts(8). 20 bytes total payload.
+        if (n < 32 + 20) return; // short frame, drop
+        const p = frame[32..];
+        const dx = std.mem.readInt(i32, p[4..8],  .little);
+        const dy = std.mem.readInt(i32, p[8..12], .little);
+
+        // Vertical and horizontal are independent. Emit a press+release
+        // pair per nonzero direction, matching how button-style scroll
+        // events are normally consumed.
+        if (dy != 0) self.pushScrollPair(if (dy > 0) .scroll_up else .scroll_down);
+        if (dx != 0) self.pushScrollPair(if (dx > 0) .scroll_right else .scroll_left);
+    }
+
+    fn pushScrollPair(self: *Self, btn: backend.MouseButton) void {
+        if (self.injected_mice_len + 2 > backend.MAX_MOUSE_EVENTS) return;
+        self.injected_mice[self.injected_mice_len] = .{
+            .x = 0, .y = 0,
+            .button = btn,
+            .event_type = .press,
+            .modifiers = 0,
+        };
+        self.injected_mice_len += 1;
+        self.injected_mice[self.injected_mice_len] = .{
+            .x = 0, .y = 0,
+            .button = btn,
+            .event_type = .release,
+            .modifiers = 0,
+        };
+        self.injected_mice_len += 1;
+    }
+
     fn sendAndRecv(self: *Self, msg_type: u16, payload: []const u8, expected_reply: u16) ![]const u8 {
         const frame_id = self.nextFrameId();
         const msg_id = self.nextMsgId();
@@ -430,6 +541,14 @@ pub const DrawfsBackend = struct {
             // "sometimes first press is lost" behaviour.
             if (reply.msg_type == DRAWFS_EVT_KEY) {
                 self.stashEvtKey(self.read_buf[0..n], n);
+                continue;
+            }
+            if (reply.msg_type == DRAWFS_EVT_POINTER) {
+                self.stashEvtPointer(self.read_buf[0..n], n);
+                continue;
+            }
+            if (reply.msg_type == DRAWFS_EVT_SCROLL) {
+                self.stashEvtScroll(self.read_buf[0..n], n);
                 continue;
             }
 
@@ -1203,7 +1322,12 @@ pub const DrawfsBackend = struct {
             .events = posix.POLL.IN,
             .revents = 0,
         }};
-        while (self.injected_keys_len < backend.MAX_KEY_EVENTS) {
+        // The loop bound is "either buffer has room." Most frames are key
+        // events; mouse events only occur during pointer activity. We
+        // stop draining when both buffers are full, which is rare.
+        while (self.injected_keys_len < backend.MAX_KEY_EVENTS or
+               self.injected_mice_len < backend.MAX_MOUSE_EVENTS)
+        {
             const r = posix.poll(&pfd, 0) catch break;
             if (r == 0) break;
             if (pfd[0].revents & posix.POLL.IN == 0) break;
@@ -1211,8 +1335,12 @@ pub const DrawfsBackend = struct {
             const n = posix.read(self.fd, &frame_buf) catch break;
             if (n < 40) continue;
             const msg_type = std.mem.readInt(u16, frame_buf[16..18], .little);
-            if (msg_type != DRAWFS_EVT_KEY) continue;
-            self.stashEvtKey(frame_buf[0..n], n);
+            switch (msg_type) {
+                DRAWFS_EVT_KEY     => self.stashEvtKey(frame_buf[0..n], n),
+                DRAWFS_EVT_POINTER => self.stashEvtPointer(frame_buf[0..n], n),
+                DRAWFS_EVT_SCROLL  => self.stashEvtScroll(frame_buf[0..n], n),
+                else => continue,
+            }
         }
     }
 
@@ -1244,11 +1372,14 @@ pub const DrawfsBackend = struct {
 
     fn getMouseEventsImpl(ctx: *anyopaque) []const backend.MouseEvent {
         const self: *Self = @ptrCast(@alignCast(ctx));
-        _ = self;
-        // Mouse events under -b drawfs will arrive as EVT_POINTER frames and
-        // be drained into an injected_mice buffer (TODO: mirror the
-        // injected_keys pattern for pointer/scroll/touch). For now, no local
-        // polling.
+        if (self.injected_mice_len > 0) {
+            // Snapshot and reset, exactly as getKeyEventsImpl does.
+            // The fixed-array storage means the returned slice remains
+            // valid for the caller's synchronous consumption.
+            const events = self.injected_mice[0..self.injected_mice_len];
+            self.injected_mice_len = 0;
+            return events;
+        }
         return &[_]backend.MouseEvent{};
     }
 
