@@ -275,7 +275,10 @@ pub const DrawfsBackend = struct {
     injected_keys: [32]backend.KeyEvent = undefined,
     injected_keys_len: usize = 0,
 
-    // Input handling via bsdinput module (libinput preferred)
+    // Retained for ABI compatibility with the Backend vtable. Always null
+    // under -b drawfs — input arrives via DRAWFSGIOC_INJECT_INPUT from
+    // semainputd, not via a local evdev/libinput reader. See init() for
+    // the rationale.
     input: ?*bsdinput.BsdInput,
 
     const Self = @This();
@@ -332,11 +335,13 @@ pub const DrawfsBackend = struct {
         // Probe EFI framebuffer availability
         self.probeEfifb();
 
-        // Initialize input devices via bsdinput module (libinput preferred)
-        self.input = bsdinput.BsdInput.init(allocator, self.display_width, self.display_height) catch |err| blk: {
-            log.warn("failed to initialize bsdinput: {}", .{err});
-            break :blk null;
-        };
+        // Input is delivered via DRAWFSGIOC_INJECT_INPUT from semainputd — the
+        // drawfs backend does not open evdev devices directly. Opening them
+        // here would compete with semainputd for exclusive access (libinput
+        // grabs by default) and starve its event stream. Events arrive as
+        // EVT_KEY / EVT_POINTER / EVT_SCROLL / EVT_TOUCH frames on self.fd
+        // and are drained into self.injected_keys by drainInjectedEvents().
+        self.input = null;
 
         return self;
     }
@@ -1166,9 +1171,10 @@ pub const DrawfsBackend = struct {
 
     fn pollEventsImpl(ctx: *anyopaque) bool {
         const self: *Self = @ptrCast(@alignCast(ctx));
-        if (self.input) |inp| {
-            _ = inp.poll();
-        }
+        // Input under -b drawfs comes from the kernel session's read queue
+        // (EVT_KEY/EVT_POINTER/EVT_SCROLL/EVT_TOUCH frames injected by
+        // semainputd via DRAWFSGIOC_INJECT_INPUT). There is no local evdev
+        // polling — that would grab devices away from semainputd.
         self.drainInjectedEvents();
         return true;
     }
@@ -1178,17 +1184,16 @@ pub const DrawfsBackend = struct {
         if (self.injected_keys_len > 0) {
             return self.injected_keys[0..self.injected_keys_len];
         }
-        if (self.input) |inp| {
-            return inp.getKeyEvents();
-        }
         return &[_]backend.KeyEvent{};
     }
 
     fn getMouseEventsImpl(ctx: *anyopaque) []const backend.MouseEvent {
         const self: *Self = @ptrCast(@alignCast(ctx));
-        if (self.input) |inp| {
-            return inp.getMouseEvents();
-        }
+        _ = self;
+        // Mouse events under -b drawfs will arrive as EVT_POINTER frames and
+        // be drained into an injected_mice buffer (TODO: mirror the
+        // injected_keys pattern for pointer/scroll/touch). For now, no local
+        // polling.
         return &[_]backend.MouseEvent{};
     }
 
