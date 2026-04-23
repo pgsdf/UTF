@@ -246,12 +246,76 @@ double-width handling. `semadraw-term` now runs on the drawfs backend.
 Output matches software-renderer golden images within a 1-pixel
 tolerance.
 
-### `[x]` D-5 — Remote Transport Hardening  *(Done, Small)*
+### `[x]` D-5 — Remote Transport Hardening  *(Done, Small; revised 2026-04-23)*
 
 TCP loopback round-trip test; abrupt-disconnect test does not crash
 `semadrawd` or leak surfaces; read timeout prevents stalled remote
 clients from holding surfaces indefinitely. `docs/API_OVERVIEW.md`
 documents the TCP transport alongside the Unix socket.
+
+**Latent regressions, found and fixed 2026-04-23.** The original
+acceptance for "abrupt-disconnect test does not crash `semadrawd`"
+held against the specific test harness that exercised it but did
+not generalise. Two pre-existing use-after-free bugs reached the
+surface during unrelated mouse-pipeline work, when frequent
+test-driven restarts of `semadraw-term` gave the disconnect path
+many opportunities to fire. Both presented as repeating segfaults
+at addresses ending in `...20b0` (byte 176 of a freed allocation)
+immediately after a `failed to send key event to client N:
+error.BrokenPipe` warning. 27 such segfaults accumulated in
+`/var/log/semadrawd.log` across multiple daemon lifetimes before
+the pattern was investigated.
+
+**Bug 1 — borrowed `inline_data`** (`semadraw/src/daemon/surface_registry.zig`):
+`SurfaceRegistry.attachInlineBuffer`'s "not compositing" branch
+borrowed the caller's `data` slice into `AttachedBuffer.inline_data`
+without copying. Both call sites (`semadrawd.zig:477` and
+`semadrawd.zig:793`) pass `session.sdcs_buffer.?`, which is owned by
+the client session and freed when the session is destroyed during
+disconnect. The next composite read the stale `inline_data` pointer
+at the SDCS header offset and segfaulted. The deferred (compositing)
+branch already copied correctly, but its copy was never freed at
+buffer-replace or surface-destroy time — a separate latent leak.
+
+  Fix: `attachInlineBuffer` now always copies, whether compositing
+  or not; both paths converge on the same ownership story (the
+  surface owns the copy). `AttachedBuffer.deinit` now takes an
+  allocator and frees `inline_data` when non-null, closing both the
+  use-after-free and the leak.
+
+**Bug 2 — session double-disconnect race** (`semadraw/src/daemon/semadrawd.zig`):
+The poll loop's local-client-event branch ran `handleClientMessage`
+under `POLL.IN` and called `disconnectClient(session.id)` on error;
+it then unconditionally checked `POLL.HUP | POLL.ERR` and called
+`disconnectClient(session.id)` again, dereferencing the now-freed
+`session` pointer to read `session.id`. `POLL.IN | POLL.HUP` is the
+normal kernel response when a client closes its end of a socket
+that still has readable data pending, so this race fired on every
+clean disconnect with any in-flight message.
+
+  Fix: capture `session.id` into a local `sid` before any disconnect
+  call, and track a `disconnected` flag so the HUP branch is skipped
+  if the IN branch already cleaned up. Same pattern applied
+  symmetrically to the parallel remote-client branch (which had the
+  same hazard via `disconnectRemoteClient`).
+
+**Verification**: three back-to-back `pkill -KILL -x semadraw-term`
+runs with no growth in the segfault count (29 → 29 → 29 → 29), where
+previously each disconnect grew the count by one. `semadrawd`
+remains alive and producing `frame_complete` heartbeats across
+client respawns, which is what the original D-5 acceptance was
+trying to assert.
+
+**Why D-5's original acceptance missed this.** The "abrupt-disconnect
+test" in the original D-5 work exercised the *remote* transport
+(TCP) path, where the disconnect arrives as a clean `recv`-returns-
+zero on a separate fd that the daemon polls in isolation. That path
+does not see `POLL.IN | POLL.HUP` in the same revents and never hits
+the local-client double-disconnect race. The `inline_data` path was
+also not exercised because the original test client did not attach
+inline buffers between connect and disconnect. Both bugs were latent
+behind test gaps rather than recent regressions; they had been
+shipping in `master` for the entire history of the affected code.
 
 ---
 
