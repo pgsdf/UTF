@@ -136,6 +136,7 @@ pub const DrawfsInjector = struct {
     fn refreshSurface(self: *DrawfsInjector) bool {
         var stats = std.mem.zeroes(DrawfsStats);
         const r = ioctl(@intCast(self.fd), DRAWFSGIOC_STATS, @intFromPtr(&stats));
+        std.debug.print("drawfs_inject: refreshSurface IOCTL returned {d}, surfaces_count={d}\n", .{ r, stats.surfaces_count });
         if (r != 0) return false;
         if (stats.surfaces_count == 0) {
             self.surface_id = 0;
@@ -152,8 +153,12 @@ pub const DrawfsInjector = struct {
     }
 
     pub fn injectKey(self: *DrawfsInjector, code: u16, state: u32, mods: u8) void {
+        std.debug.print("drawfs_inject: injectKey ENTRY code={d} state={d} surface_id={d}\n", .{ code, state, self.surface_id });
         if (self.surface_id == 0) {
-            if (!self.refreshSurface()) return;
+            if (!self.refreshSurface()) {
+                std.debug.print("drawfs_inject: injectKey ABORT — refreshSurface returned false\n", .{});
+                return;
+            }
         }
 
         var key_payload = std.mem.zeroes(DrawfsEvtKey);
@@ -171,6 +176,7 @@ pub const DrawfsInjector = struct {
         @memcpy(req.payload[0..copy_len], payload_bytes[0..copy_len]);
 
         const r = ioctl(@intCast(self.fd), DRAWFSGIOC_INJECT_INPUT, @intFromPtr(&req));
+        std.debug.print("drawfs_inject: injectKey IOCTL returned {d} (surface_id={d})\n", .{ r, self.surface_id });
         if (r != 0) {
             // Surface may have been destroyed — clear so we refresh next time.
             std.debug.print("drawfs_inject: INJECT_INPUT failed ({}), will refresh\n", .{r});
