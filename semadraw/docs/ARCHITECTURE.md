@@ -39,6 +39,33 @@ The daemon is the central authority for surface management and composition.
 * Surface ownership enforcement
 * Automatic cleanup on disconnect
 
+#### Disconnect lifecycle
+
+The poll loop reads from a client fd in a single `revents` decode.
+`POLL.IN` and `POLL.HUP` can land in the same revents — the kernel
+delivers both when a client closes its end of the socket with
+readable data still pending.
+
+The IN branch may run `disconnectClient`, which destroys the
+session and frees `ClientSession.sdcs_buffer`. The HUP branch must
+not then dereference the session pointer. The poll loop captures
+`session.id` into a local `sid` and tracks a `disconnected` flag so
+the second branch is skipped if the first already cleaned up. Same
+shape applies to remote clients via `disconnectRemoteClient`.
+
+#### Surface buffer ownership
+
+`SurfaceRegistry.attachInlineBuffer` always copies the caller's
+data. The surface owns the copy; `AttachedBuffer.deinit(allocator)`
+frees `inline_data` when non-null.
+
+The two callers in `semadrawd.zig` pass `session.sdcs_buffer.?`,
+which the session frees on disconnect. Borrowing rather than
+copying would dangle the surface's pointer at the SDCS header
+offset and segfault on the next composite. Both the immediate (not
+compositing) and deferred (compositing) paths converge on the same
+ownership story.
+
 ### Surface registry
 * Unique surface IDs across all clients
 * Z-order management for composition

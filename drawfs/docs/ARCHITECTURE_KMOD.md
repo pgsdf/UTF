@@ -194,6 +194,20 @@ The `DRAWFSGIOC_STATS` ioctl returns per-session statistics in a `struct drawfs_
 The last three fields (`evq_bytes`, `surfaces_count`, `surfaces_bytes`) provide
 real-time observability into session resource usage for debugging and monitoring.
 
+#### Scope
+
+Every field is scoped to the session whose fd issued the ioctl.
+Counters do not aggregate across sessions.
+
+In particular, `surfaces_count` is the number of surfaces *this fd
+created*, not the kernel's global surface count. A client that
+issues `DRAWFSGIOC_STATS` on its own fd without ever calling
+`SURFACE_CREATE` will see `surfaces_count == 0` even when other
+sessions hold many live surfaces.
+
+There is no ioctl that returns a kernel-wide surface registry view.
+Cross-session lookup is not part of the drawfs interface.
+
 ## Compatibility
 
 ### Tested Platforms
