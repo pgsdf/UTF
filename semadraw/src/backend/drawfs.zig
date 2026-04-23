@@ -1357,10 +1357,22 @@ pub const DrawfsBackend = struct {
             if (n < 40) continue;
             const msg_type = std.mem.readInt(u16, frame_buf[16..18], .little);
             switch (msg_type) {
-                DRAWFS_EVT_KEY     => self.stashEvtKey(frame_buf[0..n], n),
-                DRAWFS_EVT_POINTER => self.stashEvtPointer(frame_buf[0..n], n),
-                DRAWFS_EVT_SCROLL  => self.stashEvtScroll(frame_buf[0..n], n),
-                else => continue,
+                DRAWFS_EVT_KEY     => {
+                    std.debug.print("drawfs_backend: drained EVT_KEY n={d}\n", .{n});
+                    self.stashEvtKey(frame_buf[0..n], n);
+                },
+                DRAWFS_EVT_POINTER => {
+                    std.debug.print("drawfs_backend: drained EVT_POINTER n={d}\n", .{n});
+                    self.stashEvtPointer(frame_buf[0..n], n);
+                },
+                DRAWFS_EVT_SCROLL  => {
+                    std.debug.print("drawfs_backend: drained EVT_SCROLL n={d}\n", .{n});
+                    self.stashEvtScroll(frame_buf[0..n], n);
+                },
+                else => {
+                    std.debug.print("drawfs_backend: drained UNKNOWN msg_type=0x{x:04} n={d}\n", .{ msg_type, n });
+                    continue;
+                },
             }
         }
     }
