@@ -188,8 +188,12 @@ pub const DrawfsInjector = struct {
     /// existing state) and mouse_button (where dx/dy are 0 and buttons
     /// reflects the new state after the press or release).
     pub fn injectPointer(self: *DrawfsInjector, x: i32, y: i32, dx: i32, dy: i32, buttons: u32) void {
+        std.debug.print("drawfs_inject: injectPointer ENTRY x={d} y={d} dx={d} dy={d} buttons=0x{x}\n", .{ x, y, dx, dy, buttons });
         if (self.surface_id == 0) {
-            if (!self.refreshSurface()) return;
+            if (!self.refreshSurface()) {
+                std.debug.print("drawfs_inject: injectPointer ABORT — refreshSurface returned false\n", .{});
+                return;
+            }
         }
 
         var ptr_payload = std.mem.zeroes(DrawfsEvtPointer);
@@ -209,6 +213,7 @@ pub const DrawfsInjector = struct {
         @memcpy(req.payload[0..copy_len], payload_bytes[0..copy_len]);
 
         const r = ioctl(@intCast(self.fd), DRAWFSGIOC_INJECT_INPUT, @intFromPtr(&req));
+        std.debug.print("drawfs_inject: injectPointer IOCTL returned {d} (surface_id={d})\n", .{ r, self.surface_id });
         if (r != 0) {
             std.debug.print("drawfs_inject: INJECT_INPUT (pointer) failed ({}), will refresh\n", .{r});
             self.surface_id = 0;
