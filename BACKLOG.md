@@ -73,6 +73,11 @@ changing.
    branches build behavior on it must be justified by a concrete,
    observable divergence between FreeBSD and GhostBSD, not a
    speculation.
+7. UTF depends only on code written with UTF's guarantees in mind.
+   External dependencies are either replaced by UTF-owned code or
+   explicitly accepted as named platform-transport dependencies.
+   See `docs/UTF_ARCHITECTURAL_DISCIPLINE.md` for the accepted list
+   and the three postures (Replace / Accept / Remove).
 
 ---
 
@@ -319,7 +324,8 @@ shipping in `master` for the entire history of the affected code.
 
 ### `[ ]` D-6 — Mouse coordinate translation  *(Superseded, 2026-04-23)*
 
-**Superseded by**: `inputfs/docs/inputfs-proposal.md`.
+**Superseded by**: `inputfs/docs/inputfs-proposal.md`, tracked as
+AD-1 in the Architectural Discipline section of this backlog.
 
 This item proposed a compositor-side shim in
 `semadrawd.forwardMouseEvents` to translate device-accumulated
@@ -823,3 +829,132 @@ GNUstep application support without X11. The X11 bridge remains
 important for running existing legacy X11 applications but is no
 longer a prerequisite for the environment to be usable.
 
+## Architectural Discipline
+
+The project's discipline — UTF depends only on code written with UTF's
+guarantees in mind — is stated in full at
+`docs/UTF_ARCHITECTURAL_DISCIPLINE.md`. This section tracks the work
+streams that apply the discipline to subsystems where external
+dependencies currently sit inside UTF's guarantee path. Items here
+represent multi-stage replacements, not individual features; each
+item typically has its own design document or proposal that details
+the stages.
+
+### `[~]` AD-1 — inputfs: native input substrate  *(In progress, Large; supersedes: D-6)*
+
+**Tracks**: `inputfs/docs/inputfs-proposal.md` and
+`inputfs/docs/foundations.md`.
+
+Replace the evdev / bsdinput / libinput dependency chain with
+`inputfs`, a UTF-owned kernel input substrate. Publishes input state
+and events via shared memory, timestamps with the UTF dual-clock
+(monotonic + audio-sync), routes events via compositor-driven focus.
+Closes the coordinate-space bug (previously tracked as D-6 and
+superseded by this item), eliminates device-accumulated coordinates,
+and removes userspace semainputd as a component (see AD-2).
+
+**Status**: Stage A design in progress. The proposal and foundations
+documents are written; follow-on ADRs have not started.
+
+### `[ ]` AD-2 — Retire semainputd  *(Open, Medium; depends: AD-1)*
+
+**Tracks**: `inputfs/docs/inputfs-proposal.md` Stage F.
+
+Once inputfs owns input classification, device identification, and
+routing, the userspace semainputd daemon has no remaining
+responsibilities. Classification and device-role logic move into the
+kernel module. Gesture recognition moves into the compositor or
+per-client libraries. The `start.sh` sequence drops semainputd
+entirely. evdev-related code in `semainput/src/adapters/` is removed.
+
+### `[ ]` AD-3 — Audio output: replace OSS dependency  *(Open, Large; not scheduled)*
+
+semaaud currently uses OSS (FreeBSD's kernel audio framework) for
+audio output. OSS is accepted as platform transport today
+(`docs/UTF_ARCHITECTURAL_DISCIPLINE.md`). Direct hardware driving,
+analogous to how inputfs replaces evdev, would remove this
+dependency entirely.
+
+This is substantial work. Real-time audio has harder timing
+constraints than input (buffer underrun is immediately audible),
+vendor-specific audio hardware programming is complex, and the
+existing OSS interface is reasonably stable. No design document
+exists yet. Not scheduled; listed here so the discipline is honest
+about the forward implication.
+
+### `[ ]` AD-4 — Graphics output: replace efifb / DRM dependency  *(Open, Large; not scheduled)*
+
+drawfs currently uses efifb (or DRM/KMS on capable hardware) for
+display output. Both are accepted as platform transport today. Direct
+GPU programming would be the largest dependency replacement UTF
+could undertake.
+
+This is the biggest scope item in the discipline's "in scope for
+review" list. Vendor-specific GPU programming, command submission,
+power management, and multi-vendor support make this a multi-year
+undertaking even for a single vendor. No design document exists yet.
+Not scheduled.
+
+### `[ ]` AD-5 — Formalise ZFS as accepted dependency  *(Open, Small)*
+
+**Tracks**: `docs/UTF_ARCHITECTURAL_DISCIPLINE.md` accepted-dependency
+list.
+
+The discipline doc lists ZFS as an accepted platform-transport
+dependency, but there is no explicit statement of *how* UTF depends
+on ZFS: which ZFS features are in use, what UTF does if ZFS fails or
+is unavailable, and what UTF does not rely on ZFS to provide. This
+item writes that down as a short document under `docs/` or as an ADR,
+making the acceptance explicit rather than implicit.
+
+Doc task, not code work.
+
+### `[ ]` AD-6 — Audit Zig stdlib usage at determinism boundaries  *(Open, Small–Medium)*
+
+**Tracks**: `docs/UTF_ARCHITECTURAL_DISCIPLINE.md` Operating rule
+(verification over assumption).
+
+Today's session revealed two cases where UTF code at or near a
+determinism boundary depended on Zig stdlib behaviour that was not
+what UTF needed: `std.posix.read` panicking on `ENXIO` (fixed via
+`safeRead`), and the `std.posix.system.read` signature uncertainty
+when writing `safeRead`.
+
+This item performs a targeted audit of Zig stdlib calls in
+UTF's daemons and kernel-adjacent code, identifies calls whose
+behaviour is sensitive to stdlib implementation choices, and
+either verifies the behaviour or wraps the call in a UTF-owned
+helper with documented semantics. Not a wholesale stdlib
+replacement — the discipline accepts the Zig stdlib — but a
+codification of the "verify rather than assume" operating rule.
+
+### `[ ]` AD-7 — Audit and document USB / HID dependency boundary  *(Open, Small)*
+
+**Tracks**: `docs/UTF_ARCHITECTURAL_DISCIPLINE.md` accepted-dependency
+list.
+
+The discipline accepts FreeBSD's USB stack and the USB controller
+drivers as platform transport. This item documents the boundary
+explicitly: which USB APIs UTF uses, which behaviours UTF depends
+on, and what UTF does if those behaviours change. Relevant to AD-1
+because inputfs will be the first UTF component to exercise the USB
+boundary heavily.
+
+Doc task, not code work. Can happen in parallel with AD-1 Stage B.
+
+### Priority
+
+Rough priority ordering within this section, not strict:
+
+1. **AD-1** — in progress; unblocks AD-2; closes the most visible
+   current bug (input coordinates).
+2. **AD-2** — follows AD-1 naturally.
+3. **AD-5, AD-7** — small doc tasks; make the discipline honest.
+4. **AD-6** — small-medium; applies the discipline's verification
+   rule to existing code.
+5. **AD-3** — large; not scheduled.
+6. **AD-4** — largest; not scheduled.
+
+"Not scheduled" here means: no commitment to start, no commitment to
+an outcome date, but explicitly tracked so the discipline's forward
+implications are visible.

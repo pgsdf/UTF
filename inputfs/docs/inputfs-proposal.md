@@ -19,6 +19,15 @@ it, and sketches a migration path that keeps UTF operational throughout.
 It does not specify ioctl numbers, struct layouts, or a schedule. Those
 belong in follow-on ADRs.
 
+This proposal is the first named application of the discipline stated
+in `docs/UTF_ARCHITECTURAL_DISCIPLINE.md`: **UTF depends only on code
+written with UTF's guarantees in mind**. evdev is an external
+dependency whose authors were not thinking about UTF's determinism or
+stability commitments; it sits inside UTF's guarantee path; therefore
+it is replaced. The discipline document provides the broader context
+for why this work is being done. This proposal describes the specific
+shape of the replacement.
+
 ## Why evdev is the wrong model for UTF
 
 The rest of UTF is built on a consistent premise: the kernel owns the
@@ -191,8 +200,9 @@ translation using the surface origin they already know.
 ## Migration path
 
 This is the hard part. The plan is to keep UTF operational at every
-stage; no stage breaks what the previous stage left working. Six
-stages, each a shippable milestone.
+stage; no stage breaks what the previous stage left working. Five
+stages, each a shippable milestone. There is no evdev fallback stage
+beyond Stage E's cutover; see Stage E for the rationale.
 
 ### Stage A — Design
 
@@ -242,31 +252,31 @@ injector pipeline, but natively. Both paths are live at this point,
 controlled by a kernel tunable (`hw.inputfs.enable=0|1`). Production
 input can be switched between them without reboot.
 
-### Stage E — Compositor migration
+### Stage E — Cutover and evdev removal
 
 semadrawd reads from the `inputfs` path instead of the evdev-injected
-path. `forwardMouseEvents` passes screen-absolute coordinates through
-without translation. Clients translate to surface-local themselves
-using their known surface origin.
-
-semainputd's injector becomes unreachable from the live system. The
-tunable `hw.inputfs.enable=1` becomes the default, and evdev remains
-available as a fallback through `hw.inputfs.enable=0`.
-
-Purpose: UTF runs on inputfs in production. evdev is still in the
-picture but only as a tested fallback.
-
-### Stage F — evdev removal
+path. `forwardMouseEvents` passes coordinates through without
+translation in the compositor-side shim sense (the shim is no longer
+needed; inputfs has normalised coordinates at source).
 
 semainputd's evdev reader and the `drawfs_inject.zig` adapter are
-removed. semainputd either shrinks to a pure classifier/aggregator on
-top of `inputfs`'s shared-memory state, or it goes away entirely if
-its semantic work has moved into `inputfs`'s role taxonomy. The
-`hw.inputfs.enable=0` fallback is removed.
+removed. The `hw.inputfs.enable=0` tunable from Stage D is removed.
+semainputd either shrinks to a pure classifier or goes away entirely;
+this is a Stage E design question tracked as AD-2 in `BACKLOG.md`.
 
-Purpose: evdev is no longer a dependency of any UTF component. The
-Linux compatibility layer can be unloaded on FreeBSD hosts running
-UTF.
+Purpose: UTF runs on inputfs in production with no evdev fallback.
+This is a deliberate commitment, not an oversight. Keeping evdev as
+a standby would keep it in the guarantee path — a bug or change in
+evdev could affect UTF whenever the fallback activated or whenever
+its presence changed timing. The discipline in
+`docs/UTF_ARCHITECTURAL_DISCIPLINE.md` says external code stays out
+of the guarantee path; that applies to fallbacks too. Either inputfs
+works or UTF does not run on this code path.
+
+Stages A through D must therefore land with enough confidence that
+cutover without a safety net is reasonable. The staged delivery and
+the coexistence period in Stage D (both paths live, tunable-switched)
+are where that confidence is built.
 
 ### Interim status: the mouse coordinate bug
 
@@ -277,8 +287,13 @@ pixels") is a symptom of evdev's missing origin; `inputfs` fixes it
 at source in Stage D. Between now and Stage D's completion,
 mouse events flow end-to-end but coordinates land in wrong cells.
 This is a non-crash bug and is explicitly accepted as a transient
-state during the migration. D-6 will be closed as superseded once
-ADR-0003 is revised to cite this document.
+state during the migration.
+
+D-6 was closed as superseded when this document was accepted;
+see D-6's entry in `BACKLOG.md` and `semadraw/docs/adr/0003-mouse-coordinate-translation.md`
+for the historical record of the narrower fix that was considered.
+The broader inputfs work this document proposes is tracked as AD-1
+in the Architectural Discipline section of `BACKLOG.md`.
 
 ## Known unknowns
 
