@@ -1,6 +1,26 @@
 # 0003 Mouse coordinate translation
 
-Status: Proposed
+Status: Superseded by `inputfs/docs/inputfs-proposal.md` (2026-04-23)
+
+## Superseded
+
+This ADR proposed a compositor-side coordinate translation in
+`semadrawd.forwardMouseEvents` as the fix for wrong mouse coordinates.
+That fix was a symptom-level patch: it translated already-broken inputs
+rather than producing correct inputs at source.
+
+The `inputfs` proposal replaces the entire evdev-based input path with a
+native UTF kernel substrate that normalises pointer coordinates at the
+point of HID report parsing, against display geometry the kernel
+already knows. Under that architecture, `MouseEventMsg.x`/`y` carry
+screen-absolute pixels from the first event, and the shim this ADR
+proposed is unnecessary. Clients translate to surface-local using the
+surface origin they already know.
+
+The Context section below remains accurate as a description of what is
+wrong with the current evdev-driven pipeline. The Decision section is
+retained for historical traceability but is no longer the intended
+implementation path. No work should be scheduled against this ADR.
 
 ## Context
 

@@ -317,10 +317,29 @@ inline buffers between connect and disconnect. Both bugs were latent
 behind test gaps rather than recent regressions; they had been
 shipping in `master` for the entire history of the affected code.
 
-### `[ ]` D-6 — Mouse coordinate translation  *(Open, Small)*
+### `[ ]` D-6 — Mouse coordinate translation  *(Superseded, 2026-04-23)*
+
+**Superseded by**: `inputfs/docs/inputfs-proposal.md`.
+
+This item proposed a compositor-side shim in
+`semadrawd.forwardMouseEvents` to translate device-accumulated
+coordinates into surface-local pixels. The `inputfs` proposal replaces
+the entire evdev-based input path and produces screen-absolute
+coordinates at source; the compositor-side shim is unnecessary under
+that architecture. Mouse coordinates will remain wrong in production
+until `inputfs` Stage D lands. This is an accepted transient bug, not
+work to schedule.
+
+The original scope and acceptance criteria are preserved below for
+traceability and will not be revived. A fresh `inputfs`-era item will
+supersede this when the relevant stage begins.
+
+---
+
+**Original scope** (superseded, retained for history):
 
 **Depends on**: D-1 (event emission), mouse pipeline through `forwardMouseEvents` (landed 2026-04-22 via commit 6be3a74).
-**ADR**: `semadraw/docs/adr/0003-mouse-coordinate-translation.md` — Proposed.
+**ADR**: `semadraw/docs/adr/0003-mouse-coordinate-translation.md` — Superseded.
 
 semainputd injects device-accumulated coordinates (running sum of
 evdev REL_X/REL_Y since device open) via the kernel. semadrawd
