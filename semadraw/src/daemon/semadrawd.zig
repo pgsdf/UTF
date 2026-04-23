@@ -1083,17 +1083,9 @@ pub const Daemon = struct {
 
     /// Forward mouse events to the top visible surface's client
     fn forwardMouseEvents(self: *Daemon, mouse_events: []const backend.MouseEvent) void {
-        std.debug.print("forwardMouseEvents: {d} events received\n", .{mouse_events.len});
         // Get the top visible surface to send mouse input to
-        const top_surface_id = self.surfaces.getTopVisibleSurface() orelse {
-            std.debug.print("forwardMouseEvents: no top visible surface — events dropped\n", .{});
-            return;
-        };
-        const surface = self.surfaces.getSurface(top_surface_id) orelse {
-            std.debug.print("forwardMouseEvents: top surface {d} not found — events dropped\n", .{top_surface_id});
-            return;
-        };
-        std.debug.print("forwardMouseEvents: forwarding to surface {d} owner {d}\n", .{ top_surface_id, surface.owner });
+        const top_surface_id = self.surfaces.getTopVisibleSurface() orelse return;
+        const surface = self.surfaces.getSurface(top_surface_id) orelse return;
 
         for (mouse_events) |event| {
             const msg = protocol.MouseEventMsg{
