@@ -250,28 +250,44 @@ pub const Daemon = struct {
                             log.warn("failed to accept remote connection: {}", .{err});
                         };
                     } else if (self.clients.findByFd(pfd.fd)) |session| {
-                        // Local client event
+                        // Local client event.
+                        //
+                        // Stash session.id locally because either branch
+                        // below can destroy `session` via disconnectClient
+                        // (which calls clients.destroySession → allocator.destroy).
+                        // POLL.IN | POLL.HUP can both be set in the same
+                        // revents (common when the client closes its end
+                        // of the socket — kernel reports any pending
+                        // readable data AND the hangup), and the second
+                        // branch must not dereference a freed session.
+                        const sid = session.id;
+                        var disconnected = false;
                         if (pfd.revents & std.posix.POLL.IN != 0) {
                             self.handleClientMessage(session) catch |err| {
-                                log.debug("client {} error: {}, disconnecting", .{ session.id, err });
-                                self.disconnectClient(session.id);
+                                log.debug("client {} error: {}, disconnecting", .{ sid, err });
+                                self.disconnectClient(sid);
+                                disconnected = true;
                             };
                         }
-                        if (pfd.revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) {
-                            log.debug("client {} disconnected", .{session.id});
-                            self.disconnectClient(session.id);
+                        if (!disconnected and pfd.revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) {
+                            log.debug("client {} disconnected", .{sid});
+                            self.disconnectClient(sid);
                         }
                     } else if (self.findRemoteByFd(pfd.fd)) |session| {
-                        // Remote client event
+                        // Remote client event. Same lifecycle hazard as
+                        // the local branch above; see comment there.
+                        const sid = session.id;
+                        var disconnected = false;
                         if (pfd.revents & std.posix.POLL.IN != 0) {
                             self.handleRemoteClientMessage(session) catch |err| {
-                                log.debug("remote client {} error: {}, disconnecting", .{ session.id, err });
-                                self.disconnectRemoteClient(session.id);
+                                log.debug("remote client {} error: {}, disconnecting", .{ sid, err });
+                                self.disconnectRemoteClient(sid);
+                                disconnected = true;
                             };
                         }
-                        if (pfd.revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) {
-                            log.debug("remote client {} disconnected", .{session.id});
-                            self.disconnectRemoteClient(session.id);
+                        if (!disconnected and pfd.revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) {
+                            log.debug("remote client {} disconnected", .{sid});
+                            self.disconnectRemoteClient(sid);
                         }
                     }
                 }
