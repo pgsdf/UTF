@@ -1353,7 +1353,7 @@ pub const DrawfsBackend = struct {
             if (r == 0) break;
             if (pfd[0].revents & posix.POLL.IN == 0) break;
             var frame_buf: [256]u8 = undefined;
-            const n = safeRead(self.fd, &frame_buf) catch break;
+            const n = posix.read(self.fd, &frame_buf) catch break;
             if (n < 40) continue;
             const msg_type = std.mem.readInt(u16, frame_buf[16..18], .little);
             switch (msg_type) {
