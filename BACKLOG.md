@@ -317,6 +317,48 @@ inline buffers between connect and disconnect. Both bugs were latent
 behind test gaps rather than recent regressions; they had been
 shipping in `master` for the entire history of the affected code.
 
+### `[ ]` D-6 — Mouse coordinate translation  *(Open, Small)*
+
+**Depends on**: D-1 (event emission), mouse pipeline through `forwardMouseEvents` (landed 2026-04-22 via commit 6be3a74).
+**ADR**: `semadraw/docs/adr/0003-mouse-coordinate-translation.md` — Proposed.
+
+semainputd injects device-accumulated coordinates (running sum of
+evdev REL_X/REL_Y since device open) via the kernel. semadrawd
+forwards these unchanged to clients, which expect surface-local
+pixels. `semadraw-term`'s cell-index math divides by cell size and
+clamps to `[0, cols)`/`[0, rows)`; negative device-accumulated
+values (observed `y=-568`) collapse every click to row 0. Chord
+menus, drag selection, and any coordinate-sensitive gesture are
+therefore broken despite the full event pipeline being verified
+end-to-end.
+
+Fix location: `semadrawd.forwardMouseEvents`. Translate
+`event.x`/`event.y` to surface-local pixels using the target
+surface's `position_x`/`position_y` and scale before constructing
+the `MouseEventMsg`. Motion deltas (`dx`/`dy`) pass through
+unchanged; they are frame-local.
+
+**Acceptance**:
+- Hold left mouse button, click middle → chord menu appears at the
+  cursor position (not at the top-left corner).
+- Drag a selection → highlighted cells correspond to the actual
+  cursor path.
+- No client handler receives negative `x` or `y` for any mouse
+  event.
+- Motion tracking in `vttest` mouse mode (or equivalent) reports
+  sensible cell coordinates.
+
+**Out of scope** for this item (tracked separately when reached):
+- Initial offset seeding for the evdev accumulator (`y=-568` arose
+  because the accumulator starts at zero and the test setup drove
+  it upward relative to that origin; the right seed depends on
+  display center vs focused-surface center and is deferred).
+- Routing to the surface under the cursor rather than
+  `getTopVisibleSurface`. Depends on focus tracking, which depends
+  on NDE-1.
+- Scaling semantics when `rend.scale` differs per surface; current
+  translation assumes a single scale factor.
+
 ---
 
 ## `semaaud` — audio daemon
