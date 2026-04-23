@@ -81,12 +81,22 @@ pub const AttachedBuffer = struct {
         }
     }
 
-    pub fn deinit(self: *AttachedBuffer) void {
+    pub fn deinit(self: *AttachedBuffer, allocator: std.mem.Allocator) void {
         self.unmap();
         if (self.shm_fd >= 0) {
             posix.close(self.shm_fd);
         }
-        // Note: inline_data is not owned, don't free it here
+        // inline_data is now always an owned allocation made by attachInlineBuffer
+        // (both immediate and deferred paths copy the caller's data). Free it
+        // here so disconnect-time cleanup releases the backing memory rather
+        // than leaking it. Historically this slice was borrowed from the
+        // client session's sdcs_buffer; that borrow caused use-after-free
+        // segfaults when the session was destroyed before the next composite
+        // consumed the slice.
+        if (self.inline_data) |data| {
+            allocator.free(data);
+            self.inline_data = null;
+        }
     }
 };
 
@@ -132,7 +142,7 @@ pub const SurfaceRegistry = struct {
         var it = self.surfaces.valueIterator();
         while (it.next()) |surface_ptr| {
             if (surface_ptr.*.buffer) |*buf| {
-                buf.deinit();
+                buf.deinit(self.allocator);
             }
             self.allocator.destroy(surface_ptr.*);
         }
@@ -157,7 +167,7 @@ pub const SurfaceRegistry = struct {
             if (self.getSurface(surface_id)) |surface| {
                 // Free old buffer
                 if (surface.buffer) |*old_buf| {
-                    old_buf.deinit();
+                    old_buf.deinit(self.allocator);
                 }
                 // Set new inline buffer with copied data
                 surface.buffer = .{
@@ -222,7 +232,7 @@ pub const SurfaceRegistry = struct {
         if (self.surfaces.fetchRemove(id)) |kv| {
             const surface = kv.value;
             if (surface.buffer) |*buf| {
-                buf.deinit();
+                buf.deinit(self.allocator);
             }
             self.allocator.destroy(surface);
             // Clear the cached composition order immediately to prevent
@@ -258,7 +268,7 @@ pub const SurfaceRegistry = struct {
 
         // Clean up old buffer if present
         if (surface.buffer) |*old_buf| {
-            old_buf.deinit();
+            old_buf.deinit(self.allocator);
         }
 
         surface.buffer = .{
@@ -270,7 +280,17 @@ pub const SurfaceRegistry = struct {
     }
 
     /// Attach inline buffer data to a surface (for remote connections)
-    /// During composition, buffer update is deferred to prevent use-after-free
+    ///
+    /// The caller's `data` slice is *always* copied. Both the deferred
+    /// (compositing) and immediate (not compositing) paths now allocate a
+    /// fresh copy that the surface owns. Historically the immediate path
+    /// borrowed the slice; that borrow caused use-after-free segfaults
+    /// when the client session's sdcs_buffer was freed (during disconnect)
+    /// before the next composite consumed the slice.
+    ///
+    /// Ownership of the copied buffer transfers to the surface; it is
+    /// freed via AttachedBuffer.deinit (which now takes an allocator
+    /// parameter) when the surface is destroyed or the buffer replaced.
     pub fn attachInlineBuffer(
         self: *SurfaceRegistry,
         surface_id: protocol.SurfaceId,
@@ -278,25 +298,28 @@ pub const SurfaceRegistry = struct {
     ) !void {
         const surface = self.getSurface(surface_id) orelse return error.SurfaceNotFound;
 
-        if (self.compositing) {
-            // During composition, copy data and defer the update
-            const data_copy = try self.allocator.alloc(u8, data.len);
-            @memcpy(data_copy, data);
+        // Copy the caller's data unconditionally. The surface owns the copy.
+        const data_copy = try self.allocator.alloc(u8, data.len);
+        errdefer self.allocator.free(data_copy);
+        @memcpy(data_copy, data);
 
-            // Free any previous pending update for this surface
+        if (self.compositing) {
+            // During composition, defer the buffer swap to apply-time so
+            // the in-flight render doesn't pull the rug out from under
+            // itself. Free any previous pending update for this surface.
             if (self.pending_buffer_updates.fetchRemove(surface_id)) |old| {
                 self.allocator.free(old.value);
             }
             try self.pending_buffer_updates.put(surface_id, data_copy);
         } else {
-            // Not compositing - update immediately
+            // Not compositing — apply immediately. Replace any existing
+            // buffer; its deinit frees its own owned inline_data.
             if (surface.buffer) |*old_buf| {
-                old_buf.deinit();
+                old_buf.deinit(self.allocator);
             }
-
             surface.buffer = .{
-                .length = data.len,
-                .inline_data = data,
+                .length = data_copy.len,
+                .inline_data = data_copy,
             };
         }
     }
