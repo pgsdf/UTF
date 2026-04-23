@@ -131,20 +131,23 @@ pub const DrawfsInjector = struct {
         posix.close(self.fd);
     }
 
-    /// Query DRAWFSGIOC_STATS to find a live surface to inject into.
-    /// Returns true if a surface was found.
+    /// Set the target surface for injection.
+    ///
+    /// Hardcoded to surface_id=1 because semadraw-term always creates
+    /// exactly one surface with that id in semadrawd's session, and the
+    /// kernel routes injected events to whichever session owns the named
+    /// surface. The STATS ioctl is intentionally NOT consulted here:
+    /// STATS reports counts for *this* session's surfaces, not the
+    /// kernel-wide registry, and the injector's own session has zero
+    /// surfaces (it never creates any). Calling STATS and gating on its
+    /// surfaces_count value caused every injection to abort with
+    /// surfaces_count=0, even though semadrawd's session held the
+    /// real surface 1 perfectly fine.
+    ///
+    /// When focus tracking lands, this becomes "look up the focused
+    /// surface id from /var/run/sema/focus" or similar, replacing the
+    /// hardcode without changing the call shape.
     fn refreshSurface(self: *DrawfsInjector) bool {
-        var stats = std.mem.zeroes(DrawfsStats);
-        const r = ioctl(@intCast(self.fd), DRAWFSGIOC_STATS, @intFromPtr(&stats));
-        std.debug.print("drawfs_inject: refreshSurface IOCTL returned {d}, surfaces_count={d}\n", .{ r, stats.surfaces_count });
-        if (r != 0) return false;
-        if (stats.surfaces_count == 0) {
-            self.surface_id = 0;
-            return false;
-        }
-        // Use surface_id = 1 (first surface). drawfs assigns IDs starting at 1.
-        // A more robust implementation would enumerate surfaces, but semadraw-term
-        // always creates exactly one surface with id=1.
         if (self.surface_id == 0) {
             self.surface_id = 1;
             std.debug.print("drawfs_inject: targeting surface_id=1\n", .{});
@@ -153,12 +156,8 @@ pub const DrawfsInjector = struct {
     }
 
     pub fn injectKey(self: *DrawfsInjector, code: u16, state: u32, mods: u8) void {
-        std.debug.print("drawfs_inject: injectKey ENTRY code={d} state={d} surface_id={d}\n", .{ code, state, self.surface_id });
         if (self.surface_id == 0) {
-            if (!self.refreshSurface()) {
-                std.debug.print("drawfs_inject: injectKey ABORT — refreshSurface returned false\n", .{});
-                return;
-            }
+            if (!self.refreshSurface()) return;
         }
 
         var key_payload = std.mem.zeroes(DrawfsEvtKey);
@@ -176,7 +175,6 @@ pub const DrawfsInjector = struct {
         @memcpy(req.payload[0..copy_len], payload_bytes[0..copy_len]);
 
         const r = ioctl(@intCast(self.fd), DRAWFSGIOC_INJECT_INPUT, @intFromPtr(&req));
-        std.debug.print("drawfs_inject: injectKey IOCTL returned {d} (surface_id={d})\n", .{ r, self.surface_id });
         if (r != 0) {
             // Surface may have been destroyed — clear so we refresh next time.
             std.debug.print("drawfs_inject: INJECT_INPUT failed ({}), will refresh\n", .{r});
