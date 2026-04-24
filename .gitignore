@@ -13,7 +13,6 @@ zig-out/
 .depend.*
 *.ko
 *.o
-!*.c.in
 machine
 x86
 i386
