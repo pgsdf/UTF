@@ -7,6 +7,27 @@ document for each disposition is the ADR cited in the Reference
 column. When a disposition changes, update the ADR first and this
 table second.
 
+## Why this document exists
+
+UTF does not aim to be faster or lighter than FreeBSD's stock
+input, graphics, or audio stacks. It aims for architectural
+coherence: every component in UTF's guarantee path is either
+owned by UTF or explicitly accepted as a named dependency.
+Nothing in that path evolves invisibly to UTF.
+
+Reliability, performance, and maintainability are likely
+consequences of coherence, not goals in themselves. UTF accepts
+that pursuing coherence sometimes produces code that is less
+immediately performant or less feature-rich than what it
+replaces. The architectural discipline document records the
+trade-offs this entails.
+
+This table is the inventory form of that discipline. Each row
+states whether the listed FreeBSD subsystem is Replaced by UTF,
+Accepted as a named dependency, or Removed from UTF Mode.
+
+## Disposition categories
+
 Dispositions use the three categories defined in
 `docs/UTF_ARCHITECTURAL_DISCIPLINE.md`:
 
