@@ -853,8 +853,30 @@ Closes the coordinate-space bug (previously tracked as D-6 and
 superseded by this item), eliminates device-accumulated coordinates,
 and removes userspace semainputd as a component (see AD-2).
 
-**Status**: Stage A design in progress. The proposal and foundations
-documents are written; follow-on ADRs have not started.
+**Status**: Stage A complete (proposal, foundations,
+`UTF_ARCHITECTURAL_DISCIPLINE.md`, ADRs 0001 through 0008, four
+byte-level companion specs). Stage B in progress:
+
+- **B.1** module skeleton loads and unloads cleanly: landed,
+  verified.
+- **B.2** device attachment on `hidbus` with HID TLC matching
+  per ADR 0007: landed, verified on Razer Viper (live system)
+  and VirtualBox USB Tablet (VM).
+- **B.3** HID report descriptor fetch and walk per ADR 0008:
+  landed, verified on VirtualBox USB Tablet (85-byte descriptor,
+  11 input items, depth 2).
+- **B.4** interrupt handler registration via `hidbus_set_intr`
+  and raw report hex logging: next work item, ADR pending.
+- **B.5** per-device role classification into softc bitmask
+  per ADR 0004: not started.
+
+ADR 0006 was drafted against legacy `ukbd`/`ums` reference
+drivers that are not loaded on modern FreeBSD 15 / GhostBSD;
+it is superseded by ADR 0007 (hidbus attachment). The shipped
+code attaches at `hidbus` and works against the modern HID
+stack. ADR 0008 carries an errata section recording a
+`hid_start_parse` kindset correction made during B.3
+verification.
 
 ### `[ ]` AD-2 — Retire semainputd  *(Open, Medium; depends: AD-1)*
 
