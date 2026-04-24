@@ -9,3 +9,13 @@ build-latest.log
 zig-out/
 .zig-cache/
 
+# FreeBSD kernel module build artifacts
+.depend.*
+*.ko
+*.o
+!*.c.in
+machine
+x86
+i386
+export_syms
+opt_global.h
