@@ -197,7 +197,11 @@ B.3).
    }
    ```
 
-3. Add the walk after the fetch:
+3. Add the walk after the fetch. FreeBSD's `hid_start_parse`
+   accepts only one item-kind bit at a time, so walk three times,
+   once per kind. Collection and endcollection items come through
+   on any walk, so collection nesting depth is tracked during the
+   input pass:
 
    ```c
    if (sc->sc_rdesc != NULL) {
@@ -206,23 +210,45 @@ B.3).
        uint32_t depth = 0, max_depth = 0;
        int ii = 0, oi = 0, fi = 0;
 
+       /* First pass: input items and collection depth. */
        s = hid_start_parse(sc->sc_rdesc, sc->sc_rdesc_len,
-           (1 << hid_input) | (1 << hid_output) | (1 << hid_feature));
-       while (hid_get_item(s, &hi) > 0) {
-           switch (hi.kind) {
-           case hid_input: ii++; break;
-           case hid_output: oi++; break;
-           case hid_feature: fi++; break;
-           case hid_collection:
-               depth++;
-               if (depth > max_depth) max_depth = depth;
-               break;
-           case hid_endcollection:
-               if (depth > 0) depth--;
-               break;
+           1 << hid_input);
+       if (s != NULL) {
+           while (hid_get_item(s, &hi) > 0) {
+               switch (hi.kind) {
+               case hid_input: ii++; break;
+               case hid_collection:
+                   depth++;
+                   if (depth > max_depth) max_depth = depth;
+                   break;
+               case hid_endcollection:
+                   if (depth > 0) depth--;
+                   break;
+               default: break;
+               }
            }
+           hid_end_parse(s);
        }
-       hid_end_parse(s);
+
+       /* Second pass: output items. */
+       s = hid_start_parse(sc->sc_rdesc, sc->sc_rdesc_len,
+           1 << hid_output);
+       if (s != NULL) {
+           while (hid_get_item(s, &hi) > 0) {
+               if (hi.kind == hid_output) oi++;
+           }
+           hid_end_parse(s);
+       }
+
+       /* Third pass: feature items. */
+       s = hid_start_parse(sc->sc_rdesc, sc->sc_rdesc_len,
+           1 << hid_feature);
+       if (s != NULL) {
+           while (hid_get_item(s, &hi) > 0) {
+               if (hi.kind == hid_feature) fi++;
+           }
+           hid_end_parse(s);
+       }
 
        sc->sc_input_items = ii;
        sc->sc_output_items = oi;
@@ -237,11 +263,15 @@ B.3).
 5. Update `inputfs_detach` to zero the descriptor fields (defensive;
    softc is freed regardless).
 
-6. The `kindset` argument to `hid_start_parse` is a bitmask of
-   which item kinds the parser should return. We pass all three
-   (input, output, feature) because the count logic wants to see
-   them all. Collection and endcollection items come through
-   unconditionally.
+6. The `kindset` argument to `hid_start_parse` is a bitmask, but
+   the parser requires exactly one bit set. Passing multiple bits
+   causes the parser to emit "Only one bit can be set in the
+   kindset" and return a parser in an invalid state. This is
+   documented here because the constraint is not visible in
+   `hid.h`'s declaration of the function; it is enforced at
+   runtime in `sys/dev/hid/hid.c`. Reference drivers
+   `sys/dev/hid/hidbus.c` and `sys/dev/hid/hidmap.c` follow the
+   single-bit pattern consistently.
 
 ## Testing
 
@@ -258,18 +288,18 @@ session is preferable for iterative testing.
 
 ## Notes
 
-`hid_start_parse` takes a `kindset` bitmask (`1 << hid_input`
-etc.) per `hid.h`. This controls which item kinds the parser
-returns from `hid_get_item`. Passing all three (input, output,
-feature) lets B.3 count each category; passing only
-`1 << hid_input` would be cheaper but would lose the output and
-feature counts. The difference is small either way.
+`hid_start_parse` takes a `kindset` bitmask per `hid.h`, but the
+FreeBSD implementation enforces that exactly one bit must be set.
+The three counts (input, output, feature) are obtained by walking
+the descriptor three times. Each walk is O(N) in descriptor
+bytes, typically under 200 bytes, so the cost is negligible.
 
 `hid_item.kind` identifies what the returned item is. Collections
 (`hid_collection`) and their terminators (`hid_endcollection`)
-arrive through the loop regardless of kindset and are used here
-to track nesting depth. This is the same pattern used in
-`hidbus.c` for its own descriptor walk.
+arrive through the loop regardless of which kind bit is set, so
+collection-depth tracking happens during the input walk only.
+This is the same pattern used in `hidbus.c` for its own
+descriptor walks.
 
 The `hid_get_item` return value is documented as ">0 on success",
 with zero or negative values indicating end-of-descriptor or
@@ -281,3 +311,27 @@ Stage B.4 will add `hidbus_set_intr(dev, handler, context)` to
 register a report-delivery callback, allocate a buffer sized per
 `hid_report_size_max`, and log incoming reports as hex dumps to
 dmesg. No event publication to userspace happens until Stage C.
+
+## Errata
+
+The initial draft of this ADR specified a single walk of the
+descriptor with a multi-bit kindset argument to `hid_start_parse`
+(`(1 << hid_input) | (1 << hid_output) | (1 << hid_feature)`).
+The implementation followed the draft literally. On first test
+against a VirtualBox USB Tablet in a GhostBSD VM, the parser
+emitted `hid_start_parse: Only one bit can be set in the
+kindset` to dmesg and returned a parser in a state where
+`hid_get_item` produced zero results. The resulting log line
+showed a non-empty 85-byte descriptor with zero items counted.
+
+The FreeBSD `hid_start_parse` implementation requires exactly
+one item-kind bit in the kindset argument. This constraint is
+enforced at runtime in `sys/dev/hid/hid.c` and is not visible
+in `hid.h`'s function declaration. Reference drivers
+(`sys/dev/hid/hidbus.c`, `sys/dev/hid/hidmap.c`) follow the
+single-bit pattern consistently.
+
+The Implementation Plan and Notes sections of this ADR have
+been updated to reflect the three-pass walk that was shipped.
+The original draft is preserved in the git history as the
+pre-correction state.
