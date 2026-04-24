@@ -2,7 +2,13 @@
 
 ## Status
 
-Proposed
+Superseded by ADR 0007 (hidbus attachment).
+
+Investigation of the live system revealed that this ADR was built
+on a reading of legacy drivers (`ukbd`, `ums`) that are not loaded
+on modern FreeBSD 15 / GhostBSD. The correct architecture is
+hidbus-level attachment with HID TLC matching, specified in ADR
+0007. This ADR is retained for the decision-making record.
 
 ## Context
 
