@@ -80,6 +80,15 @@ static const struct hid_device_id __used inputfs_devs[] = {
 /*
  * Walk the device's report descriptor and populate softc counts.
  * Called only when sc->sc_rdesc is non-NULL.
+ *
+ * FreeBSD's hid_start_parse requires exactly one item-kind bit in
+ * the kindset argument. We therefore walk three times, once per
+ * kind. Collection/endcollection items come through on any walk,
+ * so collection nesting depth is tracked during the input pass.
+ *
+ * Reference: hid_start_parse() usage in sys/dev/hid/hidbus.c and
+ * sys/dev/hid/hidmap.c, which consistently pass `1 << hid_input`,
+ * `1 << hid_output`, or `1 << hid_feature` (single bit each).
  */
 static void
 inputfs_walk_rdesc(struct inputfs_softc *sc)
@@ -89,34 +98,49 @@ inputfs_walk_rdesc(struct inputfs_softc *sc)
 	uint32_t depth = 0, max_depth = 0;
 	uint32_t input_items = 0, output_items = 0, feature_items = 0;
 
-	s = hid_start_parse(sc->sc_rdesc, sc->sc_rdesc_len,
-	    (1 << hid_input) | (1 << hid_output) | (1 << hid_feature));
-	if (s == NULL)
-		return;
-
-	while (hid_get_item(s, &hi) > 0) {
-		switch (hi.kind) {
-		case hid_input:
-			input_items++;
-			break;
-		case hid_output:
-			output_items++;
-			break;
-		case hid_feature:
-			feature_items++;
-			break;
-		case hid_collection:
-			depth++;
-			if (depth > max_depth)
-				max_depth = depth;
-			break;
-		case hid_endcollection:
-			if (depth > 0)
-				depth--;
-			break;
+	/* First pass: input items and collection depth. */
+	s = hid_start_parse(sc->sc_rdesc, sc->sc_rdesc_len, 1 << hid_input);
+	if (s != NULL) {
+		while (hid_get_item(s, &hi) > 0) {
+			switch (hi.kind) {
+			case hid_input:
+				input_items++;
+				break;
+			case hid_collection:
+				depth++;
+				if (depth > max_depth)
+					max_depth = depth;
+				break;
+			case hid_endcollection:
+				if (depth > 0)
+					depth--;
+				break;
+			default:
+				break;
+			}
 		}
+		hid_end_parse(s);
 	}
-	hid_end_parse(s);
+
+	/* Second pass: output items. */
+	s = hid_start_parse(sc->sc_rdesc, sc->sc_rdesc_len, 1 << hid_output);
+	if (s != NULL) {
+		while (hid_get_item(s, &hi) > 0) {
+			if (hi.kind == hid_output)
+				output_items++;
+		}
+		hid_end_parse(s);
+	}
+
+	/* Third pass: feature items. */
+	s = hid_start_parse(sc->sc_rdesc, sc->sc_rdesc_len, 1 << hid_feature);
+	if (s != NULL) {
+		while (hid_get_item(s, &hi) > 0) {
+			if (hi.kind == hid_feature)
+				feature_items++;
+		}
+		hid_end_parse(s);
+	}
 
 	sc->sc_input_items = input_items;
 	sc->sc_output_items = output_items;
