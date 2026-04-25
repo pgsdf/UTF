@@ -307,8 +307,15 @@ inputfs_attach(device_t dev)
 
 			hidbus_set_intr(dev, inputfs_intr, sc);
 
-			/* Start interrupt delivery from the transport layer. */
-			hid_intr_start(dev);
+			/* Start interrupt delivery from the transport layer.
+			 * Sets tlc->active=true so hidbus_intr dispatches
+			 * to our callback. */
+			int intr_err = hid_intr_start(dev);
+			if (intr_err != 0) {
+				device_printf(dev,
+				    "inputfs: hid_intr_start failed (%d)\n",
+				    intr_err);
+			}
 		}
 	}
 
