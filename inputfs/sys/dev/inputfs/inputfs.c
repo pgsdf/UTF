@@ -306,6 +306,9 @@ inputfs_attach(device_t dev)
 			    (unsigned int)sc->sc_report_id);
 
 			hidbus_set_intr(dev, inputfs_intr, sc);
+
+			/* Start interrupt delivery from the transport layer. */
+			hid_intr_start(dev);
 		}
 	}
 
@@ -318,6 +321,10 @@ inputfs_detach(device_t dev)
 	struct inputfs_softc *sc = device_get_softc(dev);
 
 	device_printf(dev, "inputfs: detached\n");
+
+	/* Stop interrupt delivery before freeing the report buffer. */
+	if (sc->sc_ibuf != NULL)
+		hid_intr_stop(dev);
 
 	if (sc->sc_ibuf != NULL) {
 		free(sc->sc_ibuf, M_INPUTFS);
