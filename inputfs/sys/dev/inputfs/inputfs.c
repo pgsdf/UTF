@@ -1,11 +1,14 @@
 /*
  * inputfs: UTF native input substrate kernel module
  *
- * Stage B.4: interrupt handler registration and raw report hex logging.
- * inputfs registers a report-delivery callback with hidbus via
- * hidbus_set_intr(). Each incoming HID report is copied into a
- * per-device buffer and logged as a hex dump to dmesg. No event
- * publication to userspace; that begins at Stage C.
+ * Stage B.5: per-device role classification.
+ * Builds on B.4 (interrupt handler registration and raw report
+ * logging) by formalizing the matched HID Top-Level Collection into
+ * a stable role bitmask stored on the softc. The classifier reads
+ * hidbus_get_usage() once at attach, applies the rule from ADR 0010
+ * Decision section 2 (HUP_GENERIC_DESKTOP page guard, switch on
+ * usage ID), and writes the result into sc_roles. A grep-friendly
+ * "roles=<list>" line is logged at the end of attach.
  *
  * Reference drivers consulted (from ghostbsd-src):
  *   sys/dev/hid/hms.c    (HID mouse, modern)
@@ -24,6 +27,7 @@
  *   inputfs/docs/adr/0007-hidbus-attachment.md
  *   inputfs/docs/adr/0008-hid-descriptor-fetch.md
  *   inputfs/docs/adr/0009-interrupt-handler-registration.md
+ *   inputfs/docs/adr/0010-role-classification.md
  *
  * Target: FreeBSD 15.0-RELEASE-p2 / GhostBSD 15.
  */
@@ -42,8 +46,22 @@
 MALLOC_DEFINE(M_INPUTFS, "inputfs", "inputfs report buffers");
 
 /*
- * Per-device softc. Stage B.4 adds interrupt buffer fields; Stage B.5
- * will add per-device role bitmask.
+ * Role bitmask (Stage B.5, per ADR 0010 Decision section 1).
+ * Five bits, one per role in ADR 0004's closed taxonomy. All five
+ * are defined now so the encoding is stable from the outset; B.5's
+ * classifier only sets POINTER and KEYBOARD, the remaining three
+ * are reserved for later stages (touch/pen when the TLC match
+ * table grows; lighting via the future companion spec).
+ */
+#define INPUTFS_ROLE_POINTER    (1u << 0)
+#define INPUTFS_ROLE_KEYBOARD   (1u << 1)
+#define INPUTFS_ROLE_TOUCH      (1u << 2)
+#define INPUTFS_ROLE_PEN        (1u << 3)
+#define INPUTFS_ROLE_LIGHTING   (1u << 4)
+
+/*
+ * Per-device softc. Stage B.4 added interrupt buffer fields;
+ * Stage B.5 adds the per-device role bitmask (sc_roles).
  */
 struct inputfs_softc {
 	device_t	sc_dev;
@@ -73,6 +91,14 @@ struct inputfs_softc {
 	uint8_t		*sc_ibuf;
 	hid_size_t	 sc_ibuf_size;
 	uint8_t		 sc_report_id;
+
+	/*
+	 * Role membership (Stage B.5). Bitmask of INPUTFS_ROLE_*.
+	 * Populated once at attach by inputfs_classify_roles. A value
+	 * of zero is valid (gamepad-style "attaches but produces no
+	 * events" per ADR 0004 Decision item 6).
+	 */
+	uint8_t		 sc_roles;
 };
 
 /*
@@ -200,6 +226,96 @@ inputfs_intr(void *context, void *data, hid_size_t len)
 	    hexbuf);
 }
 
+/*
+ * inputfs_classify_roles -- Stage B.5.
+ *
+ * Read the matched TLC from hidbus_get_usage(), apply the
+ * page guard and switch from ADR 0010 Decision section 2,
+ * and write the result into sc->sc_roles. Called once per
+ * attach, after B.4 setup completes.
+ *
+ * The page guard is a no-op today (the match table only admits
+ * HUP_GENERIC_DESKTOP), but it is load-bearing the moment the
+ * match table grows to admit other usage pages.
+ */
+static void
+inputfs_classify_roles(struct inputfs_softc *sc)
+{
+	uint32_t usage = hidbus_get_usage(sc->sc_dev);
+	uint16_t page = HID_GET_USAGE_PAGE(usage);
+	uint16_t id = HID_GET_USAGE(usage);
+
+	sc->sc_roles = 0;
+
+	if (page == HUP_GENERIC_DESKTOP) {
+		switch (id) {
+		case HUG_KEYBOARD:
+			sc->sc_roles |= INPUTFS_ROLE_KEYBOARD;
+			break;
+		case HUG_MOUSE:
+		case HUG_POINTER:
+			sc->sc_roles |= INPUTFS_ROLE_POINTER;
+			break;
+		default:
+			/* Generic Desktop usage we don't classify yet;
+			 * sc_roles stays 0. */
+			break;
+		}
+	}
+	/* Non-Generic-Desktop pages: sc_roles stays 0 by design. */
+}
+
+/*
+ * inputfs_format_roles -- Stage B.5.
+ *
+ * Format the role bitmask into a comma-separated list in fixed
+ * ascending bit-position order, or the literal "<none>" if no
+ * bits are set. Always writes a NUL-terminated string into buf.
+ *
+ * Truncation safety: each iteration computes the space needed
+ * for the role name plus its leading comma plus the terminator
+ * before writing anything. If it does not fit, the loop breaks
+ * and the previous successful iteration's NUL terminator is
+ * preserved (no trailing comma).
+ */
+static void
+inputfs_format_roles(uint8_t roles, char *buf, size_t buflen)
+{
+	static const char * const names[5] = {
+		"pointer", "keyboard", "touch", "pen", "lighting"
+	};
+	size_t pos = 0;
+	int first = 1;
+	int i;
+
+	if (buflen == 0)
+		return;
+
+	if (roles == 0) {
+		strlcpy(buf, "<none>", buflen);
+		return;
+	}
+
+	for (i = 0; i < 5; i++) {
+		size_t namelen, need;
+
+		if ((roles & (1u << i)) == 0)
+			continue;
+
+		namelen = strlen(names[i]);
+		need = namelen + (first ? 0 : 1);
+		if (pos + need + 1 > buflen)
+			break;
+
+		if (!first)
+			buf[pos++] = ',';
+		memcpy(buf + pos, names[i], namelen);
+		pos += namelen;
+		first = 0;
+	}
+	buf[pos] = '\0';
+}
+
 static int
 inputfs_probe(device_t dev)
 {
@@ -319,6 +435,19 @@ inputfs_attach(device_t dev)
 		}
 	}
 
+	/*
+	 * Stage B.5: classify role membership and log the result.
+	 * Runs after the B.4 interrupt setup so the roles= line
+	 * appears at the end of the per-device attach sequence.
+	 */
+	{
+		char rolebuf[64];
+
+		inputfs_classify_roles(sc);
+		inputfs_format_roles(sc->sc_roles, rolebuf, sizeof(rolebuf));
+		device_printf(dev, "inputfs: roles=%s\n", rolebuf);
+	}
+
 	return (0);
 }
 
@@ -355,9 +484,10 @@ inputfs_modevent(module_t mod, int what, void *arg)
 
 	switch (what) {
 	case MOD_LOAD:
-		printf("inputfs: Stage B.4 loaded (hidbus HID driver, "
+		printf("inputfs: Stage B.5 loaded (hidbus HID driver, "
 		    "descriptor fetch, interrupt handler registration, "
-		    "raw report hex logging -- no userspace event delivery)\n");
+		    "raw report hex logging, role classification "
+		    "-- no userspace event delivery)\n");
 		return (0);
 	case MOD_UNLOAD:
 		printf("inputfs: unloaded\n");
