@@ -854,7 +854,7 @@ superseded by this item), eliminates device-accumulated coordinates,
 and removes userspace semainputd as a component (see AD-2).
 
 **Status**: Stage A complete (proposal, foundations,
-`UTF_ARCHITECTURAL_DISCIPLINE.md`, ADRs 0001 through 0008, four
+`UTF_ARCHITECTURAL_DISCIPLINE.md`, ADRs 0001 through 0009, four
 byte-level companion specs). Stage B in progress:
 
 - **B.1** module skeleton loads and unloads cleanly: landed,
@@ -866,7 +866,11 @@ byte-level companion specs). Stage B in progress:
   landed, verified on VirtualBox USB Tablet (85-byte descriptor,
   11 input items, depth 2).
 - **B.4** interrupt handler registration via `hidbus_set_intr`
-  and raw report hex logging: next work item, ADR pending.
+  and raw report hex logging per ADR 0009: landed, verified on a
+  physical USB mouse passed through to a GhostBSD VirtualBox VM
+  (GhostBSD host). Live reports flow with non-zero motion deltas
+  during use; `inputfs0: detached` on unplug; clean `kldunload`
+  with no dmesg warnings.
 - **B.5** per-device role classification into softc bitmask
   per ADR 0004: not started.
 
