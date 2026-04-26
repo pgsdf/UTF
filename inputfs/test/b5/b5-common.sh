@@ -248,10 +248,10 @@ b5_check_attach_sequence() {
     # $1 = log file
     log="$1"
 
-    n_attached=$(grep -c 'attached HID' "${log}" 2>/dev/null || echo 0)
-    n_descriptor=$(grep -c 'descriptor.*bytes.*input items' "${log}" 2>/dev/null || echo 0)
-    n_buffer=$(grep -c 'report buffer.*registering interrupt' "${log}" 2>/dev/null || echo 0)
-    n_roles=$(grep -c 'roles=' "${log}" 2>/dev/null || echo 0)
+    n_attached=$(grep -c 'attached HID' "${log}" 2>/dev/null; true)
+    n_descriptor=$(grep -c 'descriptor.*bytes.*input items' "${log}" 2>/dev/null; true)
+    n_buffer=$(grep -c 'report buffer.*registering interrupt' "${log}" 2>/dev/null; true)
+    n_roles=$(grep -c 'roles=' "${log}" 2>/dev/null; true)
 
     if [ "${n_attached}" -eq 0 ]; then
         b5_fail "No 'attached HID' line in ${log}. Device did not bind to inputfs."
@@ -286,7 +286,7 @@ b5_check_report_lines() {
     # $1 = log file, $2 = minimum count
     log="$1"
     minimum="$2"
-    count=$(grep -c 'report id=0x' "${log}" || true)
+    count=$(grep -c 'report id=0x' "${log}" 2>/dev/null; true)
     if [ "${count}" -lt "${minimum}" ]; then
         b5_fail "Only ${count} 'report id=' lines found, expected at least ${minimum}"
         return 1
@@ -343,26 +343,53 @@ b5_unload() {
 }
 
 b5_rescan() {
-    # Trigger inputfs to bind. Bus name is system-dependent.
-    b5_say "Triggering devctl rescan"
-    if sudo devctl rescan usbhid1 2>/dev/null; then
+    # Trigger inputfs to bind by rescanning every hidbus on the
+    # system. After kldunload of competing drivers, the hidbus
+    # children are orphans; loading inputfs registers it as a
+    # candidate driver, but hidbus does not auto-reprobe its
+    # existing children at driver-registration time. devctl rescan
+    # forces the reprobe.
+    #
+    # Multiple hidbus instances are common (one per usbhid* on every
+    # USB HID interface). Bare metal typically has 5-10; VM has 2-3.
+    # All must be rescanned, not just one.
+    b5_step "Triggering devctl rescan on every hidbus"
+
+    if ! command -v devinfo >/dev/null 2>&1; then
+        b5_warn "devinfo not available; falling back to fixed bus list"
+        for bus in usbhid0 usbhid1 hidbus0 hidbus1 hidbus2; do
+            sudo devctl rescan "${bus}" 2>/dev/null && \
+                b5_say "rescanned ${bus}"
+        done
         return 0
     fi
-    if sudo devctl rescan hidbus1 2>/dev/null; then
+
+    # Collect every hidbus instance from the device tree.
+    buses=$(devinfo -r 2>/dev/null | awk '/^[ \t]*hidbus[0-9]/ {gsub(/^[ \t]+/, ""); print $1}')
+    if [ -z "${buses}" ]; then
+        b5_warn "No hidbus instances found in devinfo output."
+        b5_warn "Either no HID devices are present, or hidbus is not loaded."
         return 0
     fi
-    # Try discovering the right bus name.
-    if command -v devinfo >/dev/null 2>&1; then
-        bus=$(devinfo -v 2>/dev/null | awk '/hidbus/ {print $1; exit}')
-        if [ -n "${bus}" ]; then
-            b5_say "Trying ${bus}"
-            if sudo devctl rescan "${bus}" 2>/dev/null; then
-                return 0
-            fi
+
+    count=0
+    for bus in ${buses}; do
+        if sudo devctl rescan "${bus}" 2>/dev/null; then
+            b5_say "rescanned ${bus}"
+            count=$((count + 1))
+        else
+            b5_warn "rescan ${bus} failed"
         fi
+    done
+
+    if [ "${count}" -eq 0 ]; then
+        b5_warn "No hidbus rescan succeeded. inputfs probably will not bind."
+        return 1
     fi
-    b5_warn "devctl rescan did not succeed on usbhid1, hidbus1, or auto-discovered bus"
-    b5_warn "The device may have already attached on its own. Continuing."
+    b5_pass "Rescanned ${count} hidbus instance(s)."
+    # Give the kernel a moment for probes to complete and dmesg to
+    # flush before the caller captures it.
+    sleep 1
     return 0
 }
 
