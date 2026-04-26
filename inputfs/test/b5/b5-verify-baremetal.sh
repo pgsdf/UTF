@@ -27,79 +27,13 @@ B5_LOGDIR=$(pwd)
 result=0
 trap 'echo "Aborted."; exit 3' INT
 
-# --- Bare-metal-specific helpers ------------------------------------
-
-b5_resolve_hms_hkbd_conflict() {
-    b5_step "Resolving hms/hkbd conflict"
-
-    hms_loaded=0
-    hkbd_loaded=0
-    kldstat | grep -q '^.*hms\.ko' && hms_loaded=1
-    kldstat | grep -q '^.*hkbd\.ko' && hkbd_loaded=1
-
-    if [ "${hms_loaded}" -eq 0 ] && [ "${hkbd_loaded}" -eq 0 ]; then
-        b5_pass "hms and hkbd are not loaded. inputfs will be free to claim devices."
-        # Could be statically compiled into the kernel; warn.
-        if grep -q hms /sys/dev/hid/* 2>/dev/null \
-           || sysctl -a 2>/dev/null | grep -q hms; then
-            b5_warn "hms may be compiled into the kernel. If devices fail to bind to inputfs, that is the cause."
-        fi
-        return 0
-    fi
-
-    cat <<EOF
-
-WARNING: hms and/or hkbd are loaded. They are claiming the USB
-mouse and keyboard, blocking inputfs from attaching.
-
-Two options:
-
-  A. Permanently blacklist them by adding the following to
-     /boot/loader.conf and rebooting:
-
-         hms_load="NO"
-         hkbd_load="NO"
-
-  B. Unload them now for this session only.
-
-If you have not prepared a fallback console (serial, SSH not
-relying on USB, or a remote graphical terminal), choose A,
-reboot, and re-run this script.
-
-EOF
-
-    if ! b5_confirm "Unload hms and hkbd now (option B)?"; then
-        b5_say "Aborting. Configure /boot/loader.conf and reboot, then re-run."
-        return 3
-    fi
-
-    b5_pause "Last chance to abort. After this prompt, your USB mouse and keyboard will stop responding to the system until inputfs claims them. Are you on a non-USB console?"
-
-    if [ "${hms_loaded}" -eq 1 ]; then
-        b5_say "Unloading hms"
-        if ! sudo kldunload hms; then
-            b5_fail "Failed to unload hms"
-            return 2
-        fi
-    fi
-    if [ "${hkbd_loaded}" -eq 1 ]; then
-        b5_say "Unloading hkbd"
-        if ! sudo kldunload hkbd; then
-            b5_fail "Failed to unload hkbd"
-            return 2
-        fi
-    fi
-    b5_pass "hms/hkbd unloaded. inputfs is now free to claim USB HID devices."
-    return 0
-}
-
 # --- Preconditions ---------------------------------------------------
 
 b5_check_patch_applied      || exit 2
 b5_check_build              || exit 2
 b5_check_no_prior_load      || exit 2
-b5_install_module           || exit 2
-b5_resolve_hms_hkbd_conflict || exit $?
+b5_install_module              || exit 2
+b5_unload_competing_drivers    || exit $?
 
 # --- Signal 2.1 ------------------------------------------------------
 
@@ -185,14 +119,9 @@ else
     result=1
 fi
 
-# --- Restore hms/hkbd if we unloaded them ---------------------------
+# --- Restore competing drivers if we unloaded them ------------------
 
-b5_step "Optional: restore hms and hkbd"
-
-if b5_confirm "Reload hms and hkbd to restore normal mouse/keyboard?"; then
-    sudo kldload hms 2>/dev/null && b5_say "hms reloaded"
-    sudo kldload hkbd 2>/dev/null && b5_say "hkbd reloaded"
-fi
+b5_reload_competing_drivers
 
 # --- Concatenate ----------------------------------------------------
 

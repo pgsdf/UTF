@@ -21,10 +21,11 @@ trap 'echo "Aborted."; exit 3' INT
 
 # --- Preconditions ---------------------------------------------------
 
-b5_check_patch_applied   || exit 2
-b5_check_build           || exit 2
-b5_check_no_prior_load   || exit 2
-b5_install_module        || exit 2
+b5_check_patch_applied         || exit 2
+b5_check_build                 || exit 2
+b5_check_no_prior_load         || exit 2
+b5_install_module              || exit 2
+b5_unload_competing_drivers    || exit $?
 
 # --- Signal 1.1 ------------------------------------------------------
 
@@ -122,6 +123,10 @@ else
     b5_fail "Signal 1.4 failed. See b5-1.4.log"
     result=1
 fi
+
+# --- Restore competing drivers if we unloaded them ------------------
+
+b5_reload_competing_drivers
 
 # --- Concatenate ---------------------------------------------------
 
