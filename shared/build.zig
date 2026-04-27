@@ -26,7 +26,19 @@ pub fn build(b: *std.Build) void {
         .root_module = clock_mod,
     });
 
+    // Input publication module.
+    const input_mod = b.createModule(.{
+        .root_source_file = b.path("src/input.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const input_tests = b.addTest(.{
+        .root_module = input_mod,
+    });
+
     const test_step = b.step("test", "Run shared module tests");
     test_step.dependOn(&b.addRunArtifact(session_tests).step);
     test_step.dependOn(&b.addRunArtifact(clock_tests).step);
+    test_step.dependOn(&b.addRunArtifact(input_tests).step);
 }
