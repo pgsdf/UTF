@@ -506,10 +506,16 @@ inputfs_state_open_file(struct thread *td)
 	    __DECONST(char *, INPUTFS_STATE_DIR),
 	    UIO_SYSSPACE, 0755);
 
-	/* Open the state file: create if missing, truncate, write-only. */
-	NDINIT(&nd, LOOKUP, FOLLOW, UIO_SYSSPACE,
-	    __DECONST(char *, INPUTFS_STATE_PATH));
-	error = vn_open(&nd, FWRITE | O_CREAT | O_TRUNC, 0644, NULL);
+	/* Open the state file: create if missing, truncate, write-only.
+	 * vn_open takes a pointer to the flags because it may modify
+	 * them in place (e.g. clearing O_CREAT after a successful
+	 * create). The variable must therefore live on the stack. */
+	{
+		int flags = FWRITE | O_CREAT | O_TRUNC;
+		NDINIT(&nd, LOOKUP, FOLLOW, UIO_SYSSPACE,
+		    __DECONST(char *, INPUTFS_STATE_PATH));
+		error = vn_open(&nd, &flags, 0644, NULL);
+	}
 	if (error != 0) {
 		printf("inputfs: vn_open(%s) failed: %d "
 		    "(continuing without file sync)\n",
@@ -553,10 +559,16 @@ inputfs_state_sync_to_file(struct thread *td)
 	if (inputfs_state_vp == NULL)
 		return;
 
+	/* vn_rdwr signature (FreeBSD 15):
+	 *   vn_rdwr(rw, vp, base, len, offset, segflg, ioflg,
+	 *           active_cred, file_cred, aresid, td)
+	 * active_cred = NOCRED (use the calling thread's cred)
+	 * file_cred = NULL (no separate file-level cred)
+	 * aresid = NULL (we do not need the residual byte count) */
 	error = vn_rdwr(UIO_WRITE, inputfs_state_vp,
 	    inputfs_state_buf, (int)INPUTFS_STATE_SIZE,
 	    (off_t)0, UIO_SYSSPACE,
-	    IO_UNIT | IO_SYNC, NOCRED, NULL, td);
+	    IO_UNIT | IO_SYNC, NOCRED, NULL, NULL, td);
 	if (error != 0) {
 		printf("inputfs: vn_rdwr write failed: %d\n", error);
 	}
