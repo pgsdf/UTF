@@ -318,7 +318,7 @@ The initial draft of this ADR specified a single walk of the
 descriptor with a multi-bit kindset argument to `hid_start_parse`
 (`(1 << hid_input) | (1 << hid_output) | (1 << hid_feature)`).
 The implementation followed the draft literally. On first test
-against a VirtualBox USB Tablet in a GhostBSD VM, the parser
+against a VirtualBox USB Tablet, the parser
 emitted `hid_start_parse: Only one bit can be set in the
 kindset` to dmesg and returned a parser in a state where
 `hid_get_item` produced zero results. The resulting log line

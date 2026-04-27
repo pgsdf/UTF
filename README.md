@@ -12,6 +12,17 @@ audio, visual, and input domains against a single monotonic clock driven by
 audio hardware, eliminating drift between subsystems as a structural property of
 the architecture.
 
+UTF targets PGSD, a distribution founded on FreeBSD. Earlier development used
+GhostBSD as a convenient FreeBSD-derivative test host; that is no longer the
+case. PGSD-on-FreeBSD is the single supported target going forward. Some
+verification artefacts in the repository's history were produced on GhostBSD
+VMs and bare-metal GhostBSD machines while that was the active development
+venue; the substantive findings transfer to stock FreeBSD because GhostBSD
+inherits FreeBSD's HID stack and kernel configuration, but the project no
+longer targets GhostBSD as a deliverable platform. PGSD will ship its own
+kernel configuration that omits drivers superseded by `inputfs` (currently
+`hms`, `hkbd`, `hgame`, `hcons`, `hsctrl`, `utouch`).
+
 ---
 
 ## Architecture
@@ -96,8 +107,8 @@ Vulkan, DRM/KMS, X11, Wayland, and drawfs.
 supports multi-session operation (up to 8 sessions), a session status bar,
 VT100/xterm-256color emulation, auto-detection of display size via
 `DRAWFSGIOC_GET_EFIFB_INFO`, and font scaling for HiDPI displays. It runs
-natively on bare metal FreeBSD via the drawfs EFI framebuffer backend and
-on GhostBSD via the X11 backend.
+on bare-metal FreeBSD via the drawfs EFI framebuffer backend and on
+FreeBSD with Xorg via the X11 backend.
 
 See `semadraw/docs/` for the SDCS specification, architecture, and API
 overview.
@@ -199,7 +210,7 @@ sudo semadraw/zig-out/bin/semadraw-term --scale 4  # 4K/5K
 | Backend | Use case | Requirements |
 | --- | --- | --- |
 | drawfs (EFI) | Bare metal FreeBSD console | UEFI firmware, drawfs.ko loaded |
-| X11 | GhostBSD / FreeBSD with Xorg | libX11 |
+| X11 | FreeBSD with Xorg | libX11 |
 | Vulkan | GPU-accelerated rendering | Vulkan driver |
 | software | Testing and reference | None |
 | DRM/KMS | Optional GPU modesetting | drm-kmod, build with DRAWFS_DRM_ENABLED |

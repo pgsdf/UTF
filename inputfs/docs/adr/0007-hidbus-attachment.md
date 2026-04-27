@@ -11,7 +11,7 @@ Supersedes `inputfs/docs/adr/0006-usb-device-ownership.md`.
 ADR 0006 committed inputfs to attach as a USB driver on the `uhub`
 bus, matching devices by USB interface class (HID), subclass (boot),
 and protocol (keyboard or mouse). This was wrong. Investigation
-of the running GhostBSD FreeBSD 15.0-RELEASE-p2 system revealed that
+of the running FreeBSD 15.0-RELEASE-p2 system revealed that
 the FreeBSD HID subsystem has a two-layer architecture that ADR
 0006 did not account for:
 
@@ -121,7 +121,7 @@ transition between modes is out of scope.
 
 This architecture:
 
-- Matches the actual FreeBSD 15 HID stack as shipped in GhostBSD.
+- Matches the actual FreeBSD 15 HID stack.
 - Is transport-agnostic: USB, Bluetooth, and I2C HID devices all
   reach `hidbus` the same way, so inputfs automatically handles
   all three without transport-specific code. This is an

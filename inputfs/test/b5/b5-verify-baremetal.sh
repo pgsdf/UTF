@@ -2,7 +2,7 @@
 # b5-verify-baremetal.sh: B.5 verification, bare-metal pass.
 #
 # Runs the four signals from B5_VERIFICATION.md on bare-metal
-# GhostBSD. Differs from the VM version in three ways:
+# FreeBSD. Differs from the VM version in three ways:
 #   1. No VirtualBox pass-through; physical plug/unplug instead.
 #   2. Resolves the hms/hkbd conflict (those drivers claim USB
 #      mouse/keyboard at boot, blocking inputfs from attaching).

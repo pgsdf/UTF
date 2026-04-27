@@ -165,7 +165,7 @@ and no panic.
 
 ## Testing
 
-Test sequence on target (GhostBSD 15 or FreeBSD 15):
+Test sequence on target (FreeBSD 15):
 
 1. Unload competing drivers if present:
    `sudo kldunload hms hkbd hgame hcons hsctrl utouch 2>/dev/null || true`

@@ -21,10 +21,10 @@ passes are recorded as passing.
 4. A USB mouse and a USB keyboard are available. They do not need
    to be the same physical devices across passes.
 
-## Pass 1: GhostBSD on Oracle VirtualBox
+## Pass 1: FreeBSD on Oracle VirtualBox
 
-Host: GhostBSD bare-metal computer running VirtualBox.
-Guest: GhostBSD VM with USB pass-through to the guest.
+Host: bare-metal computer running VirtualBox.
+Guest: FreeBSD VM with USB pass-through to the guest.
 
 The VM pass exercises three signals: mouse classification (1.1),
 mouse motion / B.4 unbroken (1.2), and clean unload (1.3). The
@@ -154,9 +154,9 @@ inputfs: unloaded
 - [ ] No warnings, witness complaints, or use-after-free messages
       anywhere in the post-unload dmesg tail.
 
-## Pass 2: bare-metal GhostBSD
+## Pass 2: bare-metal FreeBSD
 
-Same four signals on a bare-metal GhostBSD machine. No
+Same four signals on a bare-metal FreeBSD machine. No
 VirtualBox layer; USB devices plug directly into the host. All
 steps and expected outputs are identical to Pass 1, with one
 substitution: skip the "pass the device through" step in each
@@ -211,8 +211,8 @@ sudo dmesg | grep inputfs > b5-pass2-baremetal.log
 
 The closeout bullet in `BACKLOG.md` cites both venues, in the
 same form B.2 used: "verified on <mouse vendor:product> and
-<keyboard vendor:product> on GhostBSD VirtualBox VM (GhostBSD
-host) and on bare-metal GhostBSD." Attach the two log files to
+<keyboard vendor:product> on FreeBSD VirtualBox VM (FreeBSD
+host) and on bare-metal FreeBSD." Attach the two log files to
 the commit message or paste the relevant excerpts.
 
 ## Notes

@@ -7,18 +7,18 @@ pub fn build(b: *std.Build) void {
     // -----------------------------------------------------------------------
     // Backend selection.
     //
-    // Vulkan and bsdinput are enabled by default — they work on any bare
-    // metal FreeBSD/GhostBSD system with the appropriate packages.
+    // Vulkan and bsdinput are enabled by default. They work on any
+    // bare-metal FreeBSD 15 system with the appropriate packages.
     //
-    // X11 and Wayland default to false — they are optional display targets
-    // not required for console or drawfs operation. Enable explicitly when
-    // building on a system with a display server:
+    // X11 and Wayland default to false. They are optional display
+    // targets not required for console or drawfs operation. Enable
+    // explicitly when building on a system with a display server:
     //
-    //   zig build -Dx11=true       # GhostBSD / FreeBSD with Xorg
+    //   zig build -Dx11=true       # FreeBSD with Xorg
     //   zig build -Dwayland=true   # systems with Wayland compositor
     //
-    // UTF requires bare metal FreeBSD 15 or GhostBSD. Virtualisation is
-    // not supported.
+    // UTF requires bare-metal FreeBSD 15. Virtualisation is not
+    // supported.
     // -----------------------------------------------------------------------
     const want_x11     = b.option(bool, "x11",     "Enable X11 backend — requires libX11 (default: false)")             orelse false;
     const want_wayland = b.option(bool, "wayland",  "Enable Wayland backend — requires libwayland-client (default: false)") orelse false;

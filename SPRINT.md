@@ -130,7 +130,7 @@ documented.
   constants; a clean kernel build succeeds on the target host with
   `DRAWFS_DRM=false` (invariant 1 preserved).
 
-Verified on GhostBSD 15 after commit: generator validation clean
+Verified after commit: generator validation clean
 across all five target entries, kernel build produces `drawfs.ko`
 cleanly with the default swap-only banner. Struct sizes on the
 target match the Linux compile-time check (16/24/16/16 bytes). The
@@ -154,7 +154,7 @@ Expansion scope. Split from the larger B3.3 item into three passes
 so each is reviewable on its own: (1) validator, (2)
 dispatch+coalescing, (3) tests.
 
-**Pass 1 landed and verified on GhostBSD 15.** Validator compiles,
+**Pass 1 landed and verified on the FreeBSD target.** Validator compiles,
 links into `drawfs.ko`, module loads cleanly. Validator is not yet
 wired to any caller (that's pass 2). Fifteen unit tests against the
 design-doc error table pass on the Linux userspace harness. No
@@ -190,11 +190,11 @@ directly led to SPRINT-04b below).
   backpressure test's underlying design was spec-incompatible)
 - **Status**: done
 - **Owner**: Vic
-- **Done when**: `sudo ./build.sh test` on the GhostBSD target reports
+- **Done when**: `sudo ./build.sh test` on the FreeBSD target reports
   all 11 tests green. Specifically the four failures (three in
   `test_input_injection.py`, one in `test_limits.py`) must be gone.
 
-**Verified** on GhostBSD 15: full 11/11 test suite green.
+**Verified** on the FreeBSD target: full 11/11 test suite green.
 `test_event_queue_backpressure` now hits ENOSPC after 169 presents
 (≈ `max_evq_bytes=8192` ÷ 48 bytes per reply) and recovers cleanly.
 `test_backpressure_enospc` drains ~200 queued `EVT_KEY` events and
@@ -249,7 +249,7 @@ Four design calls, flagged in code comments for the reviewer:
    coalescing is in scope, across-request rect-list merging is not.
 
 18 userspace unit tests covering clamping and area-sum arithmetic
-passed on Linux before landing. **Verified on GhostBSD 15 target**:
+passed on Linux before landing. **Verified target**:
 clean compile with `-Werror`, module loads cleanly, sysctl exposed
 at `hw.drawfs.region_coalesce_threshold` with default 75 and
 read/write access, full 11/11 test suite still green (no regression
@@ -268,7 +268,7 @@ in existing paths).
   coalescing behaviour. `drawfs/build.sh test` with this file
   passes on the target host.
 
-**Verified on GhostBSD 15**: 18 tests passed (8 error-table cases,
+**Verified on the FreeBSD target**: 18 tests passed (8 error-table cases,
 9 happy-path/clamping/coalescing cases, 1 equivalence invariant),
 full 12-file test suite still green. First time in the B3.3 arc
 that the kernel handler's behavior matched the test expectations on

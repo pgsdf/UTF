@@ -2,7 +2,7 @@
 # b5-verify-vm.sh: B.5 verification, VM pass.
 #
 # Runs the mouse-path signals from B5_VERIFICATION.md inside a
-# GhostBSD VM with USB pass-through. The keyboard-path signal
+# FreeBSD VM with USB pass-through. The keyboard-path signal
 # (1.3) cannot run in a VM that is driven via USB pass-through:
 # unloading inputfs leaves the VM with no working USB input, so
 # the operator cannot interact with the script to attach a

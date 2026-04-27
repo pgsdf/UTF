@@ -32,7 +32,7 @@ With competing drivers unloaded and `devctl rescan` performed on
 every hidbus instance, inputfs binds to devices, parses descriptors,
 registers interrupt callbacks, and performs role classification.
 B.5 verification (including the recent smoke-test adjustments) is
-complete or imminent on both GhostBSD VM and bare-metal targets.
+complete or imminent on FreeBSD VM and bare-metal targets.
 The current implementation functions.
 
 Two observations from Stage B are relevant:
@@ -139,8 +139,8 @@ Answers to the following are prerequisites for any future decision:
 - Is hidbus interrupt dispatch latency a fixed offset (correctable)
   or variable jitter (problematic for determinism)?
 
-- Are there planned upstream changes to hidbus in FreeBSD 15 /
-  GhostBSD that would affect this analysis?
+- Are there planned upstream changes to hidbus in FreeBSD 15 that
+  would affect this analysis?
 
 - For alternative B: port the existing `dev/hid/hid.c` parser,
   fork it, or write a new minimal one?

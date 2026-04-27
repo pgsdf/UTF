@@ -114,11 +114,10 @@ done
 fi # end bsddialog block
 
 # ============================================================================
-# Warn loudly when DRM is selected — the user is opting into a build
-# that requires headers we do not otherwise require. Tailor the advice
-# to the detected OS: GhostBSD ships a kernel-matched drm-kmod in its
-# own pkg repo, while FreeBSD 15.0 users may need to disable the
-# FreeBSD-ports-kmods repo to avoid a version mismatch.
+# Warn loudly when DRM is selected. The user is opting into a build
+# that requires headers we do not otherwise require. On FreeBSD 15.0
+# the FreeBSD-ports-kmods repo may need to be disabled to avoid a
+# version mismatch with the base drm-kmod port.
 # ============================================================================
 
 if [ "$DRAWFS_DRM" = "true" ]; then
@@ -127,12 +126,8 @@ if [ "$DRAWFS_DRM" = "true" ]; then
     echo "      This requires the drm-kmod port/package:"
     echo "          pkg install drm-kmod"
     case "$UTF_OS" in
-    ghostbsd)
-        echo "      Detected GhostBSD $UTF_OS_VERSION — the GhostBSD pkg repo"
-        echo "      ships a kernel-matched drm-kmod; no special repo config needed."
-        ;;
     freebsd)
-        echo "      Detected FreeBSD $UTF_OS_VERSION — on 15.0-RELEASE the"
+        echo "      Detected FreeBSD $UTF_OS_VERSION. On 15.0-RELEASE the"
         echo "      FreeBSD-ports-kmods repo may need to be disabled to avoid"
         echo "      a version mismatch with FreeBSD-ports."
         ;;

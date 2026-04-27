@@ -10,7 +10,7 @@
  * usage ID), and writes the result into sc_roles. A grep-friendly
  * "roles=<list>" line is logged at the end of attach.
  *
- * Reference drivers consulted (from ghostbsd-src):
+ * Reference drivers consulted (from FreeBSD source):
  *   sys/dev/hid/hms.c    (HID mouse, modern)
  *   sys/dev/hid/hkbd.c   (HID keyboard, modern)
  *   sys/dev/hid/hidbus.c (HID bus driver, descriptor caching)
@@ -29,7 +29,7 @@
  *   inputfs/docs/adr/0009-interrupt-handler-registration.md
  *   inputfs/docs/adr/0010-role-classification.md
  *
- * Target: FreeBSD 15.0-RELEASE-p2 / GhostBSD 15.
+ * Target: FreeBSD 15.0-RELEASE.
  */
 
 #include <sys/param.h>

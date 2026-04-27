@@ -317,7 +317,7 @@ Out of scope:
 
 ## Testing
 
-Verification platform: GhostBSD on Oracle VirtualBox with a physical
+Verification platform: a FreeBSD VirtualBox VM with a physical
 USB mouse passed through to the guest, matching the platform used
 for B.4 verification.
 
@@ -336,7 +336,7 @@ Acceptance signals:
 
 No new automated test infrastructure is added at this stage; the
 verification protocol matches B.2 through B.4 (live dmesg
-inspection on a real GhostBSD VM with real or passed-through HID
+inspection on a real FreeBSD VM with real or passed-through HID
 devices).
 
 ## Notes

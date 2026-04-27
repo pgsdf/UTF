@@ -55,7 +55,7 @@ fi
 
 # Build the make(1) flag set. Empty string = pure swap build.
 # The [OS] tag in the banner helps in build logs when .config has been
-# moved between a FreeBSD and a GhostBSD host.
+# moved between hosts.
 if [ "$DRAWFS_DRM" = "true" ]; then
     DRM_MAKE_FLAGS="DRAWFS_DRM_ENABLED=1"
     DRM_BANNER="[DRM/KMS backend: ENABLED — requires drm-kmod headers] [${UTF_OS:-unknown}]"

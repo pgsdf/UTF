@@ -47,7 +47,7 @@ prompt for a future ADR, not a commitment.
 
 Two modes are defined:
 
-- **Base FreeBSD Mode**: stock FreeBSD with GhostBSD userland.
+- **Base FreeBSD Mode**: stock FreeBSD with stock userland.
   Nothing UTF-specific is loaded. Input flows through evdev,
   graphics through Xorg or Wayland, audio through pulseaudio or
   similar.

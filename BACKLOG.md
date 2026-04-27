@@ -71,8 +71,7 @@ changing.
    `#ifdef` in `drawfs.c`, `drawfs_drm.c`, and both Makefiles.
 6. `UTF_OS` detection is informational only. Any future use that
    branches build behavior on it must be justified by a concrete,
-   observable divergence between FreeBSD and GhostBSD, not a
-   speculation.
+   observable divergence on the FreeBSD target, not a speculation.
 7. UTF depends only on code written with UTF's guarantees in mind.
    External dependencies are either replaced by UTF-owned code or
    explicitly accepted as named platform-transport dependencies.
@@ -203,7 +202,7 @@ surface.
   one more write to verify recovery. No helper, no reading during
   accumulation, no fighting with coalescing.
 
-**Verification**: full 11/11 test suite green on GhostBSD 15.
+**Verification**: full 11/11 test suite green on the FreeBSD target.
 Backpressure test hits ENOSPC after 169 presents (= 169 × 48 byte
 replies + overhead ≈ `max_evq_bytes=8192`) and recovers cleanly
 after drain.
@@ -549,13 +548,15 @@ drivers cannot prevent `drawfs.ko` from loading.
 defaults to `"swap"`, is read/write, and round-trips both `"swap"` and
 `"drm"` as plain strings. Protects invariants 2.2, 3, and 4 above.
 
-### `[x]` B4.1–B4.4 — OS detection (FreeBSD vs GhostBSD)  *(Done)*
+### `[x]` B4.1–B4.4 OS detection  *(Done; simplified for FreeBSD-only target)*
 
 `scripts/detect-os.sh` exports `UTF_OS` and `UTF_OS_VERSION` by
-probing for `ghostbsd-version(1)`. `configure.sh` records them in
-`.config` and tailors the drm-kmod advisory. `build.sh` re-detects at
-build time and warns on a host mismatch. `install.sh` and
-`drawfs/build.sh` inherit or re-detect.
+checking `uname -s`. `configure.sh` records them in `.config` and
+tailors the drm-kmod advisory. `build.sh` re-detects at build time
+and warns on a host mismatch. `install.sh` and `drawfs/build.sh`
+inherit or re-detect. The original implementation distinguished
+multiple BSD variants; with PGSD-on-FreeBSD as the single target,
+the detection collapsed to FreeBSD-versus-unknown.
 
 ### `[x]` B5.1 — README "Graphics Backends" section  *(Done)*
 ### `[x]` B5.2 — Consolidated root `BACKLOG.md`  *(Done — this file)*
@@ -613,7 +614,7 @@ the swap-backed kernel path:
 1. **Pass 1** (validator): pure function
    `drawfs_req_surface_present_region_validate` in `drawfs_frame.c`
    enforcing the full error table from the design doc. 15 userspace
-   unit tests pass; kernel compile clean on GhostBSD 15.
+   unit tests pass; kernel compile clean on the FreeBSD target.
 2. **Pass 2** (dispatch + coalescing + sysctl): handler
    `drawfs_reply_surface_present_region` in `drawfs.c` with rect
    clamping, area-sum threshold coalescing, and event emission. New
@@ -624,7 +625,7 @@ the swap-backed kernel path:
    exercising 18 cases — 8 error-table rows, 9
    happy-path/clamping/coalescing scenarios (including both
    threshold extremes), and the N=1-full-surface equivalence
-   invariant. All pass on GhostBSD 15 target.
+   invariant. All pass on the FreeBSD target.
 
 Design choices documented in
 `drawfs/docs/DESIGN-surface-present-region.md`:
@@ -867,36 +868,33 @@ byte-level companion specs). Stage B in progress:
   11 input items, depth 2).
 - **B.4** interrupt handler registration via `hidbus_set_intr`
   and raw report hex logging per ADR 0009: landed, verified on a
-  physical USB mouse passed through to a GhostBSD VirtualBox VM
-  (GhostBSD host). Live reports flow with non-zero motion deltas
-  during use; `inputfs0: detached` on unplug; clean `kldunload`
-  with no dmesg warnings.
+  physical USB mouse passed through to a FreeBSD VirtualBox VM.
+  Live reports flow with non-zero motion deltas during use;
+  `inputfs0: detached` on unplug; clean `kldunload` with no dmesg
+  warnings.
 - **B.5** per-device role classification into softc bitmask
   per ADR 0004: not started.
 
 ADR 0006 was drafted against legacy `ukbd`/`ums` reference
-drivers that are not loaded on modern FreeBSD 15 / GhostBSD;
-it is superseded by ADR 0007 (hidbus attachment). The shipped
-code attaches at `hidbus` and works against the modern HID
-stack. ADR 0008 carries an errata section recording a
-`hid_start_parse` kindset correction made during B.3
-verification.
+drivers that are not loaded on modern FreeBSD 15; it is superseded
+by ADR 0007 (hidbus attachment). The shipped code attaches at
+`hidbus` and works against the modern HID stack. ADR 0008 carries
+an errata section recording a `hid_start_parse` kindset correction
+made during B.3 verification.
 
-**Verification environment note (B.5).** Running the B.5 VM
-verification pass on the GhostBSD VirtualBox VM has been observed
-to cause lockups on the bare-metal host running VirtualBox. The
-lockups affect the host (which does not have inputfs loaded), not
-the guest, and are triggered by the combination of USB pass-through
-plus driver unload activity in the guest. This is a host-and-
-VirtualBox-stack issue, not an inputfs issue. The VM mouse path
-was verified before the stability concern emerged (signals 1.1
-and 1.2 produced clean attach sequences and report streams on a
-Razer Viper passed through to the VM). The remaining B.5 signals
-(clean unload, keyboard classification) are verified on bare-metal
-GhostBSD, where the issue does not manifest. The verification
-protocol in `inputfs/docs/B5_VERIFICATION.md` documents this
-asymmetry. Future investigation of the VirtualBox host stability
-issue is out of scope for AD-1.
+**Verification environment note (B.5).** Bare-metal verification
+on stock FreeBSD is blocked by a kernel-configuration issue: stock
+FreeBSD compiles `hkbd` statically into the GENERIC kernel, so the
+ADR 0009 workflow of unloading competing drivers cannot succeed
+for the keyboard path. The PGSD kernel will omit `hkbd` (and the
+other competing HID drivers superseded by `inputfs`), at which
+point bare-metal verification becomes possible. Until then, the
+B.5 mouse path was verified earlier on a VirtualBox VM (signals
+1.1 and 1.2 produced clean attach sequences and report streams on
+a Razer Viper); the keyboard path classification code is
+structurally identical to the mouse path and is unverified pending
+the PGSD kernel groundwork. The verification protocol in
+`inputfs/docs/B5_VERIFICATION.md` documents the asymmetry.
 
 ### `[ ]` AD-2 — Retire semainputd  *(Open, Medium; depends: AD-1)*
 
