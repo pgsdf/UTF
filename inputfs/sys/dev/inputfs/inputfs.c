@@ -834,10 +834,16 @@ inputfs_events_open_file(struct thread *td)
 	printf("inputfs: opened events file %s (size=%lu bytes)\n",
 	    INPUTFS_EVENTS_PATH, (unsigned long)INPUTFS_EVENTS_SIZE);
 
-	/* Write the initial header so userspace can validate magic
-	 * and version even before the first event is published. */
+	/* Write the entire buffer (zero-initialized slots plus the
+	 * header) so the file is the correct total size from the
+	 * outset. Userspace consumers expect a 65,600-byte file
+	 * regardless of how many events have been published; if we
+	 * only wrote the header here, the file would grow as slots
+	 * were written via partial vn_rdwr calls and userspace
+	 * mmaps would span only the populated prefix. The one-time
+	 * 64 KB write to tmpfs is essentially free. */
 	(void)vn_rdwr(UIO_WRITE, inputfs_events_vp,
-	    inputfs_events_buf, (int)INPUTFS_EVENTS_HEADER_SIZE,
+	    inputfs_events_buf, (int)INPUTFS_EVENTS_SIZE,
 	    (off_t)0, UIO_SYSSPACE,
 	    IO_UNIT | IO_SYNC, NOCRED, NULL, NULL, td);
 }
