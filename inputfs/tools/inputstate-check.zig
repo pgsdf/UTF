@@ -130,17 +130,100 @@ fn snapshotEquals(a: input.StateSnapshot, b: input.StateSnapshot) bool {
     return true;
 }
 
+fn sourceRoleName(role: u8) []const u8 {
+    return switch (role) {
+        input.SOURCE_POINTER => "pointer",
+        input.SOURCE_KEYBOARD => "keyboard",
+        input.SOURCE_TOUCH => "touch",
+        input.SOURCE_PEN => "pen",
+        input.SOURCE_LIGHTING => "lighting",
+        input.SOURCE_DEVICE_LIFECYCLE => "lifecycle",
+        else => "?",
+    };
+}
+
+fn printEvent(ev: input.Event) void {
+    const role_str = sourceRoleName(ev.source_role);
+
+    // Decode the event type per source. This mirrors the layout
+    // documented in shared/INPUT_EVENTS.md "Event types and
+    // payload layouts".
+    if (ev.source_role == input.SOURCE_POINTER) {
+        const x = std.mem.readInt(i32, ev.payload[0..4], .little);
+        const y = std.mem.readInt(i32, ev.payload[4..8], .little);
+        switch (ev.event_type) {
+            1 => {
+                const dx = std.mem.readInt(i32, ev.payload[8..12], .little);
+                const dy = std.mem.readInt(i32, ev.payload[12..16], .little);
+                const buttons = std.mem.readInt(u32, ev.payload[16..20], .little);
+                writeOut("seq={d} ts={d} dev={d} {s}.motion x={d} y={d} dx={d} dy={d} buttons=0x{x}\n", .{
+                    ev.seq, ev.ts_ordering, ev.device_slot, role_str,
+                    x, y, dx, dy, buttons,
+                });
+            },
+            2 => {
+                const button = std.mem.readInt(u32, ev.payload[8..12], .little);
+                const buttons = std.mem.readInt(u32, ev.payload[12..16], .little);
+                writeOut("seq={d} ts={d} dev={d} {s}.button_down x={d} y={d} button=0x{x} buttons=0x{x}\n", .{
+                    ev.seq, ev.ts_ordering, ev.device_slot, role_str,
+                    x, y, button, buttons,
+                });
+            },
+            3 => {
+                const button = std.mem.readInt(u32, ev.payload[8..12], .little);
+                const buttons = std.mem.readInt(u32, ev.payload[12..16], .little);
+                writeOut("seq={d} ts={d} dev={d} {s}.button_up x={d} y={d} button=0x{x} buttons=0x{x}\n", .{
+                    ev.seq, ev.ts_ordering, ev.device_slot, role_str,
+                    x, y, button, buttons,
+                });
+            },
+            else => {
+                writeOut("seq={d} ts={d} dev={d} {s}.type{d} (unknown payload)\n", .{
+                    ev.seq, ev.ts_ordering, ev.device_slot, role_str, ev.event_type,
+                });
+            },
+        }
+    } else if (ev.source_role == input.SOURCE_DEVICE_LIFECYCLE) {
+        switch (ev.event_type) {
+            1 => {
+                const roles = std.mem.readInt(u32, ev.payload[0..4], .little);
+                writeOut("seq={d} ts={d} dev={d} lifecycle.attach roles=0x{x}\n", .{
+                    ev.seq, ev.ts_ordering, ev.device_slot, roles,
+                });
+            },
+            2 => {
+                writeOut("seq={d} ts={d} dev={d} lifecycle.detach\n", .{
+                    ev.seq, ev.ts_ordering, ev.device_slot,
+                });
+            },
+            else => {
+                writeOut("seq={d} ts={d} dev={d} lifecycle.type{d} (unknown payload)\n", .{
+                    ev.seq, ev.ts_ordering, ev.device_slot, ev.event_type,
+                });
+            },
+        }
+    } else {
+        writeOut("seq={d} ts={d} dev={d} {s}.type{d} (payload not decoded)\n", .{
+            ev.seq, ev.ts_ordering, ev.device_slot, role_str, ev.event_type,
+        });
+    }
+}
+
 fn parseArgs(args: [][:0]u8) struct {
     watch: bool,
     interval_ms: u64,
+    events: bool,
 } {
     var watch = false;
     var interval_ms: u64 = 250;
+    var events = false;
     var i: usize = 1; // skip argv[0]
     while (i < args.len) : (i += 1) {
         const a = args[i];
         if (std.mem.eql(u8, a, "--watch")) {
             watch = true;
+        } else if (std.mem.eql(u8, a, "--events")) {
+            events = true;
         } else if (std.mem.eql(u8, a, "--interval-ms")) {
             i += 1;
             if (i >= args.len) {
@@ -157,12 +240,14 @@ fn parseArgs(args: [][:0]u8) struct {
             }
         } else if (std.mem.eql(u8, a, "--help") or std.mem.eql(u8, a, "-h")) {
             writeOut(
-                \\inputstate-check -- read /var/run/sema/input/state and print contents
+                \\inputstate-check -- read inputfs publication regions
                 \\
                 \\Usage:
-                \\  inputstate-check              one-shot read
-                \\  inputstate-check --watch      loop until interrupted
-                \\  inputstate-check --watch --interval-ms <ms>   tune poll rate (default 250)
+                \\  inputstate-check                    one-shot state region read
+                \\  inputstate-check --watch            loop, print state changes
+                \\  inputstate-check --events           drain event ring once
+                \\  inputstate-check --events --watch   drain ring continuously
+                \\  inputstate-check --interval-ms <ms> poll rate for --watch (default 250)
                 \\
             , .{});
             std.process.exit(0);
@@ -171,7 +256,7 @@ fn parseArgs(args: [][:0]u8) struct {
             std.process.exit(2);
         }
     }
-    return .{ .watch = watch, .interval_ms = interval_ms };
+    return .{ .watch = watch, .interval_ms = interval_ms, .events = events };
 }
 
 pub fn main() !void {
@@ -182,6 +267,11 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
     const opts = parseArgs(args);
+
+    if (opts.events) {
+        try runEvents(opts.watch, opts.interval_ms);
+        return;
+    }
 
     const reader = input.StateReader.init(input.STATE_PATH);
     defer reader.deinit();
@@ -208,5 +298,42 @@ pub fn main() !void {
             dumpSnapshot(snap, "changed");
             prev = snap;
         }
+    }
+}
+
+fn runEvents(watch: bool, interval_ms: u64) !void {
+    var reader = input.EventRingReader.init(input.EVENTS_PATH);
+    defer reader.deinit();
+
+    if (!reader.isValid()) {
+        writeErr("inputstate-check: events ring not valid at {s}\n", .{input.EVENTS_PATH});
+        writeErr("  (file absent, wrong magic/version, or ring_valid=0)\n", .{});
+        std.process.exit(1);
+    }
+
+    var buf: [256]input.Event = undefined;
+
+    // First drain everything currently in the ring.
+    const initial = try reader.drain(&buf);
+    if (initial.overrun) {
+        writeOut("(ring overrun: skipped to current earliest_seq)\n", .{});
+    }
+    if (initial.events_consumed == 0) {
+        writeOut("(no events)\n", .{});
+    } else {
+        for (buf[0..initial.events_consumed]) |ev| printEvent(ev);
+    }
+
+    if (!watch) return;
+
+    writeOut("\nwatching (interval={d} ms; Ctrl-C to stop)\n", .{interval_ms});
+
+    while (true) {
+        std.Thread.sleep(interval_ms * std.time.ns_per_ms);
+        const result = try reader.drain(&buf);
+        if (result.overrun) {
+            writeOut("(ring overrun)\n", .{});
+        }
+        for (buf[0..result.events_consumed]) |ev| printEvent(ev);
     }
 }

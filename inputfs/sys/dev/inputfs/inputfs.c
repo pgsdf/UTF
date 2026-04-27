@@ -1,35 +1,62 @@
 /*
  * inputfs: UTF native input substrate kernel module
  *
- * Stage C.2: state region publication.
- * Builds on B.5 (per-device role classification) by publishing
- * the inputfs state region at /var/run/sema/input/state per
- * the byte layout in shared/INPUT_STATE.md and the regions
- * decision in inputfs/docs/adr/0002-shared-memory-regions.md.
+ * Stage C.3: event ring publication, layered on Stage C.2's
+ * state region publication. The kernel publishes two shared-
+ * memory regions under /var/run/sema/input/:
+ *
+ *   /var/run/sema/input/state   per shared/INPUT_STATE.md
+ *   /var/run/sema/input/events  per shared/INPUT_EVENTS.md
+ *
+ * State is the materialised view (seqlock semantics, full-buffer
+ * sync per dirty cycle). Events is an ordered delta stream
+ * (per-slot seq for the lock-free reader protocol, partial
+ * writes per event slot plus header).
  *
  * Architecture (Option B from BACKLOG Stage C kernel-side notes):
  *
  *   1. The module maintains an 11,328-byte live state buffer
- *      in kernel memory (inputfs_state_buf).
+ *      and a 65,600-byte live event ring buffer in kernel memory.
  *
- *   2. The interrupt path (inputfs_intr) updates the live
+ *   2. The interrupt path (inputfs_intr) updates the live state
  *      buffer in place under inputfs_state_mtx (MTX_SPIN, safe
- *      from interrupt context). It increments the seqlock
- *      pre/post each batch update.
+ *      from interrupt context) and publishes corresponding events
+ *      to the live ring buffer using inputfs_events_publish.
+ *      State updates increment a seqlock pre/post each batch;
+ *      events use the per-slot seq protocol from INPUT_EVENTS.md.
  *
- *   3. After updating, inputfs_intr sets inputfs_state_dirty
- *      and wakes the kthread worker.
+ *   3. After updating, inputfs_intr sets the appropriate dirty
+ *      flag (inputfs_state_dirty, inputfs_events_dirty, or both)
+ *      and wakes the kthread worker. The wakeup channel is
+ *      &inputfs_state_dirty (used as a unified channel for both).
  *
- *   4. The kthread worker (inputfs_state_worker) sleeps on
- *      inputfs_state_dirty becoming true. When woken, it
- *      copies the entire live buffer to /var/run/sema/input/state
- *      via vn_rdwr from kthread context (vnode I/O is illegal
- *      from interrupt context per FreeBSD's locking rules).
+ *   4. The kthread worker (inputfs_state_worker) sleeps on the
+ *      unified channel. When woken, it syncs whichever buffers
+ *      are dirty: full-buffer write for state (~11 KB), partial
+ *      write for events (one slot at 64 bytes plus a header
+ *      update of 64 bytes). vn_rdwr is called from kthread
+ *      context (illegal from interrupt context per FreeBSD's
+ *      locking rules).
  *
- *   5. Userspace consumers mmap the file shared and see updates
- *      via shared/src/input.zig's StateReader. The seqlock
- *      retry loop on the reader side handles mid-write
- *      observations during the kthread's vn_rdwr.
+ *   5. Userspace consumers mmap the file(s) shared and see updates
+ *      via shared/src/input.zig's StateReader and
+ *      EventRingReader. The seqlock retry loop on the state
+ *      reader handles mid-write observations during the kthread's
+ *      vn_rdwr; the events ring's per-slot seq protocol does the
+ *      same for ring slots.
+ *
+ * Stage C.3 emits a small subset of the event types specified in
+ * INPUT_EVENTS.md:
+ *
+ *   pointer.motion              from boot-protocol mouse reports
+ *   pointer.button_down/_up     from button-bit transitions
+ *   device_lifecycle.attach     from inputfs_attach
+ *   device_lifecycle.detach     from inputfs_detach
+ *
+ * Keyboard, touch, and pen events are deferred to Stage C.3.x or
+ * Stage D (descriptor-driven parsing). ts_sync is left zero;
+ * chronofs integration is a follow-on (see ADR 0011 measurement
+ * substrate).
  *
  * Lock order: sc_mtx (MTX_DEF, per-softc) before
  * inputfs_state_mtx (MTX_SPIN, module-global). Acquire in this
@@ -84,6 +111,9 @@
 #include <sys/uio.h>
 #include <sys/syscallsubr.h>
 #include <sys/endian.h>
+#include <sys/time.h>
+
+#include <machine/atomic.h>
 
 #include <dev/hid/hid.h>
 #include <dev/hid/hidbus.h>
@@ -152,6 +182,63 @@ MALLOC_DEFINE(M_INPUTFS, "inputfs", "inputfs report buffers");
 #define INPUTFS_NO_STATE_SLOT   0xFFu
 
 /*
+ * Event ring constants (Stage C.3, per shared/INPUT_EVENTS.md).
+ * Single-producer multiple-consumer ring with per-slot seq for the
+ * lock-free reader protocol. Writer-side serialization is via the
+ * shared inputfs_state_mtx (same lock that protects state updates).
+ */
+#define INPUTFS_EVENTS_PATH     "/var/run/sema/input/events"
+
+#define INPUTFS_EVENTS_MAGIC    0x494E5645u  /* "INVE" big-endian mnemonic */
+#define INPUTFS_EVENTS_VERSION  1u
+#define INPUTFS_EVENTS_HEADER_SIZE  64u
+#define INPUTFS_EVENTS_SLOT_SIZE    64u
+#define INPUTFS_EVENTS_SLOT_COUNT   1024u
+#define INPUTFS_EVENTS_SIZE     (INPUTFS_EVENTS_HEADER_SIZE + \
+    INPUTFS_EVENTS_SLOT_COUNT * INPUTFS_EVENTS_SLOT_SIZE)
+
+/* Events ring header field offsets. */
+#define EV_OFF_MAGIC            0
+#define EV_OFF_VERSION          4
+#define EV_OFF_VALID            5
+#define EV_OFF_EVENT_SIZE       6
+#define EV_OFF_SLOT_COUNT       8
+#define EV_OFF_WRITER_SEQ       16
+#define EV_OFF_EARLIEST_SEQ     24
+
+/* Event slot field offsets (relative to slot start). */
+#define EV_SLOT_OFF_SEQ         0
+#define EV_SLOT_OFF_TS_ORDERING 8
+#define EV_SLOT_OFF_TS_SYNC     16
+#define EV_SLOT_OFF_DEVICE_SLOT 24
+#define EV_SLOT_OFF_SOURCE_ROLE 26
+#define EV_SLOT_OFF_EVENT_TYPE  27
+#define EV_SLOT_OFF_FLAGS       28
+#define EV_SLOT_OFF_PAYLOAD     32
+
+/* Source role values (per INPUT_EVENTS.md). */
+#define INPUTFS_SOURCE_POINTER          1u
+#define INPUTFS_SOURCE_KEYBOARD         2u
+#define INPUTFS_SOURCE_TOUCH            3u
+#define INPUTFS_SOURCE_PEN              4u
+#define INPUTFS_SOURCE_LIGHTING         5u
+#define INPUTFS_SOURCE_DEVICE_LIFECYCLE 6u
+
+/* Event type values per source. Stage C.3 emits a small subset. */
+#define INPUTFS_POINTER_MOTION          1u
+#define INPUTFS_POINTER_BUTTON_DOWN     2u
+#define INPUTFS_POINTER_BUTTON_UP       3u
+#define INPUTFS_LIFECYCLE_ATTACH        1u
+#define INPUTFS_LIFECYCLE_DETACH        2u
+
+/* Flag bits. */
+#define INPUTFS_FLAG_SYNTHESISED        (1u << 0)
+#define INPUTFS_FLAG_COALESCED          (1u << 1)
+
+/* Synthetic device sentinel for events not associated with a device. */
+#define INPUTFS_SYNTHETIC_DEVICE        0xFFFFu
+
+/*
  * Per-device softc. Stage B.4 added interrupt buffer fields;
  * Stage B.5 added the per-device role bitmask;
  * Stage C.2 adds the state-region slot index assigned at attach.
@@ -206,6 +293,20 @@ static uint32_t			 inputfs_state_slot_used; /* bitmap, 32 bits for 32 slots */
 static int			 inputfs_state_dirty;
 
 static struct vnode		*inputfs_state_vp;
+
+/*
+ * Event ring module-global state (Stage C.3). The ring lives in
+ * a separate module-global buffer; inputfs_events_writer_seq is
+ * the running sequence counter (header field maintained by
+ * inputfs_events_publish). inputfs_events_synced tracks the
+ * highest sequence number successfully written to disk by the
+ * kthread, enabling partial writes (slot + header per sync).
+ */
+static uint8_t			*inputfs_events_buf;
+static uint64_t			 inputfs_events_writer_seq;
+static uint64_t			 inputfs_events_synced;
+static int			 inputfs_events_dirty;
+static struct vnode		*inputfs_events_vp;
 
 static struct proc		*inputfs_kthread_proc;
 static int			 inputfs_kthread_run;
@@ -585,16 +686,256 @@ inputfs_state_sync_to_file(struct thread *td)
 }
 
 /*
- * inputfs_state_worker -- the kthread that syncs the live
- * buffer to the file. Sleeps on inputfs_state_dirty becoming
- * true; wakes up, clears the flag, performs one sync, sleeps
- * again. Exits when inputfs_kthread_run is cleared at unload.
+ * inputfs_events_init_buf -- initialize the live events ring
+ * buffer with the static header fields. Called once at module
+ * load. earliest_seq starts at 1 per INPUT_EVENTS.md lifecycle:
+ * "writer_seq=0, earliest_seq=1" means "no events yet, the next
+ * event will be seq=1".
+ */
+static void
+inputfs_events_init_buf(uint8_t *buf)
+{
+	memset(buf, 0, INPUTFS_EVENTS_SIZE);
+	inputfs_put_u32le(buf, EV_OFF_MAGIC, INPUTFS_EVENTS_MAGIC);
+	inputfs_put_u8(buf, EV_OFF_VERSION, (uint8_t)INPUTFS_EVENTS_VERSION);
+	inputfs_put_u8(buf, EV_OFF_VALID, 0);
+	inputfs_put_u16le(buf, EV_OFF_EVENT_SIZE,
+	    (uint16_t)INPUTFS_EVENTS_SLOT_SIZE);
+	inputfs_put_u32le(buf, EV_OFF_SLOT_COUNT, INPUTFS_EVENTS_SLOT_COUNT);
+	inputfs_put_u64le(buf, EV_OFF_WRITER_SEQ, 0);
+	inputfs_put_u64le(buf, EV_OFF_EARLIEST_SEQ, 1);
+}
+
+/*
+ * inputfs_events_publish -- publish one event to the live ring
+ * buffer. Caller holds inputfs_state_mtx (the same spin mutex
+ * that protects state updates; reused for writer-side
+ * serialization of the ring).
  *
- * Sync rate cap: at most one sync per (hz / INPUTFS_SYNC_HZ)
+ * Implements the writer protocol from INPUT_EVENTS.md
+ * "Concurrency model":
+ *   1. Compute next slot index
+ *   2. Atomic store seq=0 to invalidate the slot for any
+ *      concurrent reader.
+ *   3. Write all body fields except seq.
+ *   4. Atomic store the new seq, publishing the event.
+ *   5. Advance writer_seq (header field) atomically.
+ *   6. If wrapped, advance earliest_seq.
+ *
+ * The kthread worker sees inputfs_events_dirty and syncs the
+ * affected slots and header to disk.
+ */
+static void
+inputfs_events_publish(uint8_t source_role, uint8_t event_type,
+    uint16_t device_slot, uint32_t flags,
+    const uint8_t *payload, size_t payload_len)
+{
+	uint64_t new_seq;
+	size_t slot_idx;
+	size_t slot_base;
+	struct timespec ts;
+
+	new_seq = inputfs_events_writer_seq + 1;
+	slot_idx = (size_t)(new_seq & (INPUTFS_EVENTS_SLOT_COUNT - 1));
+	slot_base = INPUTFS_EVENTS_HEADER_SIZE +
+	    slot_idx * INPUTFS_EVENTS_SLOT_SIZE;
+
+	/* Step 1+2: atomic-store seq=0 first. The seq field is the
+	 * synchronization point for readers; setting it to 0 makes
+	 * any concurrent reader's seq1==expected check fail and
+	 * causes them to retry. */
+	atomic_store_rel_64(
+	    (volatile uint64_t *)(inputfs_events_buf + slot_base + EV_SLOT_OFF_SEQ),
+	    0);
+
+	/* Step 3: write all body fields. */
+	nanouptime(&ts);
+	inputfs_put_u64le(inputfs_events_buf,
+	    slot_base + EV_SLOT_OFF_TS_ORDERING,
+	    (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec);
+	inputfs_put_u64le(inputfs_events_buf,
+	    slot_base + EV_SLOT_OFF_TS_SYNC, 0); /* chronofs deferred */
+	inputfs_put_u16le(inputfs_events_buf,
+	    slot_base + EV_SLOT_OFF_DEVICE_SLOT, device_slot);
+	inputfs_put_u8(inputfs_events_buf,
+	    slot_base + EV_SLOT_OFF_SOURCE_ROLE, source_role);
+	inputfs_put_u8(inputfs_events_buf,
+	    slot_base + EV_SLOT_OFF_EVENT_TYPE, event_type);
+	inputfs_put_u32le(inputfs_events_buf,
+	    slot_base + EV_SLOT_OFF_FLAGS, flags);
+
+	/* Payload: zero the 32-byte field, then copy what was given. */
+	memset(inputfs_events_buf + slot_base + EV_SLOT_OFF_PAYLOAD, 0, 32);
+	if (payload != NULL && payload_len > 0) {
+		size_t copy = payload_len > 32 ? 32 : payload_len;
+		memcpy(inputfs_events_buf + slot_base + EV_SLOT_OFF_PAYLOAD,
+		    payload, copy);
+	}
+
+	/* Step 4: atomic store seq with the new sequence number.
+	 * After this, readers see the slot as containing event new_seq. */
+	atomic_store_rel_64(
+	    (volatile uint64_t *)(inputfs_events_buf + slot_base + EV_SLOT_OFF_SEQ),
+	    new_seq);
+
+	/* Step 5: advance writer_seq. */
+	inputfs_events_writer_seq = new_seq;
+	atomic_store_rel_64(
+	    (volatile uint64_t *)(inputfs_events_buf + EV_OFF_WRITER_SEQ),
+	    new_seq);
+
+	/* Step 6: if the ring has wrapped, advance earliest_seq.
+	 * After EVENTS_SLOT_COUNT events, slot 0 is being overwritten;
+	 * earliest visible sequence is new_seq - SLOT_COUNT + 1. */
+	if (new_seq > INPUTFS_EVENTS_SLOT_COUNT) {
+		uint64_t new_earliest = new_seq - INPUTFS_EVENTS_SLOT_COUNT + 1;
+		atomic_store_rel_64(
+		    (volatile uint64_t *)(inputfs_events_buf + EV_OFF_EARLIEST_SEQ),
+		    new_earliest);
+	}
+
+	/* Mark dirty and wake the kthread. The kthread sleeps on
+	 * &inputfs_state_dirty regardless of which buffer is dirty;
+	 * we use that pointer as a unified wakeup channel for both
+	 * state and event updates. */
+	inputfs_events_dirty = 1;
+	wakeup(&inputfs_state_dirty);
+}
+
+/*
+ * inputfs_events_open_file -- open the events ring file for
+ * writing. Same pattern as inputfs_state_open_file. The state
+ * file's parent directory creation already ran by the time we
+ * reach here, so we skip the kern_mkdirat calls.
+ */
+static void
+inputfs_events_open_file(struct thread *td)
+{
+	struct nameidata nd;
+	int error;
+
+	{
+		int flags = FWRITE | O_CREAT | O_TRUNC;
+		NDINIT(&nd, LOOKUP, FOLLOW, UIO_SYSSPACE,
+		    __DECONST(char *, INPUTFS_EVENTS_PATH));
+		error = vn_open(&nd, &flags, 0644, NULL);
+	}
+	if (error != 0) {
+		printf("inputfs: vn_open(%s) failed: %d "
+		    "(continuing without events file sync)\n",
+		    INPUTFS_EVENTS_PATH, error);
+		inputfs_events_vp = NULL;
+		return;
+	}
+
+	NDFREE_PNBUF(&nd);
+	inputfs_events_vp = nd.ni_vp;
+	VOP_UNLOCK(inputfs_events_vp);
+	printf("inputfs: opened events file %s (size=%lu bytes)\n",
+	    INPUTFS_EVENTS_PATH, (unsigned long)INPUTFS_EVENTS_SIZE);
+
+	/* Write the initial header so userspace can validate magic
+	 * and version even before the first event is published. */
+	(void)vn_rdwr(UIO_WRITE, inputfs_events_vp,
+	    inputfs_events_buf, (int)INPUTFS_EVENTS_HEADER_SIZE,
+	    (off_t)0, UIO_SYSSPACE,
+	    IO_UNIT | IO_SYNC, NOCRED, NULL, NULL, td);
+}
+
+static void
+inputfs_events_close_file(struct thread *td)
+{
+	if (inputfs_events_vp == NULL)
+		return;
+	(void)vn_close(inputfs_events_vp, FWRITE, NOCRED, td);
+	inputfs_events_vp = NULL;
+}
+
+/*
+ * inputfs_events_sync_to_file -- write newly-published events
+ * to disk via partial vn_rdwr calls.
+ *
+ * Strategy: write the header (writer_seq, earliest_seq update)
+ * and any slots between inputfs_events_synced+1 and the current
+ * writer_seq. For typical 1-event-per-sync this is two short
+ * writes (one slot + the header) totalling 128 bytes. For burst
+ * loads with many events between syncs, it scales linearly with
+ * the number of new events.
+ *
+ * The header MUST be written last so userspace readers do not
+ * see a writer_seq advance before the corresponding slot is
+ * actually populated on disk.
+ */
+static void
+inputfs_events_sync_to_file(struct thread *td)
+{
+	uint64_t synced;
+	uint64_t latest;
+	int error;
+
+	if (inputfs_events_vp == NULL)
+		return;
+
+	synced = inputfs_events_synced;
+	latest = inputfs_events_writer_seq;
+
+	if (synced >= latest)
+		return; /* nothing new to write */
+
+	/* Cap how many slots we write per call so a sustained burst
+	 * doesn't monopolise the kthread. The cap is the full ring;
+	 * if more events accumulated than the ring holds, we'll write
+	 * the whole ring (one or two orbits) and the next iteration
+	 * picks up any further accumulation. */
+	uint64_t to_write = latest - synced;
+	if (to_write > INPUTFS_EVENTS_SLOT_COUNT)
+		to_write = INPUTFS_EVENTS_SLOT_COUNT;
+
+	/* Write the affected slots one at a time. Adjacent slots
+	 * could be coalesced, but the typical case is to_write=1
+	 * and the simpler code wins. */
+	for (uint64_t i = 0; i < to_write; i++) {
+		uint64_t seq = synced + 1 + i;
+		size_t slot_idx = (size_t)(seq & (INPUTFS_EVENTS_SLOT_COUNT - 1));
+		off_t off = (off_t)(INPUTFS_EVENTS_HEADER_SIZE +
+		    slot_idx * INPUTFS_EVENTS_SLOT_SIZE);
+
+		error = vn_rdwr(UIO_WRITE, inputfs_events_vp,
+		    inputfs_events_buf + off,
+		    (int)INPUTFS_EVENTS_SLOT_SIZE,
+		    off, UIO_SYSSPACE,
+		    IO_UNIT | IO_SYNC, NOCRED, NULL, NULL, td);
+		if (error != 0) {
+			printf("inputfs: events slot vn_rdwr failed at seq=%lu: %d\n",
+			    (unsigned long)seq, error);
+			return;
+		}
+	}
+
+	/* Header last: writer_seq and earliest_seq updates become
+	 * visible on disk after the slots they advertise. */
+	error = vn_rdwr(UIO_WRITE, inputfs_events_vp,
+	    inputfs_events_buf, (int)INPUTFS_EVENTS_HEADER_SIZE,
+	    (off_t)0, UIO_SYSSPACE,
+	    IO_UNIT | IO_SYNC, NOCRED, NULL, NULL, td);
+	if (error != 0) {
+		printf("inputfs: events header vn_rdwr failed: %d\n", error);
+		return;
+	}
+
+	inputfs_events_synced = synced + to_write;
+}
+
+/*
+ * inputfs_state_worker -- the kthread that syncs the live
+ * buffers to disk. Sleeps until either inputfs_state_dirty or
+ * inputfs_events_dirty becomes true; on wake, clears both
+ * flags and performs whichever syncs are needed.
+ *
+ * Sync rate cap: at most one sync iteration per (hz / INPUTFS_SYNC_HZ)
  * ticks. With INPUTFS_SYNC_HZ = 1000 and the FreeBSD default
- * hz=1000, that is one tick (1 ms), which is the granularity
- * of pause_sbt. This caps disk write rate at ~1 kHz even under
- * a sustained input flood.
+ * hz=1000, that is one tick (1 ms). Both files share the same
+ * cap, so a single sync iteration may write both.
  */
 #define INPUTFS_SYNC_HZ 1000
 
@@ -603,6 +944,7 @@ inputfs_state_worker(void *arg)
 {
 	struct thread *td = curthread;
 	int min_ticks;
+	int do_state, do_events;
 
 	min_ticks = hz / INPUTFS_SYNC_HZ;
 	if (min_ticks < 1)
@@ -611,30 +953,42 @@ inputfs_state_worker(void *arg)
 	(void)arg;
 
 	inputfs_state_open_file(td);
+	inputfs_events_open_file(td);
 
 	for (;;) {
 		mtx_lock_spin(&inputfs_state_mtx);
-		while (!inputfs_state_dirty && inputfs_kthread_run) {
-			/* msleep_spin drops and reacquires the spin
-			 * mutex, allowing other threads to update
-			 * the live buffer while we sleep. */
+		while (!inputfs_state_dirty && !inputfs_events_dirty &&
+		    inputfs_kthread_run) {
+			/* Sleep on &inputfs_state_dirty as the unified
+			 * wakeup channel: both state updates and event
+			 * publications wakeup() on this same pointer.
+			 * msleep_spin drops and reacquires the spin
+			 * mutex, allowing the interrupt path to update
+			 * the live buffers while we sleep. */
 			msleep_spin(&inputfs_state_dirty,
 			    &inputfs_state_mtx,
-			    "ifsstate", 0);
+			    "ifssync", 0);
 		}
 		if (!inputfs_kthread_run) {
 			mtx_unlock_spin(&inputfs_state_mtx);
 			break;
 		}
+		do_state = inputfs_state_dirty;
+		do_events = inputfs_events_dirty;
 		inputfs_state_dirty = 0;
+		inputfs_events_dirty = 0;
 		mtx_unlock_spin(&inputfs_state_mtx);
 
-		inputfs_state_sync_to_file(td);
+		if (do_state)
+			inputfs_state_sync_to_file(td);
+		if (do_events)
+			inputfs_events_sync_to_file(td);
 
-		/* Rate cap: ensure at least min_ticks between syncs. */
+		/* Rate cap: ensure at least min_ticks between iterations. */
 		pause("ifsrate", min_ticks);
 	}
 
+	inputfs_events_close_file(td);
 	inputfs_state_close_file(td);
 
 	/* Signal that the kthread has finished cleanly. */
@@ -768,18 +1122,66 @@ inputfs_intr(void *context, void *data, hid_size_t len)
 	 * layout assumed for INPUTFS_ROLE_POINTER devices. This is
 	 * a starting point; richer descriptor-driven parsing is a
 	 * follow-on within Stage C.
+	 *
+	 * Stage C.3: emit pointer.motion event after the state
+	 * update; if any button bit transitioned, emit
+	 * pointer.button_down or pointer.button_up for each
+	 * transition.
 	 */
 	if ((sc->sc_roles & INPUTFS_ROLE_POINTER) != 0 && copy_len >= 3) {
 		int32_t dx = (int32_t)(int8_t)bytes[1];
 		int32_t dy = (int32_t)(int8_t)bytes[2];
 		uint32_t buttons = (uint32_t)bytes[0] & 0x07u; /* L,R,M */
+		uint32_t prev_buttons;
+		int32_t new_x, new_y;
+		uint8_t payload[32];
+		uint16_t dev_slot;
 
 		mtx_lock_spin(&inputfs_state_mtx);
+		prev_buttons = inputfs_get_u32le(inputfs_state_buf,
+		    OFF_PTR_BUTTONS);
 		inputfs_state_seqlock_begin();
 		inputfs_state_update_pointer(dx, dy, buttons);
 		inputfs_state_advance_seq();
 		inputfs_state_seqlock_end();
 		inputfs_state_mark_dirty();
+
+		new_x = inputfs_get_i32le(inputfs_state_buf, OFF_PTR_X);
+		new_y = inputfs_get_i32le(inputfs_state_buf, OFF_PTR_Y);
+
+		dev_slot = (sc->sc_state_slot == INPUTFS_NO_STATE_SLOT)
+		    ? INPUTFS_SYNTHETIC_DEVICE
+		    : (uint16_t)sc->sc_state_slot;
+
+		/* pointer.motion: x, y, dx, dy, buttons. */
+		memset(payload, 0, sizeof(payload));
+		inputfs_put_i32le(payload, 0, new_x);
+		inputfs_put_i32le(payload, 4, new_y);
+		inputfs_put_i32le(payload, 8, dx);
+		inputfs_put_i32le(payload, 12, dy);
+		inputfs_put_u32le(payload, 16, buttons);
+		inputfs_events_publish(INPUTFS_SOURCE_POINTER,
+		    INPUTFS_POINTER_MOTION,
+		    dev_slot, 0, payload, 20);
+
+		/* Button transitions: emit one event per changed bit. */
+		uint32_t changed = prev_buttons ^ buttons;
+		for (uint32_t bit = 0; bit < 3; bit++) {
+			uint32_t mask = 1u << bit;
+			if ((changed & mask) == 0)
+				continue;
+			memset(payload, 0, sizeof(payload));
+			inputfs_put_i32le(payload, 0, new_x);
+			inputfs_put_i32le(payload, 4, new_y);
+			inputfs_put_u32le(payload, 8, mask);
+			inputfs_put_u32le(payload, 12, buttons);
+			inputfs_events_publish(INPUTFS_SOURCE_POINTER,
+			    (buttons & mask) != 0
+			        ? INPUTFS_POINTER_BUTTON_DOWN
+			        : INPUTFS_POINTER_BUTTON_UP,
+			    dev_slot, 0, payload, 16);
+		}
+
 		mtx_unlock_spin(&inputfs_state_mtx);
 	}
 }
@@ -989,6 +1391,8 @@ inputfs_attach(device_t dev)
 		sc->sc_state_slot = slot;
 
 		if (slot != INPUTFS_NO_STATE_SLOT) {
+			uint8_t payload[32];
+
 			inputfs_state_seqlock_begin();
 			inputfs_state_put_device(slot, dev, sc->sc_roles);
 			inputfs_put_u16le(inputfs_state_buf,
@@ -1002,6 +1406,15 @@ inputfs_attach(device_t dev)
 			 * idempotent on it. */
 			inputfs_put_u8(inputfs_state_buf, OFF_VALID, 1);
 			inputfs_state_mark_dirty();
+
+			/* Stage C.3: emit device_lifecycle.device_attach
+			 * event. Payload is a single u32: the roles
+			 * bitmask of the new device. */
+			memset(payload, 0, sizeof(payload));
+			inputfs_put_u32le(payload, 0, (uint32_t)sc->sc_roles);
+			inputfs_events_publish(INPUTFS_SOURCE_DEVICE_LIFECYCLE,
+			    INPUTFS_LIFECYCLE_ATTACH,
+			    (uint16_t)slot, 0, payload, 4);
 
 			mtx_unlock_spin(&inputfs_state_mtx);
 			mtx_unlock(&sc->sc_mtx);
@@ -1033,6 +1446,9 @@ inputfs_detach(device_t dev)
 
 	/*
 	 * Stage C.2: clear the device's state-region slot.
+	 * Stage C.3: emit device_lifecycle.device_detach event
+	 * before clearing the slot, so the event still references
+	 * the slot index of the departing device.
 	 */
 	if (inputfs_state_buf != NULL &&
 	    sc->sc_state_slot != INPUTFS_NO_STATE_SLOT) {
@@ -1040,6 +1456,11 @@ inputfs_detach(device_t dev)
 
 		mtx_lock(&sc->sc_mtx);
 		mtx_lock_spin(&inputfs_state_mtx);
+
+		/* Emit detach event first; payload is empty. */
+		inputfs_events_publish(INPUTFS_SOURCE_DEVICE_LIFECYCLE,
+		    INPUTFS_LIFECYCLE_DETACH,
+		    (uint16_t)slot, 0, NULL, 0);
 
 		inputfs_state_seqlock_begin();
 		inputfs_state_clear_device(slot);
@@ -1081,17 +1502,25 @@ inputfs_modevent(module_t mod, int what, void *arg)
 
 	switch (what) {
 	case MOD_LOAD:
-		printf("inputfs: Stage C.2 loading "
-		    "(state region publication via vnode-backed sync; "
-		    "no event ring, no userspace event delivery)\n");
+		printf("inputfs: Stage C.3 loading "
+		    "(state region and event ring publication via "
+		    "vnode-backed sync; no userspace event delivery yet)\n");
 
-		/* Allocate the live buffer. */
+		/* Allocate the state region live buffer. */
 		inputfs_state_buf = malloc(INPUTFS_STATE_SIZE,
 		    M_INPUTFS, M_WAITOK | M_ZERO);
 		inputfs_state_init_buf(inputfs_state_buf);
 		inputfs_state_seq = 0;
 		inputfs_state_slot_used = 0;
 		inputfs_state_dirty = 0;
+
+		/* Allocate the event ring live buffer. */
+		inputfs_events_buf = malloc(INPUTFS_EVENTS_SIZE,
+		    M_INPUTFS, M_WAITOK | M_ZERO);
+		inputfs_events_init_buf(inputfs_events_buf);
+		inputfs_events_writer_seq = 0;
+		inputfs_events_synced = 0;
+		inputfs_events_dirty = 0;
 
 		/* Initialize the spin mutex used by the interrupt
 		 * path and the kthread worker. */
@@ -1106,14 +1535,24 @@ inputfs_modevent(module_t mod, int what, void *arg)
 		if (error != 0) {
 			printf("inputfs: kproc_create failed: %d\n", error);
 			mtx_destroy(&inputfs_state_mtx);
+			free(inputfs_events_buf, M_INPUTFS);
+			inputfs_events_buf = NULL;
 			free(inputfs_state_buf, M_INPUTFS);
 			inputfs_state_buf = NULL;
 			return (error);
 		}
 
+		/* Mark events ring valid; the state region is marked
+		 * valid by the first attach (state_valid stays at 0
+		 * until then per the spec). The events ring has no
+		 * such "wait for first device" condition; it goes
+		 * live as soon as the file is open. */
+		inputfs_put_u8(inputfs_events_buf, EV_OFF_VALID, 1);
+
 		printf("inputfs: state region buffer ready (%lu bytes), "
-		    "kthread started\n",
-		    (unsigned long)INPUTFS_STATE_SIZE);
+		    "events ring buffer ready (%lu bytes), kthread started\n",
+		    (unsigned long)INPUTFS_STATE_SIZE,
+		    (unsigned long)INPUTFS_EVENTS_SIZE);
 		return (0);
 
 	case MOD_UNLOAD:
@@ -1130,6 +1569,10 @@ inputfs_modevent(module_t mod, int what, void *arg)
 
 		mtx_destroy(&inputfs_state_mtx);
 
+		if (inputfs_events_buf != NULL) {
+			free(inputfs_events_buf, M_INPUTFS);
+			inputfs_events_buf = NULL;
+		}
 		if (inputfs_state_buf != NULL) {
 			free(inputfs_state_buf, M_INPUTFS);
 			inputfs_state_buf = NULL;
