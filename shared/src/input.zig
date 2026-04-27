@@ -44,6 +44,26 @@ fn writeU64(map: []u8, off: usize, v: u64) void {
     std.mem.writeInt(u64, map[off..][0..8], v, .little);
 }
 
+/// Get a naturally-aligned `*u32` into a byte slice for atomic ops.
+/// `std.mem.bytesAsValue` returns `*align(1) u32`; the atomic intrinsics
+/// need the natural alignment, hence the `@alignCast`. Caller must ensure
+/// `off` is u32-aligned within the region (true for all our header fields).
+fn atomicU32Ptr(map: []u8, off: usize) *u32 {
+    return @alignCast(std.mem.bytesAsValue(u32, map[off..][0..4]));
+}
+
+fn atomicU32PtrConst(map: []const u8, off: usize) *const u32 {
+    return @alignCast(std.mem.bytesAsValue(u32, map[off..][0..4]));
+}
+
+fn atomicU64Ptr(map: []u8, off: usize) *u64 {
+    return @alignCast(std.mem.bytesAsValue(u64, map[off..][0..8]));
+}
+
+fn atomicU64PtrConst(map: []const u8, off: usize) *const u64 {
+    return @alignCast(std.mem.bytesAsValue(u64, map[off..][0..8]));
+}
+
 /// Ensure every ancestor directory of `path` exists, creating each level
 /// as needed. Unlike `std.fs.makeDirAbsolute`, this handles the case where
 /// multiple parents are missing (e.g. neither `/var/run/sema` nor
@@ -248,7 +268,7 @@ pub const StateWriter = struct {
     /// Begin a write batch. Increments the seqlock to an odd value;
     /// readers see this as "write in progress" and retry.
     pub fn beginUpdate(self: StateWriter) void {
-        const ptr = std.mem.bytesAsValue(u32, self.map[STATE_OFF_SEQLOCK..][0..4]);
+        const ptr = atomicU32Ptr(self.map, STATE_OFF_SEQLOCK);
         const cur = @atomicLoad(u32, ptr, .seq_cst);
         @atomicStore(u32, ptr, cur + 1, .seq_cst);
     }
@@ -257,7 +277,7 @@ pub const StateWriter = struct {
     /// Readers that see the same even value before and after their read
     /// know the snapshot is consistent.
     pub fn endUpdate(self: StateWriter) void {
-        const ptr = std.mem.bytesAsValue(u32, self.map[STATE_OFF_SEQLOCK..][0..4]);
+        const ptr = atomicU32Ptr(self.map, STATE_OFF_SEQLOCK);
         const cur = @atomicLoad(u32, ptr, .seq_cst);
         @atomicStore(u32, ptr, cur + 1, .seq_cst);
     }
@@ -433,7 +453,7 @@ pub const StateReader = struct {
     /// INPUT_STATE.md "Concurrency model".
     pub fn snapshot(self: StateReader) !StateSnapshot {
         const m = self.map orelse return error.NotOpen;
-        const seqlock_ptr = std.mem.bytesAsValue(u32, m[STATE_OFF_SEQLOCK..][0..4]);
+        const seqlock_ptr = atomicU32PtrConst(m, STATE_OFF_SEQLOCK);
 
         var attempt: usize = 0;
         const MAX_ATTEMPTS: usize = 1024;
@@ -640,7 +660,7 @@ pub const EventRingWriter = struct {
 
         // Step 1: zero seq during the body write so a concurrent reader
         // sees an inconsistent slot and retries.
-        const seq_ptr = std.mem.bytesAsValue(u64, self.map[slot_base + EV_SLOT_OFF_SEQ ..][0..8]);
+        const seq_ptr = atomicU64Ptr(self.map, slot_base + EV_SLOT_OFF_SEQ);
         @atomicStore(u64, seq_ptr, 0, .seq_cst);
 
         writeU64(self.map, slot_base + EV_SLOT_OFF_TS_ORDERING, e.ts_ordering);
@@ -656,22 +676,12 @@ pub const EventRingWriter = struct {
 
         // Step 3: advance writer_seq.
         self.writer_seq = new_seq;
-        @atomicStore(
-            u64,
-            std.mem.bytesAsValue(u64, self.map[EV_OFF_WRITER_SEQ ..][0..8]),
-            new_seq,
-            .seq_cst,
-        );
+        @atomicStore(u64, atomicU64Ptr(self.map, EV_OFF_WRITER_SEQ), new_seq, .seq_cst);
 
         // Step 4: if the ring has wrapped, advance earliest_seq.
         if (new_seq > EVENTS_SLOT_COUNT) {
             const new_earliest = new_seq - EVENTS_SLOT_COUNT + 1;
-            @atomicStore(
-                u64,
-                std.mem.bytesAsValue(u64, self.map[EV_OFF_EARLIEST_SEQ ..][0..8]),
-                new_earliest,
-                .seq_cst,
-            );
+            @atomicStore(u64, atomicU64Ptr(self.map, EV_OFF_EARLIEST_SEQ), new_earliest, .seq_cst);
         }
     }
 };
@@ -731,20 +741,12 @@ pub const EventRingReader = struct {
 
     pub fn writerSeq(self: EventRingReader) u64 {
         const m = self.map orelse return 0;
-        return @atomicLoad(
-            u64,
-            std.mem.bytesAsValue(u64, m[EV_OFF_WRITER_SEQ ..][0..8]),
-            .seq_cst,
-        );
+        return @atomicLoad(u64, atomicU64PtrConst(m, EV_OFF_WRITER_SEQ), .seq_cst);
     }
 
     pub fn earliestSeq(self: EventRingReader) u64 {
         const m = self.map orelse return 0;
-        return @atomicLoad(
-            u64,
-            std.mem.bytesAsValue(u64, m[EV_OFF_EARLIEST_SEQ ..][0..8]),
-            .seq_cst,
-        );
+        return @atomicLoad(u64, atomicU64PtrConst(m, EV_OFF_EARLIEST_SEQ), .seq_cst);
     }
 
     /// Drain newly published events into `out`. Returns the count consumed
@@ -753,16 +755,8 @@ pub const EventRingReader = struct {
     /// from the state region per INPUT_EVENTS.md "Failure modes".
     pub fn drain(self: *EventRingReader, out: []Event) !RingDrainResult {
         const m = self.map orelse return error.NotOpen;
-        const writer_seq = @atomicLoad(
-            u64,
-            std.mem.bytesAsValue(u64, m[EV_OFF_WRITER_SEQ ..][0..8]),
-            .seq_cst,
-        );
-        const earliest = @atomicLoad(
-            u64,
-            std.mem.bytesAsValue(u64, m[EV_OFF_EARLIEST_SEQ ..][0..8]),
-            .seq_cst,
-        );
+        const writer_seq = @atomicLoad(u64, atomicU64PtrConst(m, EV_OFF_WRITER_SEQ), .seq_cst);
+        const earliest = @atomicLoad(u64, atomicU64PtrConst(m, EV_OFF_EARLIEST_SEQ), .seq_cst);
 
         var overrun = false;
         if (earliest > 0 and self.last_consumed + 1 < earliest) {
@@ -775,7 +769,7 @@ pub const EventRingReader = struct {
         while (next <= writer_seq and consumed < out.len) : (next += 1) {
             const slot_idx = next & (EVENTS_SLOT_COUNT - 1);
             const slot_base = EVENTS_HEADER_SIZE + slot_idx * EVENTS_SLOT_SIZE;
-            const seq_ptr = std.mem.bytesAsValue(u64, m[slot_base + EV_SLOT_OFF_SEQ ..][0..8]);
+            const seq_ptr = atomicU64PtrConst(m, slot_base + EV_SLOT_OFF_SEQ);
 
             const seq1 = @atomicLoad(u64, seq_ptr, .seq_cst);
             if (seq1 != next) {
@@ -930,13 +924,13 @@ pub const FocusWriter = struct {
     }
 
     pub fn beginUpdate(self: FocusWriter) void {
-        const ptr = std.mem.bytesAsValue(u32, self.map[FOCUS_OFF_SEQLOCK ..][0..4]);
+        const ptr = atomicU32Ptr(self.map, FOCUS_OFF_SEQLOCK);
         const cur = @atomicLoad(u32, ptr, .seq_cst);
         @atomicStore(u32, ptr, cur + 1, .seq_cst);
     }
 
     pub fn endUpdate(self: FocusWriter) void {
-        const ptr = std.mem.bytesAsValue(u32, self.map[FOCUS_OFF_SEQLOCK ..][0..4]);
+        const ptr = atomicU32Ptr(self.map, FOCUS_OFF_SEQLOCK);
         const cur = @atomicLoad(u32, ptr, .seq_cst);
         @atomicStore(u32, ptr, cur + 1, .seq_cst);
     }
@@ -1020,7 +1014,7 @@ pub const FocusReader = struct {
 
     pub fn snapshot(self: FocusReader) !FocusSnapshot {
         const m = self.map orelse return error.NotOpen;
-        const seqlock_ptr = std.mem.bytesAsValue(u32, m[FOCUS_OFF_SEQLOCK..][0..4]);
+        const seqlock_ptr = atomicU32PtrConst(m, FOCUS_OFF_SEQLOCK);
 
         var attempt: usize = 0;
         const MAX_ATTEMPTS: usize = 1024;
