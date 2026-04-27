@@ -937,13 +937,19 @@ starts.
   Mirrors the `clock.zig` pattern. Pure Zig, userspace-testable
   with unit tests. No kernel work, no hardware dependency. Lands
   the API surface that the kernel writer (C.2, C.3) and the CLI
-  reader (C.4) both build against. Not started.
+  reader (C.4) both build against. Landed 2026-04-27 with 15
+  passing unit tests covering size constants, parent dir creation,
+  magic rejection, pointer and device round-trips, ring drain
+  ordering, ring overrun, and focus pointer resolution.
 - **C.2** kernel state-region writer in `inputfs.c`: creates
-  `/var/run/sema/input/state` on module load, publishes device
-  inventory from B.5's softc role bitmask, updates the seqlock-
-  protected fields on every event admission. Pointer position is
-  published in raw device space; coordinate transform to
-  compositor space is Stage D work. Not started.
+  `/var/run/sema/input/state` on module load per the byte layout
+  in `shared/INPUT_STATE.md` and the regions decision in
+  `inputfs/docs/adr/0002-shared-memory-regions.md`. Publishes
+  device inventory from B.5's softc role bitmask, updates the
+  seqlock-protected fields on every event admission. Pointer
+  position is published in raw device space; coordinate transform
+  to compositor space is Stage D work (per ADR 0002 §Decision item 5,
+  the transform mechanism is deferred). Not started.
 - **C.3** kernel event-ring writer in `inputfs.c`: creates
   `/var/run/sema/input/events`, appends events to the ring on
   every interrupt callback (the path that currently logs hex to
@@ -974,6 +980,82 @@ because inputfs has no transform machinery yet; that machinery
 arrives in Stage D. The state region remains structurally correct
 across the transition; only the semantics of what's in those
 two fields changes.
+
+**C.2 kernel-side considerations.** The state region is 11,328
+bytes on disk, single-writer (the kernel), multiple-reader
+(userspace). Userspace consumers mmap the file shared and read
+via `StateReader` from `shared/src/input.zig`; the kernel
+cannot link userspace Zig and instead writes the same byte
+layout from kernel context. Several FreeBSD-specific decisions
+shape the implementation:
+
+- **File creation and write path.** The kernel cannot mmap a
+  userland filesystem path the way userspace does. The two viable
+  patterns are (a) `vn_open` plus `vn_rdwr` from a kthread
+  context, opening `/var/run/sema/input/state` as a regular file
+  and overwriting it byte-for-byte on every state update, or
+  (b) maintaining the canonical state in a kernel-resident buffer
+  and bouncing updates to userland via a helper. Neither pattern
+  has precedent in the UTF codebase: existing userland files
+  under `/var/run/sema/` (the audio clock, the session token)
+  are written by userspace daemons. inputfs C.2 is the first
+  kernel-context writer of a `/var/run/sema/` file. Pattern (a)
+  is the simpler path. C.2 will start with (a) and measure;
+  pattern (b) becomes a tractable optimisation if (a)'s overhead
+  is intolerable.
+- **Mutex strategy.** B.5's `sc_mtx` per softc protects per-device
+  state during attach, classification, and the interrupt path.
+  The state region adds a global resource: the seqlock counter,
+  the device inventory array, and the per-event `last_sequence`
+  value all need atomic-multi-field-update semantics. A new
+  module-global mutex (provisionally `inputfs_state_mtx`) will
+  bracket seqlock increments and field writes; the per-softc
+  `sc_mtx` remains for per-device state. Order is
+  `sc_mtx` then `inputfs_state_mtx` to avoid deadlock on attach.
+- **Writer context.** State updates land from interrupt callback
+  context (B.4's `inputfs_intr` path). Vnode I/O from interrupt
+  context is forbidden in FreeBSD; that means the writer cannot
+  call `vn_rdwr` directly from `inputfs_intr`. The interrupt
+  handler must enqueue the state update onto a kthread-backed
+  worker that performs the vnode write outside interrupt context.
+  This is a non-trivial dispatch boundary and is the chief
+  reason C.2 is sized larger than C.1.
+- **Unload semantics.** On `kldunload`, the state region file
+  is left in place (per the spec's "file persists; next load
+  resets it" lifecycle note). The kthread worker must drain
+  pending writes before the module unloads to avoid use-after-free
+  on the softc state.
+- **Module-load message.** `inputfs_modevent`'s current
+  `MOD_LOAD` `printf` advertises Stage B.5. C.2's commit
+  updates that string to reflect state-region publication and
+  drops the "no userspace event delivery" qualifier (which
+  becomes false at C.3, not C.2; C.2 publishes state but not
+  yet the event ring).
+
+**C.5 verification signals (preview).** When C.2 lands the
+verification protocol in `inputfs/docs/C_VERIFICATION.md` should
+exercise, in the pattern established by `b5-verify-reports.sh`:
+
+- State file presence and permissions: `/var/run/sema/input/state`
+  exists after `kldload inputfs`, is `STATE_SIZE` bytes (11,328),
+  is readable by the user account that runs userspace tools.
+- Header validity: magic decodes to `INST` (`0x494E5354`),
+  version is 1, `state_valid` transitions 0 to 1 once the first
+  device attaches.
+- Device inventory: the populated slots in the device array
+  match the attached devices observed in `dmesg` after `B.5`'s
+  `roles=` lines, with `roles` bitmasks consistent with B.5's
+  classification.
+- Seqlock toggling: under sustained input, `seqlock` advances
+  by even pairs (writer increments twice per update); a
+  userspace `inputdump` (C.4) capturing N snapshots over a
+  recorded interval observes monotonic advance.
+- Clean unload: `kldunload inputfs` completes without panics,
+  the kthread worker drains, the state file persists with
+  `state_valid = 1` until the next load truncates it.
+
+These signals are concrete enough to write the verification
+script against once C.2 and C.4 are both landed.
 
 ### `[ ]` AD-2: Retire semainputd  *(Open, Medium; depends: AD-1)*
 

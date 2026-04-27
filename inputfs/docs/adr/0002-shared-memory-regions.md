@@ -19,8 +19,8 @@ library, total region size stated explicitly. inputfs follows that
 pattern; this ADR names the regions it publishes and their
 high-level semantics.
 
-Per-region byte-level specifications — offset tables, exact field
-types, version migration rules — live in companion documents
+Per-region byte-level specifications (offset tables, exact field
+types, version migration rules) live in companion documents
 analogous to `shared/CLOCK.md`. This ADR decides *which* regions
 exist and *what* they carry; the companion specs decide *how* they
 are laid out.
@@ -29,11 +29,11 @@ are laid out.
 
 1. inputfs publishes three shared-memory regions under
    `/var/run/sema/input/`:
-   - `/var/run/sema/input/state` — current input state.
-   - `/var/run/sema/input/events` — bounded event ring in
+   - `/var/run/sema/input/state`: current input state.
+   - `/var/run/sema/input/events`: bounded event ring in
      sequence-number order.
-   - `/var/run/sema/input/transform` — compositor-published
-     coordinate transform, written by the compositor, read by
+   - `/var/run/sema/input/focus`: compositor-published focus
+     and routing surface, written by the compositor, read by
      inputfs.
 
 2. Each region begins with a magic-plus-version header in the
@@ -55,16 +55,27 @@ are laid out.
    the pollable fd. Ring capacity is stated in the region's
    companion spec, not in this ADR.
 
-5. Transform region (`transform`) is the inverse-direction surface
-   — the compositor publishes the current post-transform mapping
-   from device space to compositor space. inputfs reads it to
-   normalise pointer coordinates. The compositor is the sole
-   writer; inputfs is the sole reader.
+5. Focus region (`focus`) is the inverse-direction surface: the
+   compositor publishes routing decisions inputfs needs to deliver
+   events to the correct session. The region carries keyboard
+   focus (which session receives keystrokes), pointer grab (which
+   session, if any, has captured the pointer), and the
+   compositor-space surface map (top-to-bottom z-ordered list of
+   surface rectangles for surface-under-cursor lookup). The
+   compositor is the sole writer; inputfs is the sole reader.
+
+   Coordinate transform (DPI scaling, device-to-compositor space
+   mapping) was originally scoped to a fourth `transform` region
+   in earlier drafts of this ADR. That mechanism is deferred and
+   will be redesigned alongside Stage D coordinate normalisation.
+   Until then, inputfs publishes pointer coordinates in raw device
+   space; the state region's companion spec describes the
+   semantics during this window.
 
 6. A Zig library under `shared/src/input.zig` exposes
    `StateWriter`, `StateReader`, `EventRingWriter`,
-   `EventRingReader`, `TransformWriter`, and `TransformReader`
-   types, paralleling the `ClockWriter`/`ClockReader` pattern. C
+   `EventRingReader`, `FocusWriter`, and `FocusReader` types,
+   paralleling the `ClockWriter`/`ClockReader` pattern. C
    consumers access the regions through equivalent headers.
 
 7. All regions are little-endian. Atomic operations use sequential
@@ -78,21 +89,20 @@ are laid out.
 1. Every userspace consumer of input has a consistent API shape
    across the three regions, matching the clock region's shape.
 
-2. The companion specs (for state, events, transform) become the
+2. The companion specs (for state, events, focus) become the
    authoritative references for implementation. This ADR is not
    revised when those specs land; it points at them.
 
-3. The `transform` region establishes a convention for
-   bidirectional shared-memory publication between subsystems
-   (compositor writes, inputfs reads). Future subsystem pairs that
-   need similar coupling can follow the same pattern.
+3. The `focus` region establishes a convention for bidirectional
+   shared-memory publication between subsystems (compositor
+   writes, inputfs reads). Future subsystem pairs that need
+   similar coupling can follow the same pattern.
 
-4. inputfs depends on the compositor publishing the transform
-   region before routing pointer events to compositor-space
-   coordinates. Until the transform region is present and valid,
-   inputfs either buffers events or publishes coordinates in a
-   pre-transform fallback space. The behaviour during this window
-   is specified in the state region's companion spec.
+4. inputfs depends on the compositor publishing the focus
+   region before routing events to specific sessions. Until the
+   focus region is present and valid, inputfs publishes events
+   to the ring without routing decisions; the state region's
+   companion spec describes the behaviour during this window.
 
 5. The event ring is bounded; slow consumers miss events. Per
    foundations §4, the recovery path is to read state (which is
@@ -113,8 +123,12 @@ Those companion documents are the third Stage A artifact (after
 this ADR and the follow-on ADRs on focus publication and role
 taxonomy), tracked under AD-1.
 
-Region names (`state`, `events`, `transform`) are working names;
-they may be revised in the companion specs if a clearer naming
-convention emerges during implementation. The charter's naming
+Region names (`state`, `events`, `focus`) were partly revised
+during companion-spec work. Earlier drafts of this ADR named the
+third region `transform` and scoped it to coordinate
+normalisation. The companion-spec phase split that role: the
+focus region (this ADR, INPUT_FOCUS.md, and ADR 0003) carries
+routing decisions; coordinate normalisation is deferred and
+will be redesigned alongside Stage D. The charter's naming
 conventions (`/var/run/sema/input/`, `/dev/inputfs`,
 `hw.inputfs.*`) are fixed.
