@@ -3,8 +3,8 @@
 # Minimal deviation from FreeBSD GENERIC. PGSD owns the input layer
 # through inputfs (per AD-1 in BACKLOG.md and the inputfs ADR series
 # under inputfs/docs/adr/). To give inputfs uncontested ownership of
-# HID devices, the FreeBSD HID drivers that would otherwise claim
-# the same hidbus children are removed from the kernel.
+# HID devices, drivers that would otherwise claim USB HID children
+# at boot are removed from the kernel.
 #
 # What stays:
 #   - Everything in GENERIC by default
@@ -12,15 +12,28 @@
 #   - hidbus  (HID bus driver; inputfs attaches here per ADR 0007)
 #   - usbhid  (USB-to-HID transport; required by hidbus over USB)
 #
-# What is removed:
-#   - hms, hkbd, hgame, hcons, hsctrl, utouch, hpen, hmt, hconf
+# What is removed (observed in stock GENERIC at the time of writing):
+#   - hkbd    (modern HID keyboard driver, claims hidbus children)
+#   - ukbd    (legacy USB keyboard driver, claims USB devices
+#             directly before hidbus sees them)
+#
+# Anticipatory removals (drivers named in ADR 0007 that may appear
+# in a future GENERIC or be loaded as modules):
+#   - hms, hgame, hcons, hsctrl, utouch, hpen, hmt, hconf
 #     (HID class drivers superseded by inputfs)
 #   - hidmap (HID-to-evdev mapping framework; PGSD/UTF excludes
-#     evdev as a structural commitment)
+#     evdev as a structural commitment, see ADR 0001)
 #
-# Rationale for hidmap removal: ADR 0007 states inputfs does not
-# use hidmap. Removing it from the kernel makes the architectural
-# boundary explicit. PGSD does not ship evdev as an input path.
+# nodevice against a driver not currently in GENERIC is harmless
+# but documents intent: if any of these drivers are added to a
+# future GENERIC, PGSD remains explicit about excluding them.
+#
+# Out of scope for this config (deliberate):
+#   - evdev, uinput, EVDEV_SUPPORT remain enabled. Removing the
+#     evdev userland contract is a separate architectural decision
+#     with broader consequences for userland compatibility during
+#     the PGSD transition period. Tracked separately, not folded
+#     into AD-8.
 #
 # Verification target: this kernel boots, attaches inputfs to USB
 # HID devices without driver competition, and passes the B.5
@@ -30,8 +43,12 @@ include		GENERIC
 
 ident		PGSD
 
-nodevice	hms
+# Observed in stock GENERIC and removed:
 nodevice	hkbd
+nodevice	ukbd
+
+# Anticipatory removals per ADR 0007:
+nodevice	hms
 nodevice	hgame
 nodevice	hcons
 nodevice	hsctrl

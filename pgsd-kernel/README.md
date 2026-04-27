@@ -13,22 +13,31 @@ that compete with `inputfs` for ownership of HID devices.
 
 `inputfs` (see `inputfs/` and ADRs under `inputfs/docs/adr/`) is the
 PGSDF kernel input substrate. It attaches to `hidbus` and consumes
-HID reports directly. FreeBSD's stock GENERIC kernel ships drivers
-that would otherwise claim the same `hidbus` children at boot:
-`hms`, `hkbd`, `hgame`, `hcons`, `hsctrl`, `utouch`, `hpen`, `hmt`,
-`hconf`, and the `hidmap` framework that bridges HID to `evdev`.
-With those present, `inputfs` cannot bind to USB HID devices on
-bare metal without a runtime workflow that turns out not to be
-reliable on stock FreeBSD (see B.5 verification history in
-`inputfs/docs/B5_VERIFICATION.md` and BACKLOG AD-1).
+HID reports directly. FreeBSD's stock GENERIC kernel statically
+compiles two keyboard drivers that prevent `inputfs` from owning
+USB keyboards: `hkbd` (the modern HID keyboard driver, claiming
+hidbus children) and `ukbd` (the legacy USB keyboard driver,
+claiming USB devices directly before `hidbus` sees them). Because
+both are statically linked, runtime `kldunload` cannot displace
+them. See B.5 verification history in
+`inputfs/docs/B5_VERIFICATION.md` and BACKLOG AD-1.
 
-The PGSD kernel removes those drivers via `nodevice` lines.
-`inputfs` is then the only candidate driver at probe time and binds
-without competition. This also expresses the wider PGSDF
-architectural commitment: no `evdev` anywhere in the input path.
+The PGSD kernel removes both via `nodevice` lines, plus the wider
+set of HID class drivers that ADR 0007 enumerates as competitors
+(`hms`, `hgame`, `hcons`, `hsctrl`, `utouch`, `hpen`, `hmt`,
+`hconf`, and the `hidmap` HID-to-evdev framework). Most of those
+are not in stock GENERIC at the time of writing; the `nodevice`
+lines are anticipatory, documenting that PGSD excludes them
+regardless of whether they appear in a future GENERIC.
 
 `hidbus`, `usbhid`, and the generic `hid` layer remain. `inputfs`
 needs all three.
+
+`evdev`, `uinput`, and `EVDEV_SUPPORT` are out of scope for this
+config and remain enabled. Removing them is a separate
+architectural decision with broader userland-compatibility
+consequences during the PGSD transition; tracked separately, not
+folded into AD-8.
 
 ## Build
 
@@ -75,24 +84,33 @@ sysctl kern.conftxt | head -3
 
 The `ident` line should read `ident PGSD` (not `ident GENERIC`).
 
-Confirm the omitted drivers are absent:
+Confirm the drivers we observed in stock GENERIC are now absent:
 
 ```
-config -x /boot/kernel/kernel | grep -E "device.*(hms|hkbd|hgame|hcons|hsctrl|utouch|hpen|hmt|hconf|hidmap)"
+config -x /boot/kernel/kernel | grep -E "^device[[:space:]]+(hkbd|ukbd)"
 ```
 
-This should return no lines. If any of the removed drivers shows
-up, the build did not pick up the `nodevice` directives; check
-that the correct config file landed at
-`/usr/src/sys/amd64/conf/PGSD`.
+This should return no lines. `hkbd` and `ukbd` were the keyboard
+drivers in stock GENERIC at the time of this config; their absence
+is what unblocks `inputfs` from owning USB keyboards.
 
-Confirm `hidbus` and `usbhid` are still present:
+Optionally, confirm the anticipatory removals are also absent. Most
+of these were not in stock GENERIC, so they should already be
+absent regardless:
 
 ```
-config -x /boot/kernel/kernel | grep -E "device.*(hidbus|usbhid|^device hid$)"
+config -x /boot/kernel/kernel | grep -E "^device[[:space:]]+(hms|hgame|hcons|hsctrl|utouch|hpen|hmt|hconf|hidmap)"
 ```
 
-Should return three lines (`device hid`, `device hidbus`, `device usbhid`).
+Should return no lines.
+
+Confirm `hidbus`, `usbhid`, and `hid` are still present:
+
+```
+config -x /boot/kernel/kernel | grep -E "^device[[:space:]]+(hid|hidbus|usbhid)$"
+```
+
+Should return three lines.
 
 ## Recovery
 
