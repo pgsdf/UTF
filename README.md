@@ -157,6 +157,51 @@ implementation history.
 
 ---
 
+## System Requirements
+
+UTF targets PGSD-on-FreeBSD 15.0-RELEASE. Beyond a working FreeBSD installation,
+two system-level configuration items are required for the daemons and kernel
+modules to operate correctly.
+
+### `/var/run` must be tmpfs
+
+Several UTF components publish state to userland via shared-memory regions
+under `/var/run/sema/`: the audio clock at `/var/run/sema/clock` (semaaud),
+the session token at `/var/run/sema/session`, and the inputfs state region
+at `/var/run/sema/input/state` (Stage C onward). These files are recreated
+on every daemon or module load and are meaningful only for the current boot.
+
+FreeBSD convention is that `/var/run` is volatile. Some installations leave
+`/var/run` on the same filesystem as the rest of `/var`, which makes
+shared-memory publication writes more expensive and leaves stale region
+files persisting across reboots until the next module load truncates them.
+The supported configuration is to mount `/var/run` as tmpfs by adding the
+following line to `/etc/fstab`:
+
+```
+tmpfs /var/run tmpfs rw,mode=755 0 0
+```
+
+After editing `fstab`, either reboot or run `sudo mount /var/run` to
+activate. Confirm with `mount | grep /var/run` (expect a `tmpfs on /var/run`
+line). The inputfs C.2 verification protocol assumes this configuration;
+running on a non-tmpfs `/var/run` is unsupported.
+
+### PGSD kernel configuration
+
+PGSD ships a kernel that omits drivers superseded by `inputfs`: `hms`,
+`hkbd`, `hgame`, `hcons`, `hsctrl`, `utouch`, `hpen`, and the `hidmap`
+framework. Stock FreeBSD compiles `hms` and `hkbd` statically into
+`GENERIC` and produces `.ko` modules for the rest, which causes the
+HID transport layer to attach the legacy drivers ahead of inputfs at
+boot or on USB events. Running the inputfs verification protocols on
+stock FreeBSD requires either booting the PGSD kernel or moving the
+competing `.ko` files out of `/boot/kernel/` and regenerating
+`linker.hints` (see `BACKLOG.md` AD-8 for the durable answer via
+`WITHOUT_MODULES` in `/etc/src.conf`).
+
+---
+
 ## Build
 
 Each subsystem builds independently. Use `start.sh` to build and run all
