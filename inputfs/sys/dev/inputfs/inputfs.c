@@ -387,9 +387,7 @@ static void
 inputfs_state_put_device(uint8_t slot, device_t dev, uint8_t roles)
 {
 	const struct hid_device_info *hw;
-	const char *name;
 	size_t base;
-	size_t name_len;
 
 	if (slot >= INPUTFS_STATE_SLOT_COUNT)
 		return;
@@ -428,14 +426,26 @@ inputfs_state_put_device(uint8_t slot, device_t dev, uint8_t roles)
 		    base + DEV_OFF_USB_PRODUCT, 0);
 	}
 
-	/* name: 64-byte field, null-padded. */
+	/* name: 64-byte field, null-padded.
+	 *
+	 * Use device_get_desc(dev), which returns a stable, printable
+	 * string maintained by FreeBSD's bus framework (the same
+	 * string that appears in dmesg's `<...>` block at attach).
+	 * This is more reliable than hid_get_device_info()->name,
+	 * which is not consistently populated across HID device
+	 * types in FreeBSD 15: for many devices it is left as
+	 * uninitialized stack/heap bytes, so any non-zero first byte
+	 * is misleading. */
 	memset(inputfs_state_buf + base + DEV_OFF_NAME, 0, 64);
-	if (hw != NULL && hw->name[0] != '\0') {
-		name = hw->name;
-		name_len = strlen(name);
-		if (name_len > 63)
-			name_len = 63;
-		memcpy(inputfs_state_buf + base + DEV_OFF_NAME, name, name_len);
+	{
+		const char *desc = device_get_desc(dev);
+		if (desc != NULL && desc[0] != '\0') {
+			size_t desc_len = strlen(desc);
+			if (desc_len > 63)
+				desc_len = 63;
+			memcpy(inputfs_state_buf + base + DEV_OFF_NAME,
+			    desc, desc_len);
+		}
 	}
 
 	/* lighting_caps: 56-byte field, zero (no lighting in Stage C). */
