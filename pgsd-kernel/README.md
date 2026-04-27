@@ -59,20 +59,69 @@ is which kernel modules are compiled; the userland is unchanged.
 
 ## Install
 
+Modern FreeBSD 15 systems are typically installed via pkgbase, which
+turns the kernel into a managed package (`FreeBSD-kernel-generic`).
+Plain `make installkernel` refuses to run on such a system to avoid
+clobbering files owned by the pkg database. There are two install
+paths depending on whether your system is pkgbase-managed.
+
+Determine which you have:
+
+```
+pkg which /boot/kernel/kernel
+```
+
+If that returns `was installed by package FreeBSD-kernel-...`, you
+are on a pkgbase system. Otherwise, the kernel was installed from
+source and the classic path applies.
+
+### pkgbase-managed system (typical for FreeBSD 15)
+
+Unregister the pkgbase kernel so `pkg(8)` stops tracking it, then
+install over the now-untracked files:
+
+```
+sudo pkg unregister FreeBSD-kernel-generic
+cd /usr/src
+sudo make installkernel KERNCONF=PGSD DESTDIR=/
+```
+
+`pkg unregister` removes the package's database entry without
+touching the files in `/boot/kernel/`. `make installkernel
+DESTDIR=/` then overwrites the kernel with the PGSD build, moving
+the previous kernel to `/boot/kernel.old/`.
+
+This sequence comes from the FreeBSD forums thread "FreeBSD 15:
+now, kernel is a package" (Feb 2026). Building a custom pkgbase
+kernel package (the alternative) is not yet supported in the way
+that would make pkg(8) happy with it; the unregister-then-install
+path is the recommended workaround.
+
+Note for the future: a subsequent `pkg upgrade` may try to
+reinstall `FreeBSD-kernel-generic` and overwrite the custom
+kernel. To prevent this, `pkg-lock(8)` the kernel or arrange a
+PGSD-specific pkg repository. Out of scope for B.5 verification;
+relevant once PGSD has its own pkg infrastructure.
+
+### Source-built system (classic path)
+
 ```
 cd /usr/src
 sudo make installkernel KERNCONF=PGSD
 ```
 
 This installs the new kernel to `/boot/kernel/` and moves the
-previous kernel to `/boot/kernel.old/`. The previous kernel
-remains bootable from the loader menu.
+previous kernel to `/boot/kernel.old/`.
 
-Reboot:
+### Reboot
 
 ```
 sudo shutdown -r now
 ```
+
+The previous kernel remains bootable from the loader menu via
+"Boot Options" -> "Boot Single User" or by explicitly selecting
+`kernel.old`.
 
 ## Verify the kernel installed correctly
 
