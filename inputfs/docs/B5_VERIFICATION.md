@@ -32,6 +32,17 @@ keyboard-classification signal that exists in the bare-metal pass
 (2.3) is deliberately not run on the VM. See Signal 1.3 below for
 the rationale.
 
+**Known host-side stability concern.** Running this pass has been
+observed to cause lockups on the host computer running VirtualBox.
+The lockups appear to be triggered by USB pass-through combined
+with driver unload activity inside the guest, and they affect the
+host (which does not have inputfs loaded) rather than the guest.
+This is a host-and-VirtualBox-stack issue, not an inputfs issue.
+If the bare-metal pass succeeds, the VM pass adds at most a
+second-venue datapoint and is not strictly required. Operators
+running this pass should be prepared for the host to lock up and
+should save unrelated work first.
+
 ### Signal 1.1: mouse classifies as pointer
 
 **Steps:**

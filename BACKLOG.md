@@ -882,6 +882,22 @@ stack. ADR 0008 carries an errata section recording a
 `hid_start_parse` kindset correction made during B.3
 verification.
 
+**Verification environment note (B.5).** Running the B.5 VM
+verification pass on the GhostBSD VirtualBox VM has been observed
+to cause lockups on the bare-metal host running VirtualBox. The
+lockups affect the host (which does not have inputfs loaded), not
+the guest, and are triggered by the combination of USB pass-through
+plus driver unload activity in the guest. This is a host-and-
+VirtualBox-stack issue, not an inputfs issue. The VM mouse path
+was verified before the stability concern emerged (signals 1.1
+and 1.2 produced clean attach sequences and report streams on a
+Razer Viper passed through to the VM). The remaining B.5 signals
+(clean unload, keyboard classification) are verified on bare-metal
+GhostBSD, where the issue does not manifest. The verification
+protocol in `inputfs/docs/B5_VERIFICATION.md` documents this
+asymmetry. Future investigation of the VirtualBox host stability
+issue is out of scope for AD-1.
+
 ### `[ ]` AD-2 — Retire semainputd  *(Open, Medium; depends: AD-1)*
 
 **Tracks**: `inputfs/docs/inputfs-proposal.md` Stage F.
