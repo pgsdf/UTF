@@ -55,7 +55,7 @@ fn rolesToString(roles: u32, buf: []u8) []const u8 {
     return buf[0..pos];
 }
 
-fn nameToString(name: [64]u8) []const u8 {
+fn nameToString(name: *const [64]u8) []const u8 {
     // Find the null terminator, or use the full 64 bytes.
     var len: usize = 0;
     while (len < 64 and name[len] != 0) : (len += 1) {}
@@ -107,7 +107,7 @@ fn dumpSnapshot(snap: input.StateSnapshot, header_label: []const u8) void {
         const role_str = rolesToString(dev.roles, &role_buf);
         var id_buf: [33]u8 = undefined;
         const id_str = deviceIdHex(dev.device_id, &id_buf);
-        const name_str = nameToString(dev.name);
+        const name_str = nameToString(&dev.name);
 
         writeOut("  slot[{d}]: id={s}\n", .{ slot, id_str });
         writeOut("           vendor=0x{x:0>4} product=0x{x:0>4}\n", .{
