@@ -918,6 +918,63 @@ run captured in `b5-pass2-baremetal.log`. The verification
 protocol in `inputfs/docs/B5_VERIFICATION.md` documents the
 workflow.
 
+**Stage C: state publication.** Per the inputfs proposal, Stage C
+makes inputfs's internal state visible to userspace through three
+shared-memory regions under `/var/run/sema/input/`. The regions
+are specified in `inputfs/docs/adr/0002-shared-memory-regions.md`
+with byte-level layouts in `shared/INPUT_STATE.md`,
+`shared/INPUT_EVENTS.md`, and `shared/INPUT_FOCUS.md` (all already
+landed as Stage A artifacts). Stage C implements against those
+specs. semainputd is unchanged; evdev still drives production;
+inputfs gains a user-visible output but no consumers yet.
+
+Stage C breaks into five sub-stages, mirroring Stage B's rhythm:
+each sub-stage lands independently, gets verified before the next
+starts.
+
+- **C.1** `shared/src/input.zig` library: `StateWriter`/`StateReader`,
+  `EventRingWriter`/`EventRingReader`, `FocusWriter`/`FocusReader`.
+  Mirrors the `clock.zig` pattern. Pure Zig, userspace-testable
+  with unit tests. No kernel work, no hardware dependency. Lands
+  the API surface that the kernel writer (C.2, C.3) and the CLI
+  reader (C.4) both build against. Not started.
+- **C.2** kernel state-region writer in `inputfs.c`: creates
+  `/var/run/sema/input/state` on module load, publishes device
+  inventory from B.5's softc role bitmask, updates the seqlock-
+  protected fields on every event admission. Pointer position is
+  published in raw device space; coordinate transform to
+  compositor space is Stage D work. Not started.
+- **C.3** kernel event-ring writer in `inputfs.c`: creates
+  `/var/run/sema/input/events`, appends events to the ring on
+  every interrupt callback (the path that currently logs hex to
+  dmesg in B.4). Sequence numbers strictly monotonic. `ts_ordering`
+  comes from the kernel monotonic clock; `ts_sync` either wired
+  to chronofs (preferred, gives ADR 0011 measurement substrate)
+  or left zero (the spec allows it). Pollable fd via `kqueue`.
+  Not started.
+- **C.4** `inputdump` CLI tool in Zig under `inputfs/tools/`,
+  parallel to `chronofs/tools/chrono_dump.zig`. Reads the state
+  region and event ring, presents them. Useful for verification
+  end-to-end and for ad-hoc debugging. Not started.
+- **C.5** verification protocol (`inputfs/docs/C_VERIFICATION.md`)
+  plus scripts under `inputfs/test/c/`: signals for region
+  creation, header validity, device inventory publication, event
+  ring monotonicity, pollable-fd wakeups, clean unload. Pattern
+  follows B.5's verification protocol. Not started.
+
+The Stage A focus region (`shared/INPUT_FOCUS.md`) is part of C.1's
+library deliverable: `FocusWriter`/`FocusReader` belong in
+`shared/src/input.zig` because the API surface is shared. The
+kernel-side *use* of `FocusReader` (consuming compositor focus to
+route events) is Stage D work, not Stage C.
+
+The state region's spec describes `pointer_x`/`pointer_y` as
+compositor-space. Stage C publishes them in raw device space
+because inputfs has no transform machinery yet; that machinery
+arrives in Stage D. The state region remains structurally correct
+across the transition; only the semantics of what's in those
+two fields changes.
+
 ### `[ ]` AD-2: Retire semainputd  *(Open, Medium; depends: AD-1)*
 
 **Tracks**: `inputfs/docs/inputfs-proposal.md` Stage F.
