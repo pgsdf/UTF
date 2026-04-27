@@ -1,0 +1,42 @@
+# PGSD kernel configuration
+#
+# Minimal deviation from FreeBSD GENERIC. PGSD owns the input layer
+# through inputfs (per AD-1 in BACKLOG.md and the inputfs ADR series
+# under inputfs/docs/adr/). To give inputfs uncontested ownership of
+# HID devices, the FreeBSD HID drivers that would otherwise claim
+# the same hidbus children are removed from the kernel.
+#
+# What stays:
+#   - Everything in GENERIC by default
+#   - hid     (generic HID layer, parser, descriptor handling)
+#   - hidbus  (HID bus driver; inputfs attaches here per ADR 0007)
+#   - usbhid  (USB-to-HID transport; required by hidbus over USB)
+#
+# What is removed:
+#   - hms, hkbd, hgame, hcons, hsctrl, utouch, hpen, hmt, hconf
+#     (HID class drivers superseded by inputfs)
+#   - hidmap (HID-to-evdev mapping framework; PGSD/UTF excludes
+#     evdev as a structural commitment)
+#
+# Rationale for hidmap removal: ADR 0007 states inputfs does not
+# use hidmap. Removing it from the kernel makes the architectural
+# boundary explicit. PGSD does not ship evdev as an input path.
+#
+# Verification target: this kernel boots, attaches inputfs to USB
+# HID devices without driver competition, and passes the B.5
+# bare-metal verification protocol in inputfs/docs/B5_VERIFICATION.md.
+
+include		GENERIC
+
+ident		PGSD
+
+nodevice	hms
+nodevice	hkbd
+nodevice	hgame
+nodevice	hcons
+nodevice	hsctrl
+nodevice	utouch
+nodevice	hpen
+nodevice	hmt
+nodevice	hconf
+nodevice	hidmap
