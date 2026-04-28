@@ -111,6 +111,74 @@ SYSCTL_UINT(_hw_drawfs, OID_AUTO, vmobj_deallocs, CTLFLAG_RD,
     "Total vm_object deallocations (debug)");
 
 /*
+ * EFI framebuffer geometry sysctls (Stage D.2).
+ *
+ * Exposes the EFI framebuffer's width, height, stride, and
+ * bits-per-pixel under hw.drawfs.efifb.* so other kernel modules
+ * (notably inputfs, which needs display dimensions to clamp
+ * pointer coordinates to compositor space) can read them via
+ * kernel_sysctlbyname without taking a hard module dependency
+ * on drawfs.
+ *
+ * Values are populated by drawfs_efifb_init at module load and
+ * do not change during the module's lifetime. The handler reads
+ * via the existing accessor functions in drawfs_efifb.h rather
+ * than referencing the static drawfs_efifb struct, preserving
+ * the encapsulation already in place.
+ *
+ * If drawfs_efifb_init failed (no EFI framebuffer available, or
+ * pmap_mapdev_attr returned 0), the accessors return 0 and the
+ * sysctls report 0; consumers must handle that case.
+ */
+static SYSCTL_NODE(_hw_drawfs, OID_AUTO, efifb,
+    CTLFLAG_RD | CTLFLAG_MPSAFE, 0,
+    "EFI framebuffer geometry");
+
+static int
+drawfs_efifb_sysctl_width(SYSCTL_HANDLER_ARGS)
+{
+	u_int v = drawfs_efifb_width();
+	return (sysctl_handle_int(oidp, &v, 0, req));
+}
+SYSCTL_PROC(_hw_drawfs_efifb, OID_AUTO, width,
+    CTLTYPE_UINT | CTLFLAG_RD | CTLFLAG_MPSAFE,
+    NULL, 0, drawfs_efifb_sysctl_width, "IU",
+    "EFI framebuffer width in pixels");
+
+static int
+drawfs_efifb_sysctl_height(SYSCTL_HANDLER_ARGS)
+{
+	u_int v = drawfs_efifb_height();
+	return (sysctl_handle_int(oidp, &v, 0, req));
+}
+SYSCTL_PROC(_hw_drawfs_efifb, OID_AUTO, height,
+    CTLTYPE_UINT | CTLFLAG_RD | CTLFLAG_MPSAFE,
+    NULL, 0, drawfs_efifb_sysctl_height, "IU",
+    "EFI framebuffer height in pixels");
+
+static int
+drawfs_efifb_sysctl_stride(SYSCTL_HANDLER_ARGS)
+{
+	u_int v = drawfs_efifb_stride();
+	return (sysctl_handle_int(oidp, &v, 0, req));
+}
+SYSCTL_PROC(_hw_drawfs_efifb, OID_AUTO, stride,
+    CTLTYPE_UINT | CTLFLAG_RD | CTLFLAG_MPSAFE,
+    NULL, 0, drawfs_efifb_sysctl_stride, "IU",
+    "EFI framebuffer stride in bytes per scanline");
+
+static int
+drawfs_efifb_sysctl_bpp(SYSCTL_HANDLER_ARGS)
+{
+	u_int v = drawfs_efifb_bpp();
+	return (sysctl_handle_int(oidp, &v, 0, req));
+}
+SYSCTL_PROC(_hw_drawfs_efifb, OID_AUTO, bpp,
+    CTLTYPE_UINT | CTLFLAG_RD | CTLFLAG_MPSAFE,
+    NULL, 0, drawfs_efifb_sysctl_bpp, "IU",
+    "EFI framebuffer bits per pixel");
+
+/*
  * Locking model:
  *
  * Each session has a mutex (s->lock) that protects:
