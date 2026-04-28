@@ -949,7 +949,13 @@ starts.
   seqlock-protected fields on every event admission. Pointer
   position is published in raw device space; coordinate transform
   to compositor space is Stage D work (per ADR 0002 §Decision item 5,
-  the transform mechanism is deferred). Not started.
+  the transform mechanism is deferred). Landed 2026-04-27 with
+  end-to-end verification on PGSD-bare-metal: six HID devices
+  (ELECOM mouse, HAILUCK touchpad keyboard and pointer, Broadcom
+  Bluetooth keyboard and pointer, Apple Keyboard) reporting correct
+  vendor, product, roles, and names. Architecture: 11,328-byte
+  module-global live buffer, MTX_SPIN serialization, kthread
+  worker syncing via vn_rdwr.
 - **C.3** kernel event-ring writer in `inputfs.c`: creates
   `/var/run/sema/input/events`, appends events to the ring on
   every interrupt callback (the path that currently logs hex to
@@ -957,16 +963,31 @@ starts.
   comes from the kernel monotonic clock; `ts_sync` either wired
   to chronofs (preferred, gives ADR 0011 measurement substrate)
   or left zero (the spec allows it). Pollable fd via `kqueue`.
-  Not started.
+  Landed 2026-04-27 with verification on PGSD-bare-metal: 224
+  pointer.motion events plus left and right button cycles, all
+  with strictly monotonic seqs and timestamps. Per-event
+  publication uses partial vn_rdwr writes (slot plus header,
+  ~128 bytes per typical sync). The pollable fd is deferred to
+  a follow-on sub-stage. ts_sync left zero; chronofs integration
+  also deferred. Keyboard, touch, and pen events deferred (need
+  descriptor-driven parsing).
 - **C.4** `inputdump` CLI tool in Zig under `inputfs/tools/`,
   parallel to `chronofs/tools/chrono_dump.zig`. Reads the state
   region and event ring, presents them. Useful for verification
-  end-to-end and for ad-hoc debugging. Not started.
+  end-to-end and for ad-hoc debugging. Landed 2026-04-27 with
+  four subcommands (`state`, `events`, `watch`, `devices`),
+  human-readable and `--json` output, and event filtering by
+  role, device slot, and event type. The C.2/C.3 throwaway
+  `inputstate-check.zig` was deleted in the same commit.
 - **C.5** verification protocol (`inputfs/docs/C_VERIFICATION.md`)
   plus scripts under `inputfs/test/c/`: signals for region
   creation, header validity, device inventory publication, event
   ring monotonicity, pollable-fd wakeups, clean unload. Pattern
-  follows B.5's verification protocol. Not started.
+  follows B.5's verification protocol. Landed 2026-04-27 with
+  `c-verify.sh` (top-level orchestrator running seven phases
+  end-to-end) and `c-fixtures.sh` (sourced helper library).
+  Pollable-fd verification deferred along with the pollable fd
+  itself; the protocol document notes the placeholder.
 
 The Stage A focus region (`shared/INPUT_FOCUS.md`) is part of C.1's
 library deliverable: `FocusWriter`/`FocusReader` belong in
