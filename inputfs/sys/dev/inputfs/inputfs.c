@@ -497,6 +497,40 @@ static int			 inputfs_focus_cache_valid;
 static int			 inputfs_focus_logged_absent;
 
 /*
+ * Display geometry (Stage D.2).
+ *
+ * Read from drawfs's hw.drawfs.efifb.* sysctls at module load
+ * via kernel_sysctlbyname. If the sysctls are absent (drawfs
+ * not loaded, or built without EFI framebuffer support) we fall
+ * back to a conservative default so inputfs remains loadable
+ * standalone for development and testing. Per ADR 0012
+ * §Decision 1, this avoids a hard cross-module dependency on
+ * drawfs while still letting inputfs learn the actual display
+ * dimensions when drawfs is present.
+ *
+ * inputfs_geom_known is 1 when the sysctls were read
+ * successfully (regardless of whether they returned the default
+ * or real geometry); 0 if the sysctl read failed entirely.
+ *
+ * The geometry is captured once at module load and not refreshed.
+ * Display geometry does not change at runtime in the EFI
+ * framebuffer model (no hotplug, no resolution change). If
+ * future graphics backends require runtime geometry updates,
+ * this becomes a periodic refresh in the kthread, mirroring the
+ * focus cache.
+ */
+#define INPUTFS_GEOM_DEFAULT_WIDTH      1024u
+#define INPUTFS_GEOM_DEFAULT_HEIGHT     768u
+#define INPUTFS_GEOM_DEFAULT_STRIDE     (INPUTFS_GEOM_DEFAULT_WIDTH * 4u)
+#define INPUTFS_GEOM_DEFAULT_BPP        32u
+
+static u_int			 inputfs_geom_width;
+static u_int			 inputfs_geom_height;
+static u_int			 inputfs_geom_stride;
+static u_int			 inputfs_geom_bpp;
+static int			 inputfs_geom_known;
+
+/*
  * Match table for HID_PNP_INFO. Matches HID Top-Level
  * Collections for Generic Desktop keyboard, mouse, and pointer.
  */
@@ -1328,6 +1362,71 @@ inputfs_focus_snapshot(struct inputfs_focus_snapshot *out)
 
 	mtx_unlock_spin(&inputfs_focus_mtx);
 	return (1);
+}
+
+/*
+ * inputfs_geom_read -- Stage D.2.
+ *
+ * Read display geometry from drawfs's hw.drawfs.efifb.* sysctls
+ * via kernel_sysctlbyname. Called once at module load. On
+ * success, populates inputfs_geom_{width,height,stride,bpp} and
+ * sets inputfs_geom_known = 1. On failure (any sysctl absent,
+ * unreadable, or returns zero), falls back to the
+ * INPUTFS_GEOM_DEFAULT_* values and leaves inputfs_geom_known
+ * = 0 so consumers can distinguish "fell back to defaults" from
+ * "real geometry read".
+ *
+ * This is called from MOD_LOAD context; sleeping is permitted.
+ * kernel_sysctlbyname acquires the sysctl lock and may block
+ * briefly; that is acceptable in module load.
+ *
+ * Geometry of zero in any dimension is treated as failure
+ * because drawfs returns zero when its EFI framebuffer init
+ * failed (no preload metadata, no GOP, etc.). A zero-dimension
+ * display is not useful for clamping pointer coordinates.
+ */
+static void
+inputfs_geom_read(struct thread *td)
+{
+	u_int width = 0, height = 0, stride = 0, bpp = 0;
+	size_t sz;
+	int error_w, error_h, error_s, error_b;
+
+	sz = sizeof(width);
+	error_w = kernel_sysctlbyname(td, "hw.drawfs.efifb.width",
+	    &width, &sz, NULL, 0, NULL, 0);
+	sz = sizeof(height);
+	error_h = kernel_sysctlbyname(td, "hw.drawfs.efifb.height",
+	    &height, &sz, NULL, 0, NULL, 0);
+	sz = sizeof(stride);
+	error_s = kernel_sysctlbyname(td, "hw.drawfs.efifb.stride",
+	    &stride, &sz, NULL, 0, NULL, 0);
+	sz = sizeof(bpp);
+	error_b = kernel_sysctlbyname(td, "hw.drawfs.efifb.bpp",
+	    &bpp, &sz, NULL, 0, NULL, 0);
+
+	if (error_w == 0 && error_h == 0 && error_s == 0 && error_b == 0 &&
+	    width > 0 && height > 0) {
+		inputfs_geom_width  = width;
+		inputfs_geom_height = height;
+		inputfs_geom_stride = stride;
+		inputfs_geom_bpp    = bpp;
+		inputfs_geom_known  = 1;
+		printf("inputfs: display geometry from drawfs: "
+		    "%ux%u stride=%u bpp=%u\n",
+		    width, height, stride, bpp);
+	} else {
+		inputfs_geom_width  = INPUTFS_GEOM_DEFAULT_WIDTH;
+		inputfs_geom_height = INPUTFS_GEOM_DEFAULT_HEIGHT;
+		inputfs_geom_stride = INPUTFS_GEOM_DEFAULT_STRIDE;
+		inputfs_geom_bpp    = INPUTFS_GEOM_DEFAULT_BPP;
+		inputfs_geom_known  = 0;
+		printf("inputfs: hw.drawfs.efifb.* sysctls unavailable "
+		    "(drawfs not loaded?); using fallback geometry "
+		    "%ux%u stride=%u bpp=%u\n",
+		    inputfs_geom_width, inputfs_geom_height,
+		    inputfs_geom_stride, inputfs_geom_bpp);
+	}
 }
 
 /*
@@ -2599,6 +2698,13 @@ inputfs_modevent(module_t mod, int what, void *arg)
 		 * fast path against the kthread's slow path. */
 		mtx_init(&inputfs_focus_mtx, "inputfs focus",
 		    NULL, MTX_SPIN);
+
+		/* Stage D.2: read display geometry from drawfs's
+		 * hw.drawfs.efifb.* sysctls. Falls back to defaults
+		 * if drawfs is not loaded. Called before the kthread
+		 * starts because no spin lock is held and sleeping is
+		 * permitted in MOD_LOAD context. */
+		inputfs_geom_read(curthread);
 
 		/* Start the kthread worker. */
 		inputfs_kthread_run = 1;
