@@ -11,12 +11,14 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // C.2 verification helper: inputstate-check.
-    // Throwaway tool, will be removed when C.4 (inputdump) lands.
-    const inputstate_check = b.addExecutable(.{
-        .name = "inputstate-check",
+    // inputdump: the canonical CLI for reading inputfs publication
+    // regions (state, events, focus). Subcommands: state, events,
+    // watch, devices. Lands in C.4; replaces the C.2/C.3
+    // inputstate-check throwaway.
+    const inputdump = b.addExecutable(.{
+        .name = "inputdump",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tools/inputstate-check.zig"),
+            .root_source_file = b.path("tools/inputdump.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -24,10 +26,10 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    b.installArtifact(inputstate_check);
+    b.installArtifact(inputdump);
 
-    const run_check = b.addRunArtifact(inputstate_check);
-    if (b.args) |run_args| run_check.addArgs(run_args);
-    const run_step = b.step("run", "Run inputstate-check");
-    run_step.dependOn(&run_check.step);
+    const run_inputdump = b.addRunArtifact(inputdump);
+    if (b.args) |run_args| run_inputdump.addArgs(run_args);
+    const run_step = b.step("run", "Run inputdump (pass arguments after -- )");
+    run_step.dependOn(&run_inputdump.step);
 }
