@@ -229,6 +229,8 @@ MALLOC_DEFINE(M_INPUTFS, "inputfs", "inputfs report buffers");
 #define INPUTFS_POINTER_BUTTON_DOWN     2u
 #define INPUTFS_POINTER_BUTTON_UP       3u
 #define INPUTFS_POINTER_SCROLL          4u
+#define INPUTFS_KEYBOARD_KEY_DOWN       1u
+#define INPUTFS_KEYBOARD_KEY_UP         2u
 #define INPUTFS_LIFECYCLE_ATTACH        1u
 #define INPUTFS_LIFECYCLE_DETACH        2u
 
@@ -301,6 +303,42 @@ struct inputfs_softc {
 	uint8_t			 sc_loc_buttons_id;
 	uint8_t			 sc_button_count;
 	uint8_t			 sc_has_wheel;
+
+	/*
+	 * Keyboard location cache and previous-state buffer
+	 * (Stage D.0b). Populated once at attach by
+	 * inputfs_keyboard_locate. The interrupt path extracts
+	 * the modifier byte and the keys-held array, diffs them
+	 * against sc_prev_modifiers / sc_prev_keys to compute
+	 * key_down and key_up transitions, and updates the
+	 * previous-state buffer for the next report.
+	 *
+	 * The HID boot keyboard array reports up to 6 simultaneously
+	 * held keys in unspecified order; comparing as sets (not
+	 * positions) is required. n-key rollover beyond 6 is
+	 * reported as 0x01 in all six slots and is filtered out.
+	 *
+	 * sc_loc_modifiers covers the 8-bit modifier bitfield. A
+	 * single hid_locate against usage 0xE0 (Left Ctrl) yields
+	 * the bit position of bit 0; the eight modifier bits are
+	 * read together via hid_get_udata against a location whose
+	 * size is 8 (one byte) and pos points at bit 0 of the
+	 * modifier byte. We synthesise this by extending the
+	 * located size from 1 (per-bit declaration) to 8.
+	 *
+	 * sc_loc_keys covers the keys-held array as a single
+	 * location whose size is the per-element bit width
+	 * (typically 8) and count is the array length (typically
+	 * 6). Per-element extraction adjusts a copy of the
+	 * location's pos field by size * index.
+	 */
+	uint8_t			 sc_keyboard_locations_valid;
+	struct hid_location	 sc_loc_modifiers;
+	struct hid_location	 sc_loc_keys;
+	uint8_t			 sc_loc_modifiers_id;
+	uint8_t			 sc_loc_keys_id;
+	uint8_t			 sc_prev_modifiers;
+	uint8_t			 sc_prev_keys[6];
 };
 
 /*
@@ -1297,6 +1335,308 @@ inputfs_extract_pointer(struct inputfs_softc *sc,
 }
 
 /*
+ * inputfs_keyboard_locate -- Stage D.0b.
+ *
+ * Populate the softc's keyboard location cache. Called once at
+ * attach, after inputfs_pointer_locate and before hidbus_set_intr.
+ *
+ * The HID boot keyboard layout has two pieces:
+ *
+ *  - The modifier byte: eight individual 1-bit usages
+ *    (0xE0..0xE7) declared as a packed bit field. We locate
+ *    usage 0xE0 (Left Ctrl), which sits at bit 0 of the byte,
+ *    then synthesise an 8-bit-wide location starting at the
+ *    same position. hid_get_udata against that location yields
+ *    the full modifier byte in one read.
+ *
+ *  - The keys-held array: typically declared as a single input
+ *    item with usage range and report_count > 1. hid_locate
+ *    against any usage in that range returns a location whose
+ *    size is the per-element bit width and count is the array
+ *    length. We locate via usage 0x00 first (the conventional
+ *    array-base usage), falling back to a parser walk if that
+ *    does not match.
+ *
+ * The location cache is unconditional regardless of role; a
+ * pointer-only descriptor will simply have all keyboard
+ * locations report size == 0.
+ */
+static void
+inputfs_keyboard_locate(struct inputfs_softc *sc)
+{
+	uint32_t flags;
+	uint8_t id;
+
+	memset(&sc->sc_loc_modifiers, 0, sizeof(sc->sc_loc_modifiers));
+	memset(&sc->sc_loc_keys, 0, sizeof(sc->sc_loc_keys));
+	sc->sc_loc_modifiers_id = 0;
+	sc->sc_loc_keys_id = 0;
+	sc->sc_prev_modifiers = 0;
+	memset(sc->sc_prev_keys, 0, sizeof(sc->sc_prev_keys));
+	sc->sc_keyboard_locations_valid = 0;
+
+	if (sc->sc_rdesc == NULL || sc->sc_rdesc_len == 0)
+		return;
+
+	/*
+	 * Modifiers: locate usage 0xE0 (Left Ctrl) to find the bit
+	 * position of bit 0 of the modifier byte. The eight modifiers
+	 * are packed sequentially in this byte; we read them as one
+	 * 8-bit value.
+	 */
+	if (hid_locate(sc->sc_rdesc, sc->sc_rdesc_len,
+	    HID_USAGE2(HUP_KEYBOARD, 0xE0),
+	    hid_input, 0, &sc->sc_loc_modifiers, &flags, &id) != 0) {
+		sc->sc_loc_modifiers_id = id;
+		/*
+		 * Each modifier is declared as a 1-bit field. Extend
+		 * the located size to 8 so a single hid_get_udata
+		 * yields the full modifier byte. The pos field already
+		 * points at bit 0 of the byte (the LeftCtrl bit).
+		 */
+		sc->sc_loc_modifiers.size = 8;
+		sc->sc_loc_modifiers.count = 1;
+	}
+
+	/*
+	 * Keys array: locate via usage 0x00 (the conventional base
+	 * of the keyboard usage range used by boot keyboards). For
+	 * non-boot keyboards or unusual descriptors, hid_locate may
+	 * not find this; the array-walk fallback below catches those.
+	 */
+	if (hid_locate(sc->sc_rdesc, sc->sc_rdesc_len,
+	    HID_USAGE2(HUP_KEYBOARD, 0x00),
+	    hid_input, 0, &sc->sc_loc_keys, &flags, &id) != 0) {
+		sc->sc_loc_keys_id = id;
+	} else {
+		/*
+		 * Fallback: walk the descriptor and find the first
+		 * input item on HUP_KEYBOARD whose report_count > 1
+		 * and that is declared as an array (HIO_VARIABLE not
+		 * set). That is the keys-held array.
+		 */
+		struct hid_data *s;
+		struct hid_item hi;
+
+		s = hid_start_parse(sc->sc_rdesc, sc->sc_rdesc_len,
+		    1 << hid_input);
+		if (s != NULL) {
+			while (hid_get_item(s, &hi) > 0) {
+				if (hi.kind == hid_input &&
+				    HID_GET_USAGE_PAGE(hi.usage) == HUP_KEYBOARD &&
+				    hi.loc.count > 1 &&
+				    (hi.flags & HIO_VARIABLE) == 0) {
+					sc->sc_loc_keys = hi.loc;
+					sc->sc_loc_keys_id =
+					    (uint8_t)hi.report_ID;
+					break;
+				}
+			}
+			hid_end_parse(s);
+		}
+	}
+
+	if (sc->sc_loc_modifiers.size > 0 || sc->sc_loc_keys.size > 0)
+		sc->sc_keyboard_locations_valid = 1;
+}
+
+/*
+ * inputfs_extract_keyboard -- Stage D.0b.
+ *
+ * Extract the modifier byte and up to 6 keys-held entries from
+ * an interrupt report. Returns 1 if extraction succeeded for at
+ * least one location and the report ID matched; 0 otherwise.
+ *
+ * out_modifiers receives the 8-bit modifier byte. out_keys is a
+ * 6-element array; entries beyond the device's actual array
+ * count are zero-filled. The caller has initialised out_keys to
+ * all zeros.
+ *
+ * Each element of the keys array is extracted by cloning the
+ * cached location and advancing pos by size * index.
+ */
+static int
+inputfs_extract_keyboard(struct inputfs_softc *sc,
+    const uint8_t *buf, hid_size_t len,
+    uint8_t *out_modifiers, uint8_t out_keys[6])
+{
+	int extracted = 0;
+
+	if (!sc->sc_keyboard_locations_valid || buf == NULL || len == 0)
+		return (0);
+
+	if (sc->sc_loc_modifiers.size > 0 &&
+	    inputfs_report_id_matches(sc->sc_loc_modifiers_id, buf, len)) {
+		*out_modifiers = (uint8_t)hid_get_udata(buf, len,
+		    &sc->sc_loc_modifiers);
+		extracted = 1;
+	}
+
+	if (sc->sc_loc_keys.size > 0 &&
+	    inputfs_report_id_matches(sc->sc_loc_keys_id, buf, len)) {
+		uint32_t i;
+		uint32_t array_count = sc->sc_loc_keys.count;
+
+		if (array_count > 6)
+			array_count = 6;
+
+		for (i = 0; i < array_count; i++) {
+			struct hid_location elem = sc->sc_loc_keys;
+
+			elem.pos = sc->sc_loc_keys.pos +
+			    sc->sc_loc_keys.size * i;
+			elem.count = 1;
+			out_keys[i] = (uint8_t)hid_get_udata(buf, len, &elem);
+		}
+		extracted = 1;
+	}
+
+	return (extracted);
+}
+
+/*
+ * inputfs_keyboard_key_in_set -- Stage D.0b helper.
+ *
+ * Returns 1 if usage is a non-zero, non-rollover-error value
+ * present anywhere in the 6-slot set; 0 otherwise. Used by the
+ * diff emitter to compare current and previous key arrays as
+ * sets rather than positions.
+ *
+ * 0x00 is the empty-slot sentinel (no key in this position).
+ * 0x01 (ErrorRollover), 0x02 (POSTFail), 0x03 (ErrorUndefined)
+ * are status codes a keyboard may emit when more than 6 keys
+ * are simultaneously held; we treat them as "no key" rather
+ * than as real key presses.
+ */
+static inline int
+inputfs_keyboard_key_in_set(uint8_t usage, const uint8_t set[6])
+{
+	int i;
+
+	if (usage <= 0x03)
+		return (1);  /* treat as "always present" so it never
+			      * triggers a key_down or key_up */
+	for (i = 0; i < 6; i++) {
+		if (set[i] == usage)
+			return (1);
+	}
+	return (0);
+}
+
+/*
+ * inputfs_keyboard_diff_emit -- Stage D.0b.
+ *
+ * Compare the current modifier byte and keys array against the
+ * previous-state buffer in the softc, and emit one
+ * keyboard.key_up or keyboard.key_down event per change.
+ *
+ * Modifier bits use HID usages 0xE0..0xE7 (Left Ctrl through
+ * Right Meta) for their hid_usage values; non-modifier keys use
+ * the usage from the keys array directly.
+ *
+ * Order of emission per ADR 0012 §Decision 7 and the spec
+ * convention: all key_up events first (modifier ups, then array
+ * key ups), then all key_down events (modifier downs, then
+ * array key downs). This produces a clean "everything released
+ * before anything new pressed" semantic within a single report's
+ * diff.
+ *
+ * Each event carries the new modifier byte in its modifiers
+ * field, regardless of whether the change was a modifier or
+ * an array key. Consumers detect modifier-state-only changes
+ * by comparing the modifiers field across successive events.
+ *
+ * Caller must hold inputfs_state_mtx (MTX_SPIN).
+ */
+static void
+inputfs_keyboard_diff_emit(struct inputfs_softc *sc,
+    uint8_t modifiers, const uint8_t keys[6])
+{
+	uint8_t mod_changed = sc->sc_prev_modifiers ^ modifiers;
+	uint16_t dev_slot;
+	uint8_t payload[32];
+	int i;
+	uint32_t bit;
+
+	dev_slot = (sc->sc_state_slot == INPUTFS_NO_STATE_SLOT)
+	    ? INPUTFS_SYNTHETIC_DEVICE
+	    : (uint16_t)sc->sc_state_slot;
+
+	/* Modifier ups: bits set in prev but not in new. */
+	for (bit = 0; bit < 8; bit++) {
+		uint8_t mask = (uint8_t)(1u << bit);
+		if ((mod_changed & mask) == 0)
+			continue;
+		if ((sc->sc_prev_modifiers & mask) == 0)
+			continue;
+		memset(payload, 0, sizeof(payload));
+		inputfs_put_u32le(payload, 0, 0xE0u + bit);
+		inputfs_put_u32le(payload, 4, 0xFFFFFFFFu); /* positional */
+		inputfs_put_u32le(payload, 8, modifiers);
+		/* session_id at offset 12, currently 0. */
+		inputfs_events_publish(INPUTFS_SOURCE_KEYBOARD,
+		    INPUTFS_KEYBOARD_KEY_UP,
+		    dev_slot, 0, payload, 16);
+	}
+
+	/* Array key ups: keys in prev not in current. */
+	for (i = 0; i < 6; i++) {
+		uint8_t usage = sc->sc_prev_keys[i];
+		if (usage == 0)
+			continue;
+		if (usage <= 0x03)
+			continue;
+		if (inputfs_keyboard_key_in_set(usage, keys))
+			continue;
+		memset(payload, 0, sizeof(payload));
+		inputfs_put_u32le(payload, 0, usage);
+		inputfs_put_u32le(payload, 4, 0xFFFFFFFFu);
+		inputfs_put_u32le(payload, 8, modifiers);
+		inputfs_events_publish(INPUTFS_SOURCE_KEYBOARD,
+		    INPUTFS_KEYBOARD_KEY_UP,
+		    dev_slot, 0, payload, 16);
+	}
+
+	/* Modifier downs: bits set in new but not in prev. */
+	for (bit = 0; bit < 8; bit++) {
+		uint8_t mask = (uint8_t)(1u << bit);
+		if ((mod_changed & mask) == 0)
+			continue;
+		if ((modifiers & mask) == 0)
+			continue;
+		memset(payload, 0, sizeof(payload));
+		inputfs_put_u32le(payload, 0, 0xE0u + bit);
+		inputfs_put_u32le(payload, 4, 0xFFFFFFFFu);
+		inputfs_put_u32le(payload, 8, modifiers);
+		inputfs_events_publish(INPUTFS_SOURCE_KEYBOARD,
+		    INPUTFS_KEYBOARD_KEY_DOWN,
+		    dev_slot, 0, payload, 16);
+	}
+
+	/* Array key downs: keys in current not in prev. */
+	for (i = 0; i < 6; i++) {
+		uint8_t usage = keys[i];
+		if (usage == 0)
+			continue;
+		if (usage <= 0x03)
+			continue;
+		if (inputfs_keyboard_key_in_set(usage, sc->sc_prev_keys))
+			continue;
+		memset(payload, 0, sizeof(payload));
+		inputfs_put_u32le(payload, 0, usage);
+		inputfs_put_u32le(payload, 4, 0xFFFFFFFFu);
+		inputfs_put_u32le(payload, 8, modifiers);
+		inputfs_events_publish(INPUTFS_SOURCE_KEYBOARD,
+		    INPUTFS_KEYBOARD_KEY_DOWN,
+		    dev_slot, 0, payload, 16);
+	}
+
+	/* Update previous-state buffer for next report. */
+	sc->sc_prev_modifiers = modifiers;
+	memcpy(sc->sc_prev_keys, keys, sizeof(sc->sc_prev_keys));
+}
+
+/*
  * inputfs_intr -- hidbus interrupt callback.
  *
  * Stage B.4: copies the report into the per-device buffer and
@@ -1474,6 +1814,36 @@ inputfs_intr(void *context, void *data, hid_size_t len)
 			mtx_unlock_spin(&inputfs_state_mtx);
 		}
 	}
+
+	/*
+	 * Stage D.0b: descriptor-driven keyboard event emission.
+	 *
+	 * Both conditions must hold for events to fire:
+	 *   - The device was classified as a keyboard (sc_roles).
+	 *   - The keyboard location cache is populated.
+	 *
+	 * Extraction reads the modifier byte and up to 6 array
+	 * keys; the diff emitter compares against the softc's
+	 * previous-state buffer and emits one key_up or key_down
+	 * event per change. The previous-state buffer is updated
+	 * by the diff emitter for the next report.
+	 */
+	if ((sc->sc_roles & INPUTFS_ROLE_KEYBOARD) != 0 &&
+	    sc->sc_keyboard_locations_valid &&
+	    copy_len > 0) {
+		uint8_t modifiers = 0;
+		uint8_t keys[6] = { 0, 0, 0, 0, 0, 0 };
+		int extracted;
+
+		extracted = inputfs_extract_keyboard(sc, sc->sc_ibuf,
+		    copy_len, &modifiers, keys);
+
+		if (extracted) {
+			mtx_lock_spin(&inputfs_state_mtx);
+			inputfs_keyboard_diff_emit(sc, modifiers, keys);
+			mtx_unlock_spin(&inputfs_state_mtx);
+		}
+	}
 }
 
 /*
@@ -1648,6 +2018,23 @@ inputfs_attach(device_t dev)
 			    sc->sc_has_wheel ? "yes" : "no",
 			    (unsigned int)sc->sc_loc_buttons.size,
 			    (unsigned int)sc->sc_button_count);
+		}
+
+		/*
+		 * Stage D.0b: populate the keyboard location cache.
+		 * Same pattern as the pointer cache: called
+		 * unconditionally, the interrupt path checks
+		 * sc_keyboard_locations_valid before extracting.
+		 */
+		inputfs_keyboard_locate(sc);
+
+		if (sc->sc_keyboard_locations_valid) {
+			device_printf(dev,
+			    "inputfs: keyboard locations cached "
+			    "(modifiers=%s keys=%s array_count=%u)\n",
+			    sc->sc_loc_modifiers.size > 0 ? "yes" : "no",
+			    sc->sc_loc_keys.size > 0 ? "yes" : "no",
+			    (unsigned int)sc->sc_loc_keys.count);
 		}
 
 		ibuf_size = hid_report_size_max(sc->sc_rdesc,
