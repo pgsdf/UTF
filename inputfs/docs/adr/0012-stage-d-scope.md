@@ -12,6 +12,11 @@ format additions that downstream specs (`shared/INPUT_STATE.md`,
 `shared/INPUT_EVENTS.md`) will encode and that
 `shared/src/input.zig` will expose.
 
+**Update (2026-04-28):** Sub-stages D.0a, D.0b, D.1, and D.2 have
+landed and verified on PGSD-bare-metal; the remaining sub-stages
+D.3, D.4, D.5, and D.6 are not yet implemented. Per-sub-stage
+status is recorded in §7 below.
+
 ## Context
 
 Stage C published the state region and event ring under
@@ -285,27 +290,41 @@ Three implementation conventions are fixed:
 Eight sub-stages, each landed and verified independently before
 the next starts:
 
-- **D.0a**: descriptor-driven pointer events (replaces
+- **D.0a** *(landed)*: descriptor-driven pointer events (replaces
   boot-protocol parser; adds report-ID dispatch; adds scroll
-  wheel).
-- **D.0b**: descriptor-driven keyboard events (key_down /
-  key_up / modifier_down / modifier_up).
-- **D.1**: kernel-side `FocusReader` equivalent in C (mmap
-  the focus file at module load, retry until valid, snapshot
-  under seqlock).
-- **D.2**: drawfs geometry sysctl publish (drawfs side) +
-  inputfs reads at load (inputfs side).
-- **D.3**: coordinate transform: clamp pointer to display
-  bounds, publish in compositor pixel space, add
+  wheel). Inputfs's pointer location cache is populated at attach
+  via `hid_locate` for X, Y, wheel, and per-button bits, then
+  consulted in the interrupt handler to extract real 16-bit
+  precision deltas and per-button state on every report.
+- **D.0b** *(landed)*: descriptor-driven keyboard events
+  (`keyboard.key_down` and `keyboard.key_up` with `hid_usage`
+  payload). Modifier handling folds into the per-event
+  `modifiers` field as documented in `shared/INPUT_EVENTS.md`;
+  there are no separate `modifier_down` / `modifier_up` event
+  types. Set-based diff against per-device previous-state
+  buffers; releases-before-presses ordering within each report.
+- **D.1** *(landed)*: kernel-side `FocusReader` equivalent in C.
+  Allocates a 5184-byte cached buffer; the kthread refreshes it
+  via `vn_rdwr` every ~100 ms (bounded `msleep_spin` timeout);
+  consumers call `inputfs_focus_snapshot` from interrupt context
+  and read under spin lock. Seqlock retry is folded into the
+  refresh-then-validate cycle rather than a snapshot-side loop.
+- **D.2** *(landed)*: drawfs geometry sysctl publish (drawfs
+  side: `hw.drawfs.efifb.{width,height,stride,bpp}` via
+  `SYSCTL_PROC` + accessor functions) and inputfs reads at
+  module load via `kernel_sysctlbyname` with fallback to
+  `1024x768x32` when sysctls are absent.
+- **D.3** *(pending)*: coordinate transform: clamp pointer to
+  display bounds, publish in compositor pixel space, add
   `transform_active` byte to state header.
-- **D.4**: routing application: stamp events with `session_id`
-  from focus snapshot, synthesise pointer.enter / pointer.leave,
-  apply keyboard-focus routing.
-- **D.5**: `hw.inputfs.enable` tunable with clean
+- **D.4** *(pending)*: routing application: stamp events with
+  `session_id` from focus snapshot, synthesise pointer.enter /
+  pointer.leave, apply keyboard-focus routing.
+- **D.5** *(pending)*: `hw.inputfs.enable` tunable with clean
   `state_valid` / `events_valid` transitions.
-- **D.6**: Stage D verification protocol (mirrors C.5's
-  `c-verify.sh` pattern with new manual checks for keyboard
-  events, transform behaviour, and routing).
+- **D.6** *(pending)*: Stage D verification protocol (mirrors
+  C.5's `c-verify.sh` pattern with new manual checks for
+  keyboard events, transform behaviour, and routing).
 
 Sub-stages may interleave or merge during implementation if
 dependencies surface; the breakdown is a planning aid, not a

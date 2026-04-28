@@ -854,7 +854,9 @@ Closes the coordinate-space bug (previously tracked as D-6 and
 superseded by this item), eliminates device-accumulated coordinates,
 and removes userspace semainputd as a component (see AD-2).
 
-**Status**: Stages A, B, and C complete; Stage D scoping next.
+**Status**: Stages A, B, and C complete; Stage D in progress
+(sub-stages D.0a, D.0b, D.1, and D.2 landed; D.3 through D.6
+remaining).
 
 Stage A delivered the proposal, foundations,
 `UTF_ARCHITECTURAL_DISCIPLINE.md`, ADRs 0001 through 0011, and
@@ -1158,23 +1160,29 @@ then D.6.
   attach + `hid_get_data` calls at interrupt time. Adds
   report-ID dispatch for devices with multiple top-level
   collections. Adds scroll-wheel event type if `HUG_WHEEL` is
-  present. Not started.
+  present. *Landed (commits `123a2b4` and `309329d`).*
 - **D.0b** descriptor-driven keyboard events: emit
   `keyboard.key_down` / `keyboard.key_up` from descriptor-driven
   parsing of the modifier byte and the keys-held array under
   HUP_KEYBOARD. Tracks held keys in the softc to compute
   transitions. Modifiers carried in each event's payload field
   (per existing `shared/INPUT_EVENTS.md` spec); no separate
-  modifier-transition events. Not started.
+  modifier-transition events. *Landed (commit `42dfd57`).*
 - **D.1** kernel-side `FocusReader` equivalent in C: mmap the
   focus file at module load (or first use), retry until
   `focus_valid = 1`, snapshot under the seqlock retry protocol,
   surface `keyboard_focus`, `pointer_grab`, and `surface_map`
-  for routing. Not started.
+  for routing. *Landed (commits `35ab475` and `948d346`).
+  Implementation uses `vn_rdwr` against a cached buffer rather
+  than mmap; the kthread refreshes via bounded `msleep_spin`
+  every ~100 ms, and `inputfs_focus_snapshot` is safe to call
+  from interrupt context under spin lock. Seqlock retry is
+  folded into the refresh-then-validate cycle.*
 - **D.2** drawfs geometry sysctl: drawfs publishes display
   geometry under `hw.drawfs.efifb.*`; inputfs reads at module
   load via `kernel_sysctlbyname`, falls back to a conservative
-  default if the sysctls are absent. Not started.
+  default if the sysctls are absent. *Landed (commits `f7cb38f`,
+  `8804e60`, and `732f737`).*
 - **D.3** coordinate transform: clamp pointer position to
   display bounds learned from D.2, publish in compositor
   pixel space, set `transform_active = 1` in the state region
