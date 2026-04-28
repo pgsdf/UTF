@@ -123,6 +123,7 @@ const STATE_OFF_PTR_Y: usize = 36;
 const STATE_OFF_PTR_BUTTONS: usize = 40;
 const STATE_OFF_DEVICE_COUNT: usize = 44;
 const STATE_OFF_TOUCH_COUNT: usize = 46;
+const STATE_OFF_TRANSFORM_ACTIVE: usize = 48;
 
 // Device slot field offsets (relative to start of slot).
 const DEV_OFF_DEVICE_ID: usize = 0;
@@ -334,6 +335,10 @@ pub const StateWriter = struct {
         writeU16(self.map, STATE_OFF_TOUCH_COUNT, count);
     }
 
+    pub fn setTransformActive(self: StateWriter, active: u8) void {
+        self.map[STATE_OFF_TRANSFORM_ACTIVE] = active;
+    }
+
     pub fn setKeyboardState(self: StateWriter, slot: usize, kb: KeyboardState) !void {
         if (slot >= STATE_SLOT_COUNT) return error.SlotOutOfRange;
         const base = STATE_KEYBOARD_ARRAY_OFFSET + slot * STATE_KEYBOARD_SLOT_SIZE;
@@ -371,6 +376,7 @@ pub const StateSnapshot = struct {
     pointer_buttons: u32,
     device_count: u16,
     active_touch_count: u16,
+    transform_active: u8,
     last_sequence: u64,
     boot_wall_offset_ns: u64,
     devices: [STATE_SLOT_COUNT]DeviceDescriptor,
@@ -470,6 +476,7 @@ pub const StateReader = struct {
             snap.pointer_buttons = std.mem.readInt(u32, m[STATE_OFF_PTR_BUTTONS..][0..4], .little);
             snap.device_count = std.mem.readInt(u16, m[STATE_OFF_DEVICE_COUNT..][0..2], .little);
             snap.active_touch_count = std.mem.readInt(u16, m[STATE_OFF_TOUCH_COUNT..][0..2], .little);
+            snap.transform_active = m[STATE_OFF_TRANSFORM_ACTIVE];
             snap.last_sequence = std.mem.readInt(u64, m[STATE_OFF_LAST_SEQ..][0..8], .little);
             snap.boot_wall_offset_ns = std.mem.readInt(u64, m[STATE_OFF_BOOT_OFFSET..][0..8], .little);
 
@@ -1163,6 +1170,44 @@ test "state writer/reader pointer round-trip under seqlock" {
     try testing.expectEqual(@as(i32, 200), snap.pointer_y);
     try testing.expectEqual(@as(u32, 0b011), snap.pointer_buttons);
     try testing.expectEqual(@as(u64, 42), snap.last_sequence);
+}
+
+test "state transform_active defaults to zero (Stage C semantics)" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try tmpStatePath(&tmp, &buf);
+
+    var w = try StateWriter.init(path);
+    defer w.deinit();
+
+    const r = StateReader.init(path);
+    defer r.deinit();
+
+    w.markValid();
+    const snap = try r.snapshot();
+    try testing.expectEqual(@as(u8, 0), snap.transform_active);
+}
+
+test "state transform_active round-trip (Stage D semantics)" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try tmpStatePath(&tmp, &buf);
+
+    var w = try StateWriter.init(path);
+    defer w.deinit();
+
+    const r = StateReader.init(path);
+    defer r.deinit();
+
+    w.beginUpdate();
+    w.setTransformActive(1);
+    w.endUpdate();
+    w.markValid();
+
+    const snap = try r.snapshot();
+    try testing.expectEqual(@as(u8, 1), snap.transform_active);
 }
 
 test "state writer/reader device round-trip" {

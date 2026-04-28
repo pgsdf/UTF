@@ -43,12 +43,43 @@ Total size: **11,328 bytes** (header 64 + device inventory 32 × 160
 | 12 | 4 | u32 | `_pad0` | Reserved, zero (alignment) |
 | 16 | 8 | u64 | `last_sequence` | Sequence number of the most recent incorporated event |
 | 24 | 8 | u64 | `boot_wall_offset_ns` | Wall-clock ns at ordering-clock zero |
-| 32 | 4 | i32 | `pointer_x` | Compositor-space pointer X (pixels) |
-| 36 | 4 | i32 | `pointer_y` | Compositor-space pointer Y (pixels) |
+| 32 | 4 | i32 | `pointer_x` | Pointer X coordinate; interpretation governed by `transform_active` (see below) |
+| 36 | 4 | i32 | `pointer_y` | Pointer Y coordinate; interpretation governed by `transform_active` (see below) |
 | 40 | 4 | u32 | `pointer_buttons` | Button bitmask (bit 0 = left, 1 = right, 2 = middle; others reserved) |
 | 44 | 2 | u16 | `device_count` | Number of populated device inventory slots |
 | 46 | 2 | u16 | `active_touch_count` | Total active touch contacts across all devices |
-| 48 | 16 | u8[16] | `_pad1` | Reserved, zero |
+| 48 | 1 | u8 | `transform_active` | `0` = `pointer_x`/`pointer_y` are accumulated raw device deltas (Stage C); `1` = compositor pixel space (Stage D and later). See below. |
+| 49 | 15 | u8[15] | `_pad1` | Reserved, zero |
+
+#### `transform_active` semantics (added Stage D per ADR 0012)
+
+The state region's pointer coordinates have two possible
+interpretations during the inputfs migration:
+
+- `transform_active = 0`: Stage C publication. `pointer_x` and
+  `pointer_y` are accumulated raw deltas from boot-protocol or
+  descriptor-driven mouse motion. They have no relationship to
+  any display geometry and should not be interpreted as pixels
+  on a screen. This is the value Stage C consumers see; the
+  state region remains structurally correct but the coordinates
+  are diagnostic rather than positional.
+
+- `transform_active = 1`: Stage D publication. `pointer_x` and
+  `pointer_y` are in compositor pixel space, clamped to display
+  bounds learned from drawfs at module load. Consumers may
+  interpret them directly as screen coordinates and resolve
+  surface-under-cursor against the focus region's surface_map.
+
+The byte transitions monotonically from `0` to `1` when Stage D
+transform is enabled (typically at module load if `hw.inputfs.enable
+= 1` and drawfs geometry is available). It does not transition
+back to `0` once set.
+
+Consumers that interpret pointer coordinates as compositor pixels
+must check `transform_active == 1` first or risk treating raw
+delta accumulation as pixel positions. Consumers that only
+display the values diagnostically (e.g. `inputdump state`) need
+no behavioural change.
 
 ### Device inventory (32 slots × 160 bytes = 5,120 bytes, offset 64)
 

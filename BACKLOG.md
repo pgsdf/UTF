@@ -1138,15 +1138,71 @@ AD-1 rather than separate AD entries:
 publishes input data in raw device space; Stage D adds the
 transform machinery that maps device coordinates to compositor
 space, and consumes the focus region to route events to the
-correct session. Concrete sub-stages are not yet scoped; the
-substantive design work begins after Stage C closes out and
-before Stage D opens. Two open design questions are likely to
-shape Stage D: how the per-device transform is published (a
-fourth shared-memory region, or stored alongside device records
-in the state region), and where the focus-routing logic sits
-(in inputfs, in the compositor, or split between them). The
-descriptor-driven event generation deferred from Stage C will
-likely roll into early Stage D.
+correct session. Stage D is scoped in
+`inputfs/docs/adr/0012-stage-d-scope.md`, which records the
+design decisions made during Stage D scoping (sysctl-based
+geometry exposure from drawfs, kernel-side focus routing in
+inputfs, stamp-and-filter session_id placement, transform_active
+byte for coordinate semantics signaling, `hw.inputfs.enable`
+tunable semantics, and descriptor-driven event scope).
+
+Stage D breaks into eight sub-stages, each landed and verified
+independently before the next starts. The dependency order is
+approximately D.0a or D.0b first (independent of each other),
+then D.1 and D.2 (independent of each other), then D.3 and D.4
+(D.3 depends on D.2 and D.0a; D.4 depends on D.1), then D.5,
+then D.6.
+
+- **D.0a** descriptor-driven pointer events: replace
+  boot-protocol parsing with `hid_locate`-based extraction at
+  attach + `hid_get_data` calls at interrupt time. Adds
+  report-ID dispatch for devices with multiple top-level
+  collections. Adds scroll-wheel event type if `HUG_WHEEL` is
+  present. Not started.
+- **D.0b** descriptor-driven keyboard events: emit
+  `keyboard.key_down` / `keyboard.key_up` from descriptor-driven
+  parsing of the modifier byte and the keys-held array under
+  HUP_KEYBOARD. Tracks held keys in the softc to compute
+  transitions. Modifiers carried in each event's payload field
+  (per existing `shared/INPUT_EVENTS.md` spec); no separate
+  modifier-transition events. Not started.
+- **D.1** kernel-side `FocusReader` equivalent in C: mmap the
+  focus file at module load (or first use), retry until
+  `focus_valid = 1`, snapshot under the seqlock retry protocol,
+  surface `keyboard_focus`, `pointer_grab`, and `surface_map`
+  for routing. Not started.
+- **D.2** drawfs geometry sysctl: drawfs publishes display
+  geometry under `hw.drawfs.efifb.*`; inputfs reads at module
+  load via `kernel_sysctlbyname`, falls back to a conservative
+  default if the sysctls are absent. Not started.
+- **D.3** coordinate transform: clamp pointer position to
+  display bounds learned from D.2, publish in compositor
+  pixel space, set `transform_active = 1` in the state region
+  header. Seed pointer to display centre on first activation.
+  Not started.
+- **D.4** routing application: stamp events with
+  `session_id` from the focus snapshot, synthesise
+  `pointer.enter` and `pointer.leave` events when
+  surface-under-cursor changes between successive pointer
+  events. Apply keyboard-focus routing (events delivered to
+  `keyboard_focus` if non-zero). Not started.
+- **D.5** `hw.inputfs.enable` tunable: gate publication.
+  When `0`, inputfs is fully inert (no state updates, no
+  ring updates, `state_valid = 0`, `events_valid = 0`).
+  When `1`, full publication. Clean valid-byte transitions
+  on flip. Not started.
+- **D.6** Stage D verification protocol: extend
+  `c-verify.sh` (or write a new `d-verify.sh`) and a
+  `D_VERIFICATION.md` document. Mirrors C.5's automated
+  phases plus a manual checklist for keyboard events
+  (D.0b), transform behaviour (D.3), routing (D.4), and
+  the tunable's transitions (D.5). Not started.
+
+Touch and pen events are explicitly out of scope for Stage D
+(per ADR 0012); they are tracked as a separate AD-1 sub-item
+post Stage D. The chronofs `ts_sync` integration (Stage C
+deferred item) also stays separate from Stage D unless D.6
+verification surfaces a need for it.
 
 ### `[ ]` AD-2: Retire semainputd  *(Open, Medium; depends: AD-1)*
 
