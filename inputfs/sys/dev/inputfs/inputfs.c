@@ -216,6 +216,51 @@ MALLOC_DEFINE(M_INPUTFS, "inputfs", "inputfs report buffers");
 #define EV_SLOT_OFF_FLAGS       28
 #define EV_SLOT_OFF_PAYLOAD     32
 
+/*
+ * Focus region constants (Stage D.1, per shared/INPUT_FOCUS.md
+ * and ADR 0003).
+ *
+ * The compositor writes this file; inputfs reads it. The
+ * publication directory is shared with the state and event
+ * regions. Layout: 64-byte header + 256 surface slots * 20
+ * bytes = 5184 bytes total.
+ */
+#define INPUTFS_FOCUS_PATH      "/var/run/sema/input/focus"
+
+#define INPUTFS_FOCUS_MAGIC     0x4946434Fu  /* "IFCO" big-endian mnemonic */
+#define INPUTFS_FOCUS_VERSION   1u
+#define INPUTFS_FOCUS_HEADER_SIZE  64u
+#define INPUTFS_FOCUS_SLOT_SIZE     20u
+#define INPUTFS_FOCUS_SLOT_COUNT    256u
+#define INPUTFS_FOCUS_SIZE      (INPUTFS_FOCUS_HEADER_SIZE + \
+    INPUTFS_FOCUS_SLOT_COUNT * INPUTFS_FOCUS_SLOT_SIZE)
+
+/* Focus header field offsets. */
+#define FC_OFF_MAGIC            0
+#define FC_OFF_VERSION          4
+#define FC_OFF_VALID            5
+#define FC_OFF_SLOT_COUNT       6
+#define FC_OFF_SEQLOCK          8
+#define FC_OFF_KB_FOCUS         12
+#define FC_OFF_PTR_GRAB         16
+#define FC_OFF_SURFACE_COUNT    20
+
+/* Focus surface slot field offsets (relative to slot start). */
+#define FC_SLOT_OFF_SESSION_ID  0
+#define FC_SLOT_OFF_X           4
+#define FC_SLOT_OFF_Y           8
+#define FC_SLOT_OFF_WIDTH       12
+#define FC_SLOT_OFF_HEIGHT      16
+
+/*
+ * Refresh period in ticks. The kthread wakes either on a sync
+ * dirty signal or after this many ticks elapse, whichever comes
+ * first; on each wake it does an opportunistic focus refresh.
+ * 100ms is fast enough to track focus changes responsively
+ * without producing observable cost. Must be set at runtime
+ * since hz is not a compile-time constant; see kthread loop.
+ */
+
 /* Source role values (per INPUT_EVENTS.md). */
 #define INPUTFS_SOURCE_POINTER          1u
 #define INPUTFS_SOURCE_KEYBOARD         2u
@@ -240,6 +285,41 @@ MALLOC_DEFINE(M_INPUTFS, "inputfs", "inputfs report buffers");
 
 /* Synthetic device sentinel for events not associated with a device. */
 #define INPUTFS_SYNTHETIC_DEVICE        0xFFFFu
+
+/*
+ * Focus snapshot types (Stage D.1).
+ *
+ * inputfs_focus_snapshot is the kernel-side analogue of the Zig
+ * FocusSnapshot in shared/src/input.zig. Populated from the
+ * cached focus buffer by inputfs_focus_snapshot(); consumed in
+ * Stage D.4 by the routing path to compute session_id stamping
+ * and pointer.enter / pointer.leave synthesis.
+ *
+ * `valid` indicates whether the cache currently holds a snapshot
+ * that satisfied focus_valid == 1 at the time of the last
+ * refresh. Consumers must check this before using any other
+ * field; an invalid snapshot means routing should fall back to
+ * "no session" (event published with session_id = 0).
+ *
+ * `surfaces` always contains INPUTFS_FOCUS_SLOT_COUNT entries.
+ * `surface_count` is the number of populated entries; entries
+ * beyond surface_count are zeroed but should not be consulted.
+ */
+struct inputfs_focus_surface {
+	uint32_t	session_id;
+	int32_t		x;
+	int32_t		y;
+	uint32_t	width;
+	uint32_t	height;
+};
+
+struct inputfs_focus_snapshot {
+	int		valid;
+	uint32_t	keyboard_focus;
+	uint32_t	pointer_grab;
+	uint16_t	surface_count;
+	struct inputfs_focus_surface surfaces[INPUTFS_FOCUS_SLOT_COUNT];
+};
 
 /*
  * Per-device softc. Stage B.4 added interrupt buffer fields;
@@ -381,6 +461,40 @@ static struct vnode		*inputfs_events_vp;
 static struct proc		*inputfs_kthread_proc;
 static int			 inputfs_kthread_run;
 static int			 inputfs_kthread_done;
+
+/*
+ * Focus region context (Stage D.1).
+ *
+ * inputfs_focus_buf is a 5184-byte cached copy of the focus
+ * file maintained by the kthread. The kthread re-reads the file
+ * once per refresh tick (~100 ms) under inputfs_focus_mtx and
+ * copies the bytes verbatim, including the seqlock counter.
+ * inputfs_focus_snapshot() then performs the seqlock retry on
+ * the cache: this works because the cache is a snapshot of the
+ * underlying file at a moment when no kernel writer was active
+ * (the only writer is the userspace compositor). The seqlock
+ * still provides correctness if the file was being updated
+ * during the kthread's vn_rdwr.
+ *
+ * inputfs_focus_vp is the open vnode for the focus file, or
+ * NULL when the file is absent (compositor not running) or has
+ * not yet been opened. The kthread retries the open on each
+ * refresh tick until success.
+ *
+ * inputfs_focus_cache_valid is set when the cache holds a
+ * snapshot whose magic and version checks passed and whose
+ * focus_valid byte was 1. Cleared when the file is closed,
+ * disappears, or fails validation.
+ *
+ * inputfs_focus_logged_absent suppresses repeated "file not
+ * found" log lines: log once per attach cycle, not once per
+ * refresh tick.
+ */
+static uint8_t			*inputfs_focus_buf;
+static struct mtx		 inputfs_focus_mtx;
+static struct vnode		*inputfs_focus_vp;
+static int			 inputfs_focus_cache_valid;
+static int			 inputfs_focus_logged_absent;
 
 /*
  * Match table for HID_PNP_INFO. Matches HID Top-Level
@@ -1003,6 +1117,220 @@ inputfs_events_sync_to_file(struct thread *td)
 }
 
 /*
+ * inputfs_focus_open_file -- Stage D.1.
+ *
+ * Attempt to open the focus file read-only. The file is
+ * compositor-written; inputfs is read-only on it. The compositor
+ * may not be running yet, in which case the open fails with
+ * ENOENT and we leave inputfs_focus_vp == NULL. Subsequent
+ * refresh ticks will retry.
+ *
+ * Unlike the state and events files, inputfs does not create
+ * the focus file: that is the compositor's responsibility.
+ * inputfs is never the writer.
+ */
+static void
+inputfs_focus_open_file(struct thread *td)
+{
+	struct nameidata nd;
+	int flags = FREAD;
+	int error;
+
+	if (inputfs_focus_vp != NULL)
+		return;
+
+	NDINIT(&nd, LOOKUP, FOLLOW, UIO_SYSSPACE,
+	    __DECONST(char *, INPUTFS_FOCUS_PATH));
+	error = vn_open(&nd, &flags, 0, NULL);
+	if (error != 0) {
+		if (!inputfs_focus_logged_absent) {
+			printf("inputfs: focus file %s not present "
+			    "(compositor not running?); will retry\n",
+			    INPUTFS_FOCUS_PATH);
+			inputfs_focus_logged_absent = 1;
+		}
+		return;
+	}
+
+	NDFREE_PNBUF(&nd);
+	inputfs_focus_vp = nd.ni_vp;
+	VOP_UNLOCK(inputfs_focus_vp);
+	inputfs_focus_logged_absent = 0;
+	printf("inputfs: opened focus file %s\n", INPUTFS_FOCUS_PATH);
+}
+
+static void
+inputfs_focus_close_file(struct thread *td)
+{
+	if (inputfs_focus_vp == NULL)
+		return;
+	(void)vn_close(inputfs_focus_vp, FREAD, NOCRED, td);
+	inputfs_focus_vp = NULL;
+	inputfs_focus_cache_valid = 0;
+}
+
+/*
+ * inputfs_focus_refresh -- Stage D.1.
+ *
+ * Read the entire focus file into the cached buffer. Validates
+ * magic and version; on failure, marks the cache invalid but
+ * leaves the file open (the compositor may be in the middle of
+ * an unusual state).
+ *
+ * The kthread calls this once per refresh tick. The actual
+ * seqlock retry is performed by inputfs_focus_snapshot when
+ * consumers (Stage D.4 routing) read the cache; refresh just
+ * captures whatever bytes are in the file at the moment of read.
+ *
+ * Called from kthread context. May sleep on filesystem I/O.
+ */
+static void
+inputfs_focus_refresh(struct thread *td)
+{
+	uint8_t scratch[INPUTFS_FOCUS_SIZE];
+	int error;
+	uint32_t magic;
+
+	if (inputfs_focus_vp == NULL) {
+		inputfs_focus_open_file(td);
+		if (inputfs_focus_vp == NULL)
+			return;
+	}
+
+	error = vn_rdwr(UIO_READ, inputfs_focus_vp,
+	    scratch, (int)INPUTFS_FOCUS_SIZE,
+	    (off_t)0, UIO_SYSSPACE,
+	    IO_UNIT, NOCRED, NULL, NULL, td);
+	if (error != 0) {
+		/* File may have been deleted or filesystem in trouble.
+		 * Close and let the next tick retry the open. */
+		printf("inputfs: focus vn_rdwr read failed: %d "
+		    "(closing, will retry)\n", error);
+		inputfs_focus_close_file(td);
+		return;
+	}
+
+	/* Validate magic and version before populating cache. */
+	magic = inputfs_get_u32le(scratch, FC_OFF_MAGIC);
+	if (magic != INPUTFS_FOCUS_MAGIC) {
+		mtx_lock_spin(&inputfs_focus_mtx);
+		inputfs_focus_cache_valid = 0;
+		mtx_unlock_spin(&inputfs_focus_mtx);
+		return;
+	}
+	if (scratch[FC_OFF_VERSION] != INPUTFS_FOCUS_VERSION) {
+		mtx_lock_spin(&inputfs_focus_mtx);
+		inputfs_focus_cache_valid = 0;
+		mtx_unlock_spin(&inputfs_focus_mtx);
+		return;
+	}
+
+	/* Copy bytes verbatim under the spin lock so consumers see
+	 * a consistent buffer state. The seqlock counter inside the
+	 * buffer captures whether the compositor was mid-update at
+	 * the moment of vn_rdwr; consumers re-check on snapshot. */
+	mtx_lock_spin(&inputfs_focus_mtx);
+	memcpy(inputfs_focus_buf, scratch, INPUTFS_FOCUS_SIZE);
+	inputfs_focus_cache_valid =
+	    (scratch[FC_OFF_VALID] != 0) ? 1 : 0;
+	mtx_unlock_spin(&inputfs_focus_mtx);
+}
+
+/*
+ * inputfs_focus_snapshot -- Stage D.1.
+ *
+ * Public entry point for consumers (Stage D.4 routing) to read
+ * the cached focus state. Copies fields out of the cached buffer
+ * into the caller's snapshot struct.
+ *
+ * The cached buffer is frozen under inputfs_focus_mtx for the
+ * duration of this call: the kthread cannot update it
+ * concurrently. The seqlock counter inside the cached buffer
+ * reflects the userspace compositor's state at the time of the
+ * last kthread refresh; if the compositor was mid-update during
+ * that refresh, the buffer captured an inconsistent state with
+ * an odd seqlock value.
+ *
+ * This function therefore performs a single seqlock-validity
+ * check (counter must be even); no retry loop is needed because
+ * the cache will not change while we hold the lock. If the
+ * cached state was inconsistent at refresh time, we return with
+ * out->valid = 0 and the consumer must skip routing for this
+ * event. The next kthread refresh will re-read the file and may
+ * capture a consistent state.
+ *
+ * Returns 1 if the snapshot was populated (out->valid indicates
+ * whether the data is authoritative). Returns 0 only on a NULL
+ * argument; the function does not fail otherwise.
+ *
+ * Safe to call from interrupt context: only spin-locks and
+ * memory reads, no sleeping operations.
+ */
+int
+inputfs_focus_snapshot(struct inputfs_focus_snapshot *out)
+{
+	uint32_t seqlock;
+	uint16_t i;
+
+	if (out == NULL)
+		return (0);
+
+	mtx_lock_spin(&inputfs_focus_mtx);
+
+	if (!inputfs_focus_cache_valid) {
+		out->valid = 0;
+		out->keyboard_focus = 0;
+		out->pointer_grab = 0;
+		out->surface_count = 0;
+		memset(out->surfaces, 0, sizeof(out->surfaces));
+		mtx_unlock_spin(&inputfs_focus_mtx);
+		return (1);
+	}
+
+	seqlock = inputfs_get_u32le(inputfs_focus_buf, FC_OFF_SEQLOCK);
+	if ((seqlock & 1u) != 0) {
+		/* The cached buffer captured an inconsistent state
+		 * (compositor was mid-update during the kthread's
+		 * vn_rdwr). Fail this snapshot; the next kthread
+		 * refresh will likely capture a consistent state. */
+		out->valid = 0;
+		out->keyboard_focus = 0;
+		out->pointer_grab = 0;
+		out->surface_count = 0;
+		memset(out->surfaces, 0, sizeof(out->surfaces));
+		mtx_unlock_spin(&inputfs_focus_mtx);
+		return (1);
+	}
+
+	out->valid = 1;
+	out->keyboard_focus =
+	    inputfs_get_u32le(inputfs_focus_buf, FC_OFF_KB_FOCUS);
+	out->pointer_grab =
+	    inputfs_get_u32le(inputfs_focus_buf, FC_OFF_PTR_GRAB);
+	out->surface_count = (uint16_t)(
+	    inputfs_focus_buf[FC_OFF_SURFACE_COUNT] |
+	    ((uint32_t)inputfs_focus_buf[FC_OFF_SURFACE_COUNT + 1] << 8));
+
+	for (i = 0; i < INPUTFS_FOCUS_SLOT_COUNT; i++) {
+		size_t off = INPUTFS_FOCUS_HEADER_SIZE +
+		    i * INPUTFS_FOCUS_SLOT_SIZE;
+		out->surfaces[i].session_id = inputfs_get_u32le(
+		    inputfs_focus_buf, off + FC_SLOT_OFF_SESSION_ID);
+		out->surfaces[i].x = inputfs_get_i32le(
+		    inputfs_focus_buf, off + FC_SLOT_OFF_X);
+		out->surfaces[i].y = inputfs_get_i32le(
+		    inputfs_focus_buf, off + FC_SLOT_OFF_Y);
+		out->surfaces[i].width = inputfs_get_u32le(
+		    inputfs_focus_buf, off + FC_SLOT_OFF_WIDTH);
+		out->surfaces[i].height = inputfs_get_u32le(
+		    inputfs_focus_buf, off + FC_SLOT_OFF_HEIGHT);
+	}
+
+	mtx_unlock_spin(&inputfs_focus_mtx);
+	return (1);
+}
+
+/*
  * inputfs_state_worker -- the kthread that syncs the live
  * buffers to disk. Sleeps until either inputfs_state_dirty or
  * inputfs_events_dirty becomes true; on wake, clears both
@@ -1020,30 +1348,50 @@ inputfs_state_worker(void *arg)
 {
 	struct thread *td = curthread;
 	int min_ticks;
+	int focus_refresh_ticks;
 	int do_state, do_events;
 
 	min_ticks = hz / INPUTFS_SYNC_HZ;
 	if (min_ticks < 1)
 		min_ticks = 1;
 
+	/* Stage D.1: focus refresh period. 100ms target; bounded
+	 * msleep_spin will wake the kthread at this interval if no
+	 * dirty signal arrives sooner, and an opportunistic refresh
+	 * runs on every wake. */
+	focus_refresh_ticks = hz / 10;
+	if (focus_refresh_ticks < 1)
+		focus_refresh_ticks = 1;
+
 	(void)arg;
 
 	inputfs_state_open_file(td);
 	inputfs_events_open_file(td);
+	/* Stage D.1: try the focus open at startup; if the compositor
+	 * is not yet running, the open will fail silently and retry
+	 * on each refresh tick. */
+	inputfs_focus_open_file(td);
 
 	for (;;) {
 		mtx_lock_spin(&inputfs_state_mtx);
-		while (!inputfs_state_dirty && !inputfs_events_dirty &&
+		if (!inputfs_state_dirty && !inputfs_events_dirty &&
 		    inputfs_kthread_run) {
 			/* Sleep on &inputfs_state_dirty as the unified
 			 * wakeup channel: both state updates and event
 			 * publications wakeup() on this same pointer.
 			 * msleep_spin drops and reacquires the spin
 			 * mutex, allowing the interrupt path to update
-			 * the live buffers while we sleep. */
-			msleep_spin(&inputfs_state_dirty,
+			 * the live buffers while we sleep.
+			 *
+			 * Stage D.1: bounded by focus_refresh_ticks so
+			 * the kthread wakes periodically to refresh the
+			 * focus cache even when no input is flowing. A
+			 * timeout return is treated identically to a
+			 * dirty wake: do the opportunistic work and
+			 * loop. */
+			(void)msleep_spin(&inputfs_state_dirty,
 			    &inputfs_state_mtx,
-			    "ifssync", 0);
+			    "ifssync", focus_refresh_ticks);
 		}
 		if (!inputfs_kthread_run) {
 			mtx_unlock_spin(&inputfs_state_mtx);
@@ -1060,10 +1408,18 @@ inputfs_state_worker(void *arg)
 		if (do_events)
 			inputfs_events_sync_to_file(td);
 
+		/* Stage D.1: opportunistic focus refresh on every wake.
+		 * Cheap when the file is unchanged (vn_rdwr against
+		 * tmpfs is microseconds); rate-bounded by min_ticks
+		 * below. */
+		inputfs_focus_refresh(td);
+
 		/* Rate cap: ensure at least min_ticks between iterations. */
 		pause("ifsrate", min_ticks);
 	}
 
+	/* Stage D.1: focus file close before publication-side closes. */
+	inputfs_focus_close_file(td);
 	inputfs_events_close_file(td);
 	inputfs_state_close_file(td);
 
@@ -2220,9 +2576,28 @@ inputfs_modevent(module_t mod, int what, void *arg)
 		inputfs_events_synced = 0;
 		inputfs_events_dirty = 0;
 
+		/* Allocate the focus region cache buffer (Stage D.1).
+		 * The buffer mirrors the on-disk focus file written by
+		 * the userspace compositor; the kthread refreshes it
+		 * once per refresh tick. */
+		inputfs_focus_buf = malloc(INPUTFS_FOCUS_SIZE,
+		    M_INPUTFS, M_WAITOK | M_ZERO);
+		inputfs_focus_vp = NULL;
+		inputfs_focus_cache_valid = 0;
+		inputfs_focus_logged_absent = 0;
+
 		/* Initialize the spin mutex used by the interrupt
 		 * path and the kthread worker. */
 		mtx_init(&inputfs_state_mtx, "inputfs state",
+		    NULL, MTX_SPIN);
+
+		/* Stage D.1: spin mutex for the focus cache. Separate
+		 * from inputfs_state_mtx because the focus cache is
+		 * read in the interrupt path (D.4) but the kthread
+		 * holds the state mutex during file I/O; sharing one
+		 * mutex would unnecessarily contend the interrupt
+		 * fast path against the kthread's slow path. */
+		mtx_init(&inputfs_focus_mtx, "inputfs focus",
 		    NULL, MTX_SPIN);
 
 		/* Start the kthread worker. */
@@ -2232,7 +2607,10 @@ inputfs_modevent(module_t mod, int what, void *arg)
 		    &inputfs_kthread_proc, 0, 0, "inputfs_state");
 		if (error != 0) {
 			printf("inputfs: kproc_create failed: %d\n", error);
+			mtx_destroy(&inputfs_focus_mtx);
 			mtx_destroy(&inputfs_state_mtx);
+			free(inputfs_focus_buf, M_INPUTFS);
+			inputfs_focus_buf = NULL;
 			free(inputfs_events_buf, M_INPUTFS);
 			inputfs_events_buf = NULL;
 			free(inputfs_state_buf, M_INPUTFS);
@@ -2266,7 +2644,12 @@ inputfs_modevent(module_t mod, int what, void *arg)
 		mtx_unlock_spin(&inputfs_state_mtx);
 
 		mtx_destroy(&inputfs_state_mtx);
+		mtx_destroy(&inputfs_focus_mtx);
 
+		if (inputfs_focus_buf != NULL) {
+			free(inputfs_focus_buf, M_INPUTFS);
+			inputfs_focus_buf = NULL;
+		}
 		if (inputfs_events_buf != NULL) {
 			free(inputfs_events_buf, M_INPUTFS);
 			inputfs_events_buf = NULL;
