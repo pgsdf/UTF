@@ -1266,7 +1266,7 @@ inputfs_focus_refresh(struct thread *td)
  * Safe to call from interrupt context: only spin-locks and
  * memory reads, no sleeping operations.
  */
-int
+static int
 inputfs_focus_snapshot(struct inputfs_focus_snapshot *out)
 {
 	uint32_t seqlock;
