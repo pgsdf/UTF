@@ -224,10 +224,11 @@ MALLOC_DEFINE(M_INPUTFS, "inputfs", "inputfs report buffers");
 #define INPUTFS_SOURCE_LIGHTING         5u
 #define INPUTFS_SOURCE_DEVICE_LIFECYCLE 6u
 
-/* Event type values per source. Stage C.3 emits a small subset. */
+/* Event type values per source. */
 #define INPUTFS_POINTER_MOTION          1u
 #define INPUTFS_POINTER_BUTTON_DOWN     2u
 #define INPUTFS_POINTER_BUTTON_UP       3u
+#define INPUTFS_POINTER_SCROLL          4u
 #define INPUTFS_LIFECYCLE_ATTACH        1u
 #define INPUTFS_LIFECYCLE_DETACH        2u
 
@@ -241,7 +242,9 @@ MALLOC_DEFINE(M_INPUTFS, "inputfs", "inputfs report buffers");
 /*
  * Per-device softc. Stage B.4 added interrupt buffer fields;
  * Stage B.5 added the per-device role bitmask;
- * Stage C.2 adds the state-region slot index assigned at attach.
+ * Stage C.2 adds the state-region slot index assigned at attach;
+ * Stage D.0a adds the cached HID locations for descriptor-driven
+ * pointer event extraction.
  */
 struct inputfs_softc {
 	device_t	sc_dev;
@@ -269,6 +272,35 @@ struct inputfs_softc {
 	 * INPUTFS_NO_STATE_SLOT when the inventory was full.
 	 */
 	uint8_t		 sc_state_slot;
+
+	/*
+	 * Pointer location cache (Stage D.0a). Populated once at
+	 * attach by inputfs_pointer_locate. Each location's
+	 * size field is zero when the corresponding usage is not
+	 * present in the descriptor; consumers must check size > 0
+	 * before extracting.
+	 *
+	 * sc_loc_buttons covers the button usage range as a single
+	 * location with one bit per button (HID button usages are
+	 * 1-indexed in the HUP_BUTTON page; our wire format folds
+	 * the first 32 buttons into a u32 bitmask, so we cap at 32
+	 * when caching).
+	 *
+	 * Each location records the report ID it belongs to, since
+	 * a device may multiplex multiple reports through one
+	 * interrupt callback.
+	 */
+	uint8_t			 sc_pointer_locations_valid;
+	struct hid_location	 sc_loc_x;
+	struct hid_location	 sc_loc_y;
+	struct hid_location	 sc_loc_wheel;
+	struct hid_location	 sc_loc_buttons;
+	uint8_t			 sc_loc_x_id;
+	uint8_t			 sc_loc_y_id;
+	uint8_t			 sc_loc_wheel_id;
+	uint8_t			 sc_loc_buttons_id;
+	uint8_t			 sc_button_count;
+	uint8_t			 sc_has_wheel;
 };
 
 /*
@@ -1068,16 +1100,217 @@ inputfs_walk_rdesc(struct inputfs_softc *sc)
 }
 
 /*
+ * inputfs_report_id_matches -- Stage D.0a helper.
+ *
+ * Returns 1 if the report buffer's report ID matches the cached
+ * report ID for a location. When cached_id == 0, the device does
+ * not use report IDs and any non-empty buffer matches. When
+ * cached_id != 0, the first byte of the buffer must equal it.
+ *
+ * Used by inputfs_extract_pointer to dispatch among multiple
+ * report IDs on devices that multiplex (e.g. touchpads with
+ * separate pointer and gesture reports).
+ */
+static inline int
+inputfs_report_id_matches(uint8_t cached_id, const uint8_t *buf,
+    hid_size_t len)
+{
+	if (len == 0)
+		return (0);
+	if (cached_id == 0)
+		return (1);
+	return (buf[0] == cached_id);
+}
+
+/*
+ * inputfs_pointer_locate -- Stage D.0a.
+ *
+ * Populate the softc's HID-location cache for descriptor-driven
+ * pointer event extraction. Called once at attach, after
+ * inputfs_walk_rdesc and before hidbus_set_intr.
+ *
+ * For each pointer-relevant usage (X, Y, Wheel, and the button
+ * range under HUP_BUTTON), call hid_locate against the descriptor
+ * and record the resulting location and report ID. Locations
+ * whose size is zero indicate the usage is not present in this
+ * descriptor; the interrupt path checks size > 0 before extracting.
+ *
+ * Buttons are special: HID encodes per-button presence as
+ * individual usages 1, 2, 3, ... under HUP_BUTTON, but in
+ * practice they are emitted as a single packed bit field. We
+ * locate button 1 to get the bit-field's start and use the
+ * report count (number of buttons) to determine how wide the
+ * field is. Up to 32 buttons are supported (one u32 in the
+ * wire format); buttons beyond 32 are silently ignored.
+ *
+ * The location cache is unconditional regardless of role: a
+ * keyboard descriptor will simply have all pointer locations
+ * report size == 0, and the interrupt path will skip extraction
+ * accordingly. This avoids tying cache population to a specific
+ * order of role classification.
+ */
+static void
+inputfs_pointer_locate(struct inputfs_softc *sc)
+{
+	uint32_t flags;
+	uint8_t id;
+
+	memset(&sc->sc_loc_x, 0, sizeof(sc->sc_loc_x));
+	memset(&sc->sc_loc_y, 0, sizeof(sc->sc_loc_y));
+	memset(&sc->sc_loc_wheel, 0, sizeof(sc->sc_loc_wheel));
+	memset(&sc->sc_loc_buttons, 0, sizeof(sc->sc_loc_buttons));
+	sc->sc_loc_x_id = 0;
+	sc->sc_loc_y_id = 0;
+	sc->sc_loc_wheel_id = 0;
+	sc->sc_loc_buttons_id = 0;
+	sc->sc_button_count = 0;
+	sc->sc_has_wheel = 0;
+	sc->sc_pointer_locations_valid = 0;
+
+	if (sc->sc_rdesc == NULL || sc->sc_rdesc_len == 0)
+		return;
+
+	/* X axis. */
+	if (hid_locate(sc->sc_rdesc, sc->sc_rdesc_len,
+	    HID_USAGE2(HUP_GENERIC_DESKTOP, HUG_X),
+	    hid_input, 0, &sc->sc_loc_x, &flags, &id) != 0) {
+		sc->sc_loc_x_id = id;
+	}
+
+	/* Y axis. */
+	if (hid_locate(sc->sc_rdesc, sc->sc_rdesc_len,
+	    HID_USAGE2(HUP_GENERIC_DESKTOP, HUG_Y),
+	    hid_input, 0, &sc->sc_loc_y, &flags, &id) != 0) {
+		sc->sc_loc_y_id = id;
+	}
+
+	/* Wheel (optional). */
+	if (hid_locate(sc->sc_rdesc, sc->sc_rdesc_len,
+	    HID_USAGE2(HUP_GENERIC_DESKTOP, HUG_WHEEL),
+	    hid_input, 0, &sc->sc_loc_wheel, &flags, &id) != 0) {
+		sc->sc_loc_wheel_id = id;
+		sc->sc_has_wheel = 1;
+	}
+
+	/*
+	 * Buttons: locate button 1 to get the start of the button
+	 * bit field. The HID spec packs buttons sequentially within
+	 * a single report field; locating button 1 gives us the
+	 * bit-field's location. We then walk the report descriptor
+	 * to count how many button usages are present so we know the
+	 * field width.
+	 */
+	if (hid_locate(sc->sc_rdesc, sc->sc_rdesc_len,
+	    HID_USAGE2(HUP_BUTTON, 1),
+	    hid_input, 0, &sc->sc_loc_buttons, &flags, &id) != 0) {
+		struct hid_data *s;
+		struct hid_item hi;
+		uint8_t count = 0;
+
+		sc->sc_loc_buttons_id = id;
+
+		s = hid_start_parse(sc->sc_rdesc, sc->sc_rdesc_len,
+		    1 << hid_input);
+		if (s != NULL) {
+			while (hid_get_item(s, &hi) > 0) {
+				if (hi.kind == hid_input &&
+				    HID_GET_USAGE_PAGE(hi.usage) == HUP_BUTTON) {
+					if (count < 32)
+						count++;
+				}
+			}
+			hid_end_parse(s);
+		}
+		sc->sc_button_count = count;
+	}
+
+	if (sc->sc_loc_x.size > 0 || sc->sc_loc_y.size > 0 ||
+	    sc->sc_loc_wheel.size > 0 || sc->sc_loc_buttons.size > 0) {
+		sc->sc_pointer_locations_valid = 1;
+	}
+}
+
+/*
+ * inputfs_extract_pointer -- Stage D.0a.
+ *
+ * Given an interrupt report buffer of length len (including the
+ * leading report ID byte if the device uses report IDs), extract
+ * pointer values using the cached locations. Returns 1 if the
+ * report matched at least one cached location's report ID and
+ * any value was extracted; returns 0 if the report should be
+ * ignored (wrong report ID, no cached locations, or empty
+ * extraction).
+ *
+ * Output parameters are populated when their respective location
+ * is present in the descriptor and matches the incoming report
+ * ID. Outputs not extracted are left untouched; callers should
+ * initialise to zero before calling.
+ *
+ * Report ID matching: hid_locate returns the report ID a usage
+ * was associated with. If the device uses report IDs, the first
+ * byte of the report is the ID and subsequent bytes are the
+ * payload; if not, no leading byte is present and IDs are 0.
+ * hid_get_data takes the buffer including any leading ID byte
+ * and the field's location knows whether to skip it. The match
+ * we perform here is between the first byte of the incoming
+ * report and the cached id: if cached id is 0, the device does
+ * not use IDs and the byte is part of the data; if cached id
+ * is non-zero, the byte must match.
+ */
+static int
+inputfs_extract_pointer(struct inputfs_softc *sc,
+    const uint8_t *buf, hid_size_t len,
+    int32_t *out_dx, int32_t *out_dy, int32_t *out_dw,
+    uint32_t *out_buttons)
+{
+	int extracted = 0;
+
+	if (!sc->sc_pointer_locations_valid || buf == NULL || len == 0)
+		return (0);
+
+	if (sc->sc_loc_x.size > 0 &&
+	    inputfs_report_id_matches(sc->sc_loc_x_id, buf, len)) {
+		*out_dx = (int32_t)hid_get_data(buf, len, &sc->sc_loc_x);
+		extracted = 1;
+	}
+
+	if (sc->sc_loc_y.size > 0 &&
+	    inputfs_report_id_matches(sc->sc_loc_y_id, buf, len)) {
+		*out_dy = (int32_t)hid_get_data(buf, len, &sc->sc_loc_y);
+		extracted = 1;
+	}
+
+	if (sc->sc_loc_wheel.size > 0 &&
+	    inputfs_report_id_matches(sc->sc_loc_wheel_id, buf, len)) {
+		*out_dw = (int32_t)hid_get_data(buf, len, &sc->sc_loc_wheel);
+		extracted = 1;
+	}
+
+	if (sc->sc_loc_buttons.size > 0 &&
+	    inputfs_report_id_matches(sc->sc_loc_buttons_id, buf, len)) {
+		*out_buttons = (uint32_t)hid_get_data_unsigned(buf, len,
+		    &sc->sc_loc_buttons);
+		extracted = 1;
+	}
+
+	return (extracted);
+}
+
+/*
  * inputfs_intr -- hidbus interrupt callback.
  *
  * Stage B.4: copies the report into the per-device buffer and
  * logs a hex-dump line.
  *
- * Stage C.2: for INPUTFS_ROLE_POINTER devices, parses the
+ * Stage C.3: for INPUTFS_ROLE_POINTER devices, parses the
  * boot-protocol mouse layout (byte 0 = buttons, byte 1 = signed
- * x delta, byte 2 = signed y delta) and accumulates into the
- * global pointer position. Other roles are not yet parsed; they
- * still produce hex-dump log lines.
+ * x delta, byte 2 = signed y delta) and emits pointer events.
+ *
+ * Stage D.0a: replaced boot-protocol parsing with
+ * descriptor-driven extraction via the location cache populated
+ * at attach by inputfs_pointer_locate. Adds report-ID dispatch
+ * for devices with multiplexed reports. Adds pointer.scroll
+ * event emission when HUG_WHEEL is present in the descriptor.
  *
  * Constraints (ADR 0009):
  *   - Must not sleep or block.
@@ -1124,71 +1357,122 @@ inputfs_intr(void *context, void *data, hid_size_t len)
 	    hexbuf);
 
 	/*
-	 * Stage C.2: pointer accumulation. Boot-protocol mouse
-	 * layout assumed for INPUTFS_ROLE_POINTER devices. This is
-	 * a starting point; richer descriptor-driven parsing is a
-	 * follow-on within Stage C.
+	 * Stage D.0a: descriptor-driven pointer extraction.
 	 *
-	 * Stage C.3: emit pointer.motion event after the state
-	 * update; if any button bit transitioned, emit
-	 * pointer.button_down or pointer.button_up for each
-	 * transition.
+	 * Both conditions must hold for events to fire:
+	 *   - The device was classified as a pointer (sc_roles).
+	 *   - The location cache is populated (sc_pointer_locations_valid).
+	 *
+	 * The cache may be unpopulated for pointers whose descriptor
+	 * has no recognised X/Y/buttons (vanishingly rare in practice
+	 * but defensible). In that case we log the hex-dump and stop.
 	 */
-	if ((sc->sc_roles & INPUTFS_ROLE_POINTER) != 0 && copy_len >= 3) {
-		int32_t dx = (int32_t)(int8_t)bytes[1];
-		int32_t dy = (int32_t)(int8_t)bytes[2];
-		uint32_t buttons = (uint32_t)bytes[0] & 0x07u; /* L,R,M */
-		uint32_t prev_buttons;
-		int32_t new_x, new_y;
-		uint8_t payload[32];
-		uint16_t dev_slot;
+	if ((sc->sc_roles & INPUTFS_ROLE_POINTER) != 0 &&
+	    sc->sc_pointer_locations_valid &&
+	    copy_len > 0) {
+		int32_t dx = 0, dy = 0, dw = 0;
+		uint32_t buttons = 0;
+		int extracted;
 
-		mtx_lock_spin(&inputfs_state_mtx);
-		prev_buttons = inputfs_get_u32le(inputfs_state_buf,
-		    OFF_PTR_BUTTONS);
-		inputfs_state_seqlock_begin();
-		inputfs_state_update_pointer(dx, dy, buttons);
-		inputfs_state_advance_seq();
-		inputfs_state_seqlock_end();
-		inputfs_state_mark_dirty();
+		extracted = inputfs_extract_pointer(sc, sc->sc_ibuf,
+		    copy_len, &dx, &dy, &dw, &buttons);
 
-		new_x = inputfs_get_i32le(inputfs_state_buf, OFF_PTR_X);
-		new_y = inputfs_get_i32le(inputfs_state_buf, OFF_PTR_Y);
+		if (extracted) {
+			uint32_t prev_buttons;
+			int32_t new_x, new_y;
+			uint8_t payload[32];
+			uint16_t dev_slot;
 
-		dev_slot = (sc->sc_state_slot == INPUTFS_NO_STATE_SLOT)
-		    ? INPUTFS_SYNTHETIC_DEVICE
-		    : (uint16_t)sc->sc_state_slot;
+			mtx_lock_spin(&inputfs_state_mtx);
+			prev_buttons = inputfs_get_u32le(inputfs_state_buf,
+			    OFF_PTR_BUTTONS);
+			inputfs_state_seqlock_begin();
+			inputfs_state_update_pointer(dx, dy, buttons);
+			inputfs_state_advance_seq();
+			inputfs_state_seqlock_end();
+			inputfs_state_mark_dirty();
 
-		/* pointer.motion: x, y, dx, dy, buttons. */
-		memset(payload, 0, sizeof(payload));
-		inputfs_put_i32le(payload, 0, new_x);
-		inputfs_put_i32le(payload, 4, new_y);
-		inputfs_put_i32le(payload, 8, dx);
-		inputfs_put_i32le(payload, 12, dy);
-		inputfs_put_u32le(payload, 16, buttons);
-		inputfs_events_publish(INPUTFS_SOURCE_POINTER,
-		    INPUTFS_POINTER_MOTION,
-		    dev_slot, 0, payload, 20);
+			new_x = inputfs_get_i32le(inputfs_state_buf,
+			    OFF_PTR_X);
+			new_y = inputfs_get_i32le(inputfs_state_buf,
+			    OFF_PTR_Y);
 
-		/* Button transitions: emit one event per changed bit. */
-		uint32_t changed = prev_buttons ^ buttons;
-		for (uint32_t bit = 0; bit < 3; bit++) {
-			uint32_t mask = 1u << bit;
-			if ((changed & mask) == 0)
-				continue;
-			memset(payload, 0, sizeof(payload));
-			inputfs_put_i32le(payload, 0, new_x);
-			inputfs_put_i32le(payload, 4, new_y);
-			inputfs_put_u32le(payload, 8, mask);
-			inputfs_put_u32le(payload, 12, buttons);
-			inputfs_events_publish(INPUTFS_SOURCE_POINTER,
-			    (buttons & mask) != 0
-			        ? INPUTFS_POINTER_BUTTON_DOWN
-			        : INPUTFS_POINTER_BUTTON_UP,
-			    dev_slot, 0, payload, 16);
+			dev_slot = (sc->sc_state_slot ==
+			    INPUTFS_NO_STATE_SLOT)
+			    ? INPUTFS_SYNTHETIC_DEVICE
+			    : (uint16_t)sc->sc_state_slot;
+
+			/*
+			 * pointer.motion: emit if X or Y was extracted
+			 * (a button-only or wheel-only report does not
+			 * produce a motion event).
+			 */
+			if (sc->sc_loc_x.size > 0 ||
+			    sc->sc_loc_y.size > 0) {
+				memset(payload, 0, sizeof(payload));
+				inputfs_put_i32le(payload, 0, new_x);
+				inputfs_put_i32le(payload, 4, new_y);
+				inputfs_put_i32le(payload, 8, dx);
+				inputfs_put_i32le(payload, 12, dy);
+				inputfs_put_u32le(payload, 16, buttons);
+				/* session_id at offset 20, currently 0. */
+				inputfs_events_publish(
+				    INPUTFS_SOURCE_POINTER,
+				    INPUTFS_POINTER_MOTION,
+				    dev_slot, 0, payload, 24);
+			}
+
+			/*
+			 * Button transitions: emit one event per changed
+			 * bit. The button mask width is sc_button_count;
+			 * we still iterate the lower 32 bits since
+			 * buttons is a u32. Buttons not present in the
+			 * device contribute zero bits to both prev and
+			 * curr, so changed will not flag them.
+			 */
+			uint32_t changed = prev_buttons ^ buttons;
+			for (uint32_t bit = 0; bit < 32; bit++) {
+				uint32_t mask = 1u << bit;
+				if ((changed & mask) == 0)
+					continue;
+				memset(payload, 0, sizeof(payload));
+				inputfs_put_i32le(payload, 0, new_x);
+				inputfs_put_i32le(payload, 4, new_y);
+				inputfs_put_u32le(payload, 8, mask);
+				inputfs_put_u32le(payload, 12, buttons);
+				/* session_id at offset 16, currently 0. */
+				inputfs_events_publish(
+				    INPUTFS_SOURCE_POINTER,
+				    (buttons & mask) != 0
+				        ? INPUTFS_POINTER_BUTTON_DOWN
+				        : INPUTFS_POINTER_BUTTON_UP,
+				    dev_slot, 0, payload, 20);
+			}
+
+			/*
+			 * Scroll: emit pointer.scroll if the wheel was
+			 * extracted and is non-zero. Wheel reports
+			 * scroll deltas in lines (delta_unit = 0).
+			 * Pixel-precise scrolling (delta_unit = 1) is
+			 * a future refinement that depends on resolution
+			 * multipliers, which Stage D.0a does not parse.
+			 */
+			if (sc->sc_has_wheel && dw != 0) {
+				memset(payload, 0, sizeof(payload));
+				inputfs_put_i32le(payload, 0, new_x);
+				inputfs_put_i32le(payload, 4, new_y);
+				inputfs_put_i32le(payload, 8, 0); /* dx */
+				inputfs_put_i32le(payload, 12, dw);
+				inputfs_put_u32le(payload, 16, 0); /* lines */
+				/* session_id at offset 20, currently 0. */
+				inputfs_events_publish(
+				    INPUTFS_SOURCE_POINTER,
+				    INPUTFS_POINTER_SCROLL,
+				    dev_slot, 0, payload, 24);
+			}
+
+			mtx_unlock_spin(&inputfs_state_mtx);
 		}
-
-		mtx_unlock_spin(&inputfs_state_mtx);
 	}
 }
 
@@ -1344,6 +1628,27 @@ inputfs_attach(device_t dev)
 		    (unsigned int)sc->sc_output_items,
 		    (unsigned int)sc->sc_feature_items,
 		    (unsigned int)sc->sc_collection_depth);
+
+		/*
+		 * Stage D.0a: populate the pointer location cache so
+		 * the interrupt path can extract X/Y/wheel/buttons via
+		 * hid_get_data rather than assuming boot-protocol
+		 * layout. Called unconditionally; the cache is empty
+		 * for non-pointer descriptors and the interrupt path
+		 * checks sc_pointer_locations_valid before extracting.
+		 */
+		inputfs_pointer_locate(sc);
+
+		if (sc->sc_pointer_locations_valid) {
+			device_printf(dev,
+			    "inputfs: pointer locations cached "
+			    "(x=%s y=%s wheel=%s buttons=%u count=%u)\n",
+			    sc->sc_loc_x.size > 0 ? "yes" : "no",
+			    sc->sc_loc_y.size > 0 ? "yes" : "no",
+			    sc->sc_has_wheel ? "yes" : "no",
+			    (unsigned int)sc->sc_loc_buttons.size,
+			    (unsigned int)sc->sc_button_count);
+		}
 
 		ibuf_size = hid_report_size_max(sc->sc_rdesc,
 		    sc->sc_rdesc_len, hid_input, &sc->sc_report_id);
