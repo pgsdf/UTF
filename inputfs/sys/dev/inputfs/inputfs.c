@@ -110,6 +110,7 @@
 #include <sys/fcntl.h>
 #include <sys/uio.h>
 #include <sys/syscallsubr.h>
+#include <sys/sysctl.h>
 #include <sys/endian.h>
 #include <sys/time.h>
 
