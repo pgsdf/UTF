@@ -105,6 +105,12 @@ const EventTypeFilter = struct {
             if (std.mem.eql(u8, s, "motion")) return .{ .value = 1 };
             if (std.mem.eql(u8, s, "button_down")) return .{ .value = 2 };
             if (std.mem.eql(u8, s, "button_up")) return .{ .value = 3 };
+            if (std.mem.eql(u8, s, "scroll")) return .{ .value = 4 };
+        }
+        // Keyboard events.
+        if (role == .keyboard or role == .any) {
+            if (std.mem.eql(u8, s, "key_down")) return .{ .value = 1 };
+            if (std.mem.eql(u8, s, "key_up")) return .{ .value = 2 };
         }
         // Lifecycle events.
         if (role == .lifecycle or role == .any) {
@@ -186,7 +192,8 @@ const usage_events =
     \\                       pointer, keyboard, touch, pen, lighting, lifecycle.
     \\  --device N           Filter by device slot.
     \\  --event <name>       Filter by event type:
-    \\                       motion, button_down, button_up (pointer);
+    \\                       motion, button_down, button_up, scroll (pointer);
+    \\                       key_down, key_up (keyboard);
     \\                       attach, detach (lifecycle).
     \\                       Requires --role.
     \\  --stats              Print aggregate counters at end (or periodically
@@ -423,6 +430,12 @@ fn eventTypeName(role: u8, event_type: u8) []const u8 {
             1 => "motion",
             2 => "button_down",
             3 => "button_up",
+            4 => "scroll",
+            else => "unknown",
+        },
+        input.SOURCE_KEYBOARD => switch (event_type) {
+            1 => "key_down",
+            2 => "key_up",
             else => "unknown",
         },
         input.SOURCE_DEVICE_LIFECYCLE => switch (event_type) {
@@ -864,15 +877,27 @@ fn printEventHuman(ev: input.Event, opts: Options) void {
                     const dx = std.mem.readInt(i32, ev.payload[8..12], .little);
                     const dy = std.mem.readInt(i32, ev.payload[12..16], .little);
                     const buttons = std.mem.readInt(u32, ev.payload[16..20], .little);
-                    writeOut("seq={d} ts={d} dev={d} pointer.motion x={d} y={d} dx={d} dy={d} buttons=0x{x}\n", .{
-                        ev.seq, ev.ts_ordering, ev.device_slot, x, y, dx, dy, buttons,
+                    const session_id = std.mem.readInt(u32, ev.payload[20..24], .little);
+                    writeOut("seq={d} ts={d} dev={d} pointer.motion x={d} y={d} dx={d} dy={d} buttons=0x{x} session=0x{x}\n", .{
+                        ev.seq, ev.ts_ordering, ev.device_slot, x, y, dx, dy, buttons, session_id,
                     });
                 },
                 2, 3 => {
                     const button = std.mem.readInt(u32, ev.payload[8..12], .little);
                     const buttons = std.mem.readInt(u32, ev.payload[12..16], .little);
-                    writeOut("seq={d} ts={d} dev={d} pointer.{s} x={d} y={d} button=0x{x} buttons=0x{x}\n", .{
-                        ev.seq, ev.ts_ordering, ev.device_slot, type_str, x, y, button, buttons,
+                    const session_id = std.mem.readInt(u32, ev.payload[16..20], .little);
+                    writeOut("seq={d} ts={d} dev={d} pointer.{s} x={d} y={d} button=0x{x} buttons=0x{x} session=0x{x}\n", .{
+                        ev.seq, ev.ts_ordering, ev.device_slot, type_str, x, y, button, buttons, session_id,
+                    });
+                },
+                4 => {
+                    const scroll_dx = std.mem.readInt(i32, ev.payload[8..12], .little);
+                    const scroll_dy = std.mem.readInt(i32, ev.payload[12..16], .little);
+                    const delta_unit = std.mem.readInt(u32, ev.payload[16..20], .little);
+                    const session_id = std.mem.readInt(u32, ev.payload[20..24], .little);
+                    const unit_str: []const u8 = if (delta_unit == 0) "lines" else if (delta_unit == 1) "pixels" else "unknown";
+                    writeOut("seq={d} ts={d} dev={d} pointer.scroll x={d} y={d} dx={d} dy={d} unit={s} session=0x{x}\n", .{
+                        ev.seq, ev.ts_ordering, ev.device_slot, x, y, scroll_dx, scroll_dy, unit_str, session_id,
                     });
                 },
                 else => {
@@ -881,6 +906,22 @@ fn printEventHuman(ev: input.Event, opts: Options) void {
                     });
                 },
             }
+        },
+        input.SOURCE_KEYBOARD => switch (ev.event_type) {
+            1, 2 => {
+                const hid_usage = std.mem.readInt(u32, ev.payload[0..4], .little);
+                const positional = std.mem.readInt(u32, ev.payload[4..8], .little);
+                const modifiers = std.mem.readInt(u32, ev.payload[8..12], .little);
+                const session_id = std.mem.readInt(u32, ev.payload[12..16], .little);
+                writeOut("seq={d} ts={d} dev={d} keyboard.{s} hid_usage=0x{x} positional=0x{x} modifiers=0x{x} session=0x{x}\n", .{
+                    ev.seq, ev.ts_ordering, ev.device_slot, type_str, hid_usage, positional, modifiers, session_id,
+                });
+            },
+            else => {
+                writeOut("seq={d} ts={d} dev={d} keyboard.type{d} (unknown payload)\n", .{
+                    ev.seq, ev.ts_ordering, ev.device_slot, ev.event_type,
+                });
+            },
         },
         input.SOURCE_DEVICE_LIFECYCLE => switch (ev.event_type) {
             1 => {
@@ -918,15 +959,35 @@ fn printEventDecodedFields(ev: input.Event, prefix: []const u8) void {
                     const dx = std.mem.readInt(i32, ev.payload[8..12], .little);
                     const dy = std.mem.readInt(i32, ev.payload[12..16], .little);
                     const buttons = std.mem.readInt(u32, ev.payload[16..20], .little);
-                    writeOut("{s}x={d} y={d} dx={d} dy={d} buttons=0x{x}\n", .{ prefix, x, y, dx, dy, buttons });
+                    const session_id = std.mem.readInt(u32, ev.payload[20..24], .little);
+                    writeOut("{s}x={d} y={d} dx={d} dy={d} buttons=0x{x} session=0x{x}\n", .{ prefix, x, y, dx, dy, buttons, session_id });
                 },
                 2, 3 => {
                     const button = std.mem.readInt(u32, ev.payload[8..12], .little);
                     const buttons = std.mem.readInt(u32, ev.payload[12..16], .little);
-                    writeOut("{s}x={d} y={d} button=0x{x} buttons=0x{x}\n", .{ prefix, x, y, button, buttons });
+                    const session_id = std.mem.readInt(u32, ev.payload[16..20], .little);
+                    writeOut("{s}x={d} y={d} button=0x{x} buttons=0x{x} session=0x{x}\n", .{ prefix, x, y, button, buttons, session_id });
+                },
+                4 => {
+                    const scroll_dx = std.mem.readInt(i32, ev.payload[8..12], .little);
+                    const scroll_dy = std.mem.readInt(i32, ev.payload[12..16], .little);
+                    const delta_unit = std.mem.readInt(u32, ev.payload[16..20], .little);
+                    const session_id = std.mem.readInt(u32, ev.payload[20..24], .little);
+                    const unit_str: []const u8 = if (delta_unit == 0) "lines" else if (delta_unit == 1) "pixels" else "unknown";
+                    writeOut("{s}x={d} y={d} dx={d} dy={d} unit={s} session=0x{x}\n", .{ prefix, x, y, scroll_dx, scroll_dy, unit_str, session_id });
                 },
                 else => writeOut("{s}(no decoder)\n", .{prefix}),
             }
+        },
+        input.SOURCE_KEYBOARD => switch (ev.event_type) {
+            1, 2 => {
+                const hid_usage = std.mem.readInt(u32, ev.payload[0..4], .little);
+                const positional = std.mem.readInt(u32, ev.payload[4..8], .little);
+                const modifiers = std.mem.readInt(u32, ev.payload[8..12], .little);
+                const session_id = std.mem.readInt(u32, ev.payload[12..16], .little);
+                writeOut("{s}hid_usage=0x{x} positional=0x{x} modifiers=0x{x} session=0x{x}\n", .{ prefix, hid_usage, positional, modifiers, session_id });
+            },
+            else => writeOut("{s}(no decoder)\n", .{prefix}),
         },
         input.SOURCE_DEVICE_LIFECYCLE => switch (ev.event_type) {
             1 => {
@@ -961,15 +1022,34 @@ fn printEventJson(ev: input.Event) void {
                     const dx = std.mem.readInt(i32, ev.payload[8..12], .little);
                     const dy = std.mem.readInt(i32, ev.payload[12..16], .little);
                     const buttons = std.mem.readInt(u32, ev.payload[16..20], .little);
-                    writeOut(",\"x\":{d},\"y\":{d},\"dx\":{d},\"dy\":{d},\"buttons\":{d}", .{ x, y, dx, dy, buttons });
+                    const session_id = std.mem.readInt(u32, ev.payload[20..24], .little);
+                    writeOut(",\"x\":{d},\"y\":{d},\"dx\":{d},\"dy\":{d},\"buttons\":{d},\"session_id\":{d}", .{ x, y, dx, dy, buttons, session_id });
                 },
                 2, 3 => {
                     const button = std.mem.readInt(u32, ev.payload[8..12], .little);
                     const buttons = std.mem.readInt(u32, ev.payload[12..16], .little);
-                    writeOut(",\"x\":{d},\"y\":{d},\"button\":{d},\"buttons\":{d}", .{ x, y, button, buttons });
+                    const session_id = std.mem.readInt(u32, ev.payload[16..20], .little);
+                    writeOut(",\"x\":{d},\"y\":{d},\"button\":{d},\"buttons\":{d},\"session_id\":{d}", .{ x, y, button, buttons, session_id });
+                },
+                4 => {
+                    const scroll_dx = std.mem.readInt(i32, ev.payload[8..12], .little);
+                    const scroll_dy = std.mem.readInt(i32, ev.payload[12..16], .little);
+                    const delta_unit = std.mem.readInt(u32, ev.payload[16..20], .little);
+                    const session_id = std.mem.readInt(u32, ev.payload[20..24], .little);
+                    writeOut(",\"x\":{d},\"y\":{d},\"dx\":{d},\"dy\":{d},\"delta_unit\":{d},\"session_id\":{d}", .{ x, y, scroll_dx, scroll_dy, delta_unit, session_id });
                 },
                 else => {},
             }
+        },
+        input.SOURCE_KEYBOARD => switch (ev.event_type) {
+            1, 2 => {
+                const hid_usage = std.mem.readInt(u32, ev.payload[0..4], .little);
+                const positional = std.mem.readInt(u32, ev.payload[4..8], .little);
+                const modifiers = std.mem.readInt(u32, ev.payload[8..12], .little);
+                const session_id = std.mem.readInt(u32, ev.payload[12..16], .little);
+                writeOut(",\"hid_usage\":{d},\"positional\":{d},\"modifiers\":{d},\"session_id\":{d}", .{ hid_usage, positional, modifiers, session_id });
+            },
+            else => {},
         },
         input.SOURCE_DEVICE_LIFECYCLE => switch (ev.event_type) {
             1 => {
