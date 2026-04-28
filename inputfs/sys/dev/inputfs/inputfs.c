@@ -1288,7 +1288,7 @@ inputfs_extract_pointer(struct inputfs_softc *sc,
 
 	if (sc->sc_loc_buttons.size > 0 &&
 	    inputfs_report_id_matches(sc->sc_loc_buttons_id, buf, len)) {
-		*out_buttons = (uint32_t)hid_get_data_unsigned(buf, len,
+		*out_buttons = (uint32_t)hid_get_udata(buf, len,
 		    &sc->sc_loc_buttons);
 		extracted = 1;
 	}
