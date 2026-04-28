@@ -183,15 +183,54 @@ c_expect_file_size() {
 }
 
 c_expect_magic() {
-    # $1 = path, $2 = expected 4-byte ASCII magic, $3 = byte offset.
-    local got
-    # Read 4 bytes at offset $3, render as ASCII.
-    got=$(dd if="$1" bs=1 skip="$3" count=4 2>/dev/null | tr -c '[:print:]' '?')
-    if [ "${got}" = "$2" ]; then
-        c_check_pass "${1}: magic at offset ${3} = '${2}'"
+    # $1 = path, $2 = expected ASCII mnemonic ("INST" or "INVE"),
+    # $3 = byte offset.
+    #
+    # The magic field is a u32 stored little-endian. The mnemonic
+    # "INST" corresponds to the u32 value 0x494E5354 (I=0x49,
+    # N=0x4E, S=0x53, T=0x54), which on a little-endian platform
+    # lands on disk as bytes 54 53 4E 49, reversed when read as
+    # ASCII. The spec describes the magic as the hex value, not as
+    # an ASCII string; userspace consumers read 4 bytes and decode
+    # as a little-endian u32 to compare.
+    #
+    # We do the same here: read 4 bytes, render as a hex value
+    # respecting little-endian byte order, compare against the
+    # mnemonic's expected u32.
+    local expected_hex
+    case "$2" in
+        INST) expected_hex="494e5354" ;;
+        INVE) expected_hex="494e5645" ;;
+        *)
+            c_check_fail "${1}: c_expect_magic called with unknown mnemonic '$2'"
+            return 1
+            ;;
+    esac
+
+    # Read 4 bytes at offset $3 as four space-separated hex bytes,
+    # then reverse them (little-endian -> big-endian) and concat.
+    local bytes
+    bytes=$(od -An -tx1 -j "$3" -N 4 "$1" 2>/dev/null | tr -s ' ' '\n' \
+        | grep -v '^$' | tr -d '\n')
+    if [ -z "${bytes}" ] || [ "${#bytes}" != 8 ]; then
+        c_check_fail "${1}: could not read 4 bytes at offset ${3}"
+        return 1
+    fi
+
+    # bytes is now an 8-character hex string in file order, e.g.
+    # "5453 4e49" -> "54534e49" for "INST" stored little-endian.
+    # Reverse byte pairs to get u32 hex value.
+    local b0="${bytes%??????}"
+    local b1_full="${bytes#??}"; local b1="${b1_full%????}"
+    local b2_full="${bytes#????}"; local b2="${b2_full%??}"
+    local b3="${bytes#??????}"
+    local got_hex="${b3}${b2}${b1}${b0}"
+
+    if [ "${got_hex}" = "${expected_hex}" ]; then
+        c_check_pass "${1}: magic at offset ${3} = 0x${expected_hex} ('${2}')"
         return 0
     else
-        c_check_fail "${1}: expected magic '${2}' at offset ${3}, got '${got}'"
+        c_check_fail "${1}: expected magic 0x${expected_hex} ('${2}') at offset ${3}, got 0x${got_hex}"
         return 1
     fi
 }
