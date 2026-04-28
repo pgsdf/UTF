@@ -114,12 +114,24 @@ c_check_tmpfs() {
     # /var/run must be tmpfs. inputfs creates files there in MOD_LOAD,
     # and a non-tmpfs /var/run will succeed but pollute persistent
     # storage. README's System Requirements section calls this out.
-    local fstype
-    fstype=$(stat -f '%T' /var/run 2>/dev/null || true)
-    case "${fstype}" in
-        tmpfs|TMPFS) return 0 ;;
+    #
+    # Parse `mount` output: the canonical line shape on FreeBSD is
+    #   tmpfs on /var/run (tmpfs, local)
+    # The fs type appears both as the device-name field (first token)
+    # and inside the parenthesized options. Match either.
+    local mount_line
+    mount_line=$(mount | awk '$3 == "/var/run" { print; exit }')
+    if [ -z "${mount_line}" ]; then
+        c_warn "/var/run does not appear in mount output."
+        c_warn "see README System Requirements section."
+        return 2
+    fi
+    case "${mount_line}" in
+        tmpfs*|*"(tmpfs"*)
+            return 0
+            ;;
         *)
-            c_warn "/var/run is '${fstype}', expected tmpfs."
+            c_warn "/var/run is not tmpfs: ${mount_line}"
             c_warn "see README System Requirements section."
             return 2
             ;;
