@@ -8,16 +8,11 @@ ADR 0010). Companion to `inputfs/docs/B5_VERIFICATION.md`.
 - `b5-common.sh`: shared shell library: precondition checks, build,
   install, dmesg capture, lifecycle helpers, and per-signal
   acceptance checks. Sourced by both driver scripts.
-- `b5-verify-vm.sh`: runs Pass 1 (FreeBSD on Oracle VirtualBox).
+- `b5-verify-vm.sh`: runs Pass 1 (GhostBSD on Oracle VirtualBox).
   Pauses for VirtualBox USB pass-through actions.
-- `b5-verify-baremetal.sh`: runs Pass 2 (bare-metal FreeBSD).
+- `b5-verify-baremetal.sh`: runs Pass 2 (bare-metal GhostBSD).
   Resolves the `hms`/`hkbd` conflict before running. Pauses for
   physical plug/unplug actions.
-- `b5-verify-reports.sh`: standalone retake of Signal 2.2 (report
-  flow). Use after a full pass that timing-missed Signal 2.2 to
-  confirm the report path on its own, without rebuilding the
-  module or rerunning the other signals. See "Standalone scripts"
-  below.
 
 ## What the scripts do automatically
 
@@ -76,25 +71,6 @@ Exit codes:
   written; review them.
 - `2` = a precondition failed (patch missing, build broken, etc.).
 - `3` = user aborted at a prompt.
-
-## Standalone scripts
-
-`b5-verify-reports.sh` runs only the report-flow check (the same
-check Signal 2.2 performs in the bare-metal pass). It is useful in
-exactly one situation: a full pass produced a Signal 2.2 timing
-miss because the operator did not drive input within the capture
-window, and you want to retake just that signal without rebuilding
-the module or re-running the other signals.
-
-The standalone script does not check classification, attach
-sequences, or clean unload. Those are the load-bearing acceptance
-signals of B.5 and they belong in the full pass. The standalone
-script exists for procedural retakes, not as a substitute for
-verification.
-
-Usage is the same as the driver scripts. The script loads inputfs
-if it is not already loaded, captures reports while you drive
-input, and unloads inputfs at the end if it had to load it.
 
 ## Why two scripts and not one
 

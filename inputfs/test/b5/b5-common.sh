@@ -135,72 +135,6 @@ b5_install_module() {
     return 0
 }
 
-# List of competing drivers from ADR 0009 Testing section. inputfs
-# cannot attach to a hidbus child that is already claimed by one of
-# these. Both VM and bare-metal verification require all of them
-# unloaded before inputfs is loaded.
-B5_COMPETING_DRIVERS="hms hkbd hgame hcons hsctrl utouch"
-
-b5_unload_competing_drivers() {
-    b5_step "Unloading drivers that compete with inputfs (per ADR 0009)"
-
-    loaded=""
-    for drv in ${B5_COMPETING_DRIVERS}; do
-        if kldstat -q -n "${drv}" 2>/dev/null; then
-            loaded="${loaded} ${drv}"
-        fi
-    done
-
-    if [ -z "${loaded}" ]; then
-        b5_pass "No competing drivers loaded. inputfs is free to claim devices."
-        return 0
-    fi
-
-    cat <<EOF
-
-The following drivers are loaded and claim USB HID devices before
-inputfs can attach:
-   ${loaded}
-
-ADR 0009 requires these to be unloaded for inputfs verification.
-
-If you do not have a non-USB console (serial, SSH not relying on
-USB, or a remote graphical terminal), unloading hms/hkbd will leave
-you without working mouse and keyboard input until inputfs claims
-the devices, or until you reload these drivers.
-
-EOF
-
-    if ! b5_confirm "Unload these drivers now?"; then
-        b5_fail "Cannot proceed without unloading competing drivers."
-        return 3
-    fi
-
-    for drv in ${loaded}; do
-        b5_say "Unloading ${drv}"
-        if ! sudo kldunload "${drv}" 2>&1; then
-            b5_fail "Failed to unload ${drv}. May be statically compiled into the kernel."
-            return 2
-        fi
-    done
-    b5_pass "Competing drivers unloaded. inputfs is free to claim devices."
-    return 0
-}
-
-b5_reload_competing_drivers() {
-    b5_step "Optional: reload competing drivers"
-
-    if ! b5_confirm "Reload hms/hkbd and the rest to restore normal input?"; then
-        b5_say "Skipped. Reboot or run 'sudo kldload hms hkbd' manually to restore."
-        return 0
-    fi
-
-    for drv in ${B5_COMPETING_DRIVERS}; do
-        sudo kldload "${drv}" 2>/dev/null && b5_say "${drv} reloaded"
-    done
-    return 0
-}
-
 # --- dmesg capture --------------------------------------------------
 
 b5_dmesg_clear() {
@@ -216,68 +150,46 @@ b5_dmesg_capture() {
 # --- Signal-level acceptance checks ---------------------------------
 
 b5_check_roles_line() {
-    # Look for at least one "roles=<expected>" line in the log. On
-    # bare metal multiple devices may attach in parallel and produce
-    # multiple roles= lines of different role types; this check
-    # passes as long as the expected role appears somewhere.
+    # Look for "roles=<expected>" on its own (no extra junk after).
     # $1 = log file, $2 = expected role string (e.g. "pointer")
     log="$1"
     expected="$2"
-    # Match "roles=<expected>" followed by end of line, comma (multi-
-    # role), or whitespace. This guards against false matches like
-    # "roles=pointer,keyboard" when checking for "pointer".
-    if grep -qE "roles=${expected}([,[:space:]]|\$)" "${log}"; then
-        return 0
+    if ! grep -q "roles=${expected}\$" "${log}"; then
+        # Try without the end-of-line anchor in case there's a CR or
+        # trailing space, but flag it as suspect.
+        if grep -q "roles=${expected}" "${log}"; then
+            b5_warn "roles=${expected} found but not on its own line. Format may be off."
+            return 1
+        fi
+        b5_fail "Expected 'roles=${expected}' not found in ${log}"
+        return 1
     fi
-    # Diagnostic: report what roles lines are actually present.
-    found=$(grep 'roles=' "${log}" | sed 's/.*roles=/roles=/' | sort -u | tr '\n' ' ')
-    if [ -n "${found}" ]; then
-        b5_fail "No 'roles=${expected}' line in ${log}. Found instead: ${found}"
-    else
-        b5_fail "No 'roles=' line at all in ${log}. Device probably did not bind."
-    fi
-    return 1
+    return 0
 }
 
 b5_check_attach_sequence() {
-    # Verify the attach sequence is present and structurally correct.
-    # Tolerates multiple parallel attaches (bare-metal case): there
-    # must be at least one of each line type, and the count of
-    # roles= lines must not exceed the count of attach lines (i.e.
-    # every roles= has a corresponding attach upstream).
+    # Verify B.2/B.3/B.4 lines are present and in order before the
+    # roles= line. Returns 0 if the sequence looks right.
     # $1 = log file
     log="$1"
+    line_attached=$(grep -n 'attached HID' "${log}" | head -1 | cut -d: -f1)
+    line_descriptor=$(grep -n 'descriptor.*bytes.*input items' "${log}" | head -1 | cut -d: -f1)
+    line_buffer=$(grep -n 'report buffer.*registering interrupt' "${log}" | head -1 | cut -d: -f1)
+    line_roles=$(grep -n 'roles=' "${log}" | head -1 | cut -d: -f1)
 
-    n_attached=$(grep -c 'attached HID' "${log}" 2>/dev/null; true)
-    n_descriptor=$(grep -c 'descriptor.*bytes.*input items' "${log}" 2>/dev/null; true)
-    n_buffer=$(grep -c 'report buffer.*registering interrupt' "${log}" 2>/dev/null; true)
-    n_roles=$(grep -c 'roles=' "${log}" 2>/dev/null; true)
+    for v in line_attached line_descriptor line_buffer line_roles; do
+        eval "val=\${${v}:-}"
+        if [ -z "${val}" ]; then
+            b5_fail "Missing attach-sequence line: ${v}"
+            return 1
+        fi
+    done
 
-    if [ "${n_attached}" -eq 0 ]; then
-        b5_fail "No 'attached HID' line in ${log}. Device did not bind to inputfs."
-        b5_fail "Likely cause: a competing driver claimed the device first."
+    if [ "${line_attached}" -ge "${line_roles}" ] || \
+       [ "${line_descriptor}" -ge "${line_roles}" ] || \
+       [ "${line_buffer}" -ge "${line_roles}" ]; then
+        b5_fail "roles= line appears before the B.2/B.3/B.4 lines (wrong order)"
         return 1
-    fi
-    if [ "${n_descriptor}" -eq 0 ]; then
-        b5_fail "No 'descriptor ... input items' line in ${log}."
-        return 1
-    fi
-    if [ "${n_buffer}" -eq 0 ]; then
-        b5_fail "No 'report buffer ... registering interrupt' line in ${log}."
-        return 1
-    fi
-    if [ "${n_roles}" -eq 0 ]; then
-        b5_fail "No 'roles=' line in ${log}. B.5 patch may not be active."
-        return 1
-    fi
-
-    if [ "${n_roles}" -gt "${n_attached}" ]; then
-        b5_warn "More roles= lines (${n_roles}) than attach lines (${n_attached}); odd, please review log"
-        return 1
-    fi
-
-    if [ "${n_attached}" -gt 1 ]; then
-        b5_say "Multi-device attach detected: ${n_attached} devices probed inputfs in parallel."
     fi
     return 0
 }
@@ -286,7 +198,7 @@ b5_check_report_lines() {
     # $1 = log file, $2 = minimum count
     log="$1"
     minimum="$2"
-    count=$(grep -c 'report id=0x' "${log}" 2>/dev/null; true)
+    count=$(grep -c 'report id=0x' "${log}" || true)
     if [ "${count}" -lt "${minimum}" ]; then
         b5_fail "Only ${count} 'report id=' lines found, expected at least ${minimum}"
         return 1
@@ -343,53 +255,26 @@ b5_unload() {
 }
 
 b5_rescan() {
-    # Trigger inputfs to bind by rescanning every hidbus on the
-    # system. After kldunload of competing drivers, the hidbus
-    # children are orphans; loading inputfs registers it as a
-    # candidate driver, but hidbus does not auto-reprobe its
-    # existing children at driver-registration time. devctl rescan
-    # forces the reprobe.
-    #
-    # Multiple hidbus instances are common (one per usbhid* on every
-    # USB HID interface). Bare metal typically has 5-10; VM has 2-3.
-    # All must be rescanned, not just one.
-    b5_step "Triggering devctl rescan on every hidbus"
-
-    if ! command -v devinfo >/dev/null 2>&1; then
-        b5_warn "devinfo not available; falling back to fixed bus list"
-        for bus in usbhid0 usbhid1 hidbus0 hidbus1 hidbus2; do
-            sudo devctl rescan "${bus}" 2>/dev/null && \
-                b5_say "rescanned ${bus}"
-        done
+    # Trigger inputfs to bind. Bus name is system-dependent.
+    b5_say "Triggering devctl rescan"
+    if sudo devctl rescan usbhid1 2>/dev/null; then
         return 0
     fi
-
-    # Collect every hidbus instance from the device tree.
-    buses=$(devinfo -r 2>/dev/null | awk '/^[ \t]*hidbus[0-9]/ {gsub(/^[ \t]+/, ""); print $1}')
-    if [ -z "${buses}" ]; then
-        b5_warn "No hidbus instances found in devinfo output."
-        b5_warn "Either no HID devices are present, or hidbus is not loaded."
+    if sudo devctl rescan hidbus1 2>/dev/null; then
         return 0
     fi
-
-    count=0
-    for bus in ${buses}; do
-        if sudo devctl rescan "${bus}" 2>/dev/null; then
-            b5_say "rescanned ${bus}"
-            count=$((count + 1))
-        else
-            b5_warn "rescan ${bus} failed"
+    # Try discovering the right bus name.
+    if command -v devinfo >/dev/null 2>&1; then
+        bus=$(devinfo -v 2>/dev/null | awk '/hidbus/ {print $1; exit}')
+        if [ -n "${bus}" ]; then
+            b5_say "Trying ${bus}"
+            if sudo devctl rescan "${bus}" 2>/dev/null; then
+                return 0
+            fi
         fi
-    done
-
-    if [ "${count}" -eq 0 ]; then
-        b5_warn "No hidbus rescan succeeded. inputfs probably will not bind."
-        return 1
     fi
-    b5_pass "Rescanned ${count} hidbus instance(s)."
-    # Give the kernel a moment for probes to complete and dmesg to
-    # flush before the caller captures it.
-    sleep 1
+    b5_warn "devctl rescan did not succeed on usbhid1, hidbus1, or auto-discovered bus"
+    b5_warn "The device may have already attached on its own. Continuing."
     return 0
 }
 
