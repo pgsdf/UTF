@@ -38,9 +38,10 @@ kernel configuration that omits drivers superseded by `inputfs` (currently
                          |              \            /
                       drawfs         chronofs
                     (/dev/draw)     (temporal fabric)
-                         |
-                      hardware
-              (EFI framebuffer / Vulkan / X11)
+                         |              |
+                      hardware       inputfs
+              (EFI framebuffer /     (HID kernel
+               Vulkan / X11)          substrate)
 ```
 
 | Component | Role |
@@ -48,7 +49,8 @@ kernel configuration that omits drivers superseded by `inputfs` (currently
 | drawfs | Kernel graphics transport. `/dev/draw` character device, surface lifecycle, mmap-backed pixel buffers, EFI framebuffer blit. |
 | semadraw | Semantic rendering. SDCS command streams, `semadrawd` compositor, software and hardware backends. |
 | semaaud | Audio daemon. OSS output, policy-controlled stream routing, preemption, fallback. |
-| semainput | Input daemon. evdev device classification, pointer smoothing, gesture recognition. |
+| semainput | Input daemon. evdev device classification, pointer smoothing, gesture recognition. To be retired by inputfs (see AD-1, AD-2 in BACKLOG). |
+| inputfs | Kernel input substrate. Attaches at hidbus, parses HID reports, publishes input state and events to userspace via shared memory under `/var/run/sema/input/`. |
 | shared/ | Protocol constants, event schema, session identity, clock interface. |
 | chronofs | Temporal coordination layer. Audio-driven frame scheduler, ring buffers, clock publication. |
 
@@ -59,6 +61,7 @@ kernel configuration that omits drivers superseded by `inputfs` (currently
 ```
 UTF/
 ├── drawfs/          kernel module and protocol (FreeBSD 15)
+├── inputfs/         kernel input substrate (FreeBSD 15)
 ├── semadraw/        semantic rendering daemon and client library
 ├── semaaud/         audio routing daemon
 ├── semainput/       input classification and gesture daemon
@@ -155,6 +158,33 @@ and `chrono_dump` diagnostic tool.
 See `docs/Thoughts.md` for the full design and `chronofs/BACKLOG.md` for the
 implementation history.
 
+### inputfs
+
+A FreeBSD kernel module that owns the HID input path. inputfs attaches at
+`hidbus`, parses HID report descriptors, registers interrupt callbacks, and
+publishes input state and events to userspace via shared-memory regions
+under `/var/run/sema/input/`. The state region carries the materialised
+view (current pointer position, device inventory, per-device keyboard and
+touch state) updated under a seqlock; the event ring carries an ordered
+delta stream consumable via the `EventRingReader` from
+`shared/src/input.zig`.
+
+Stage A delivered the design (proposal, foundations, ADRs 0001 through
+0011, four byte-level companion specs). Stage B delivered HID attachment,
+descriptor parsing, interrupt handler registration, and per-device role
+classification. Stage C delivered userspace publication of the state
+region and event ring, along with the `inputdump` diagnostic CLI and a
+verification protocol at `inputfs/docs/C_VERIFICATION.md` that runs 26
+automated checks plus a manual mouse-and-button checklist. Stage D
+(focus routing and coordinate transform) is next.
+
+inputfs supersedes `semainput` (the userspace evdev daemon) on the
+PGSD target. semainput remains the production input path until Stage D
+lands a focus-routed event consumer; see BACKLOG AD-1 and AD-2.
+
+See `inputfs/docs/` for the proposal, foundations, ADRs, byte-level specs,
+and verification protocols.
+
 ---
 
 ## System Requirements
@@ -184,7 +214,7 @@ tmpfs /var/run tmpfs rw,mode=755 0 0
 
 After editing `fstab`, either reboot or run `sudo mount /var/run` to
 activate. Confirm with `mount | grep /var/run` (expect a `tmpfs on /var/run`
-line). The inputfs C.2 verification protocol assumes this configuration;
+line). The inputfs verification protocol assumes this configuration;
 running on a non-tmpfs `/var/run` is unsupported.
 
 ### PGSD kernel configuration
@@ -273,7 +303,8 @@ drm-kmod port.
 | drawfs | Phase 1 complete. Phase 2 (EFI framebuffer) complete. DRM/KMS skeleton, opt-in only. |
 | semadraw | drawfs backend operational. semadraw-term functional on bare metal and X11. |
 | semaaud | Phase 12 (durable policy) complete. |
-| semainput | Stable for pointer and touch hardware. |
+| semainput | Stable for pointer and touch hardware. To be retired by inputfs (AD-2). |
+| inputfs | Stages A, B, C complete on PGSD-bare-metal. Stage D (focus routing, coordinate transform) not started. |
 | shared/ | Protocol constants, generator, event schema, session identity, clock interface: all complete. |
 | chronofs | Complete. Audio-driven frame scheduler operational. |
 

@@ -854,9 +854,19 @@ Closes the coordinate-space bug (previously tracked as D-6 and
 superseded by this item), eliminates device-accumulated coordinates,
 and removes userspace semainputd as a component (see AD-2).
 
-**Status**: Stage A complete (proposal, foundations,
-`UTF_ARCHITECTURAL_DISCIPLINE.md`, ADRs 0001 through 0009, four
-byte-level companion specs). Stage B in progress:
+**Status**: Stages A, B, and C complete; Stage D scoping next.
+
+Stage A delivered the proposal, foundations,
+`UTF_ARCHITECTURAL_DISCIPLINE.md`, ADRs 0001 through 0011, and
+four byte-level companion specs (`shared/INPUT_STATE.md`,
+`shared/INPUT_EVENTS.md`, `shared/INPUT_FOCUS.md`, and
+`shared/INPUT_IOCTL.md`). Stage B delivered HID attachment via
+hidbus, descriptor parsing, interrupt handler registration, raw
+report hex logging, and per-device role classification. Stage C
+delivered userspace publication of the state region and event
+ring. Stage B and Stage C sub-stage detail follows.
+
+Stage B sub-stages:
 
 - **B.1** module skeleton loads and unloads cleanly: landed,
   verified.
@@ -919,18 +929,19 @@ protocol in `inputfs/docs/B5_VERIFICATION.md` documents the
 workflow.
 
 **Stage C: state publication.** Per the inputfs proposal, Stage C
-makes inputfs's internal state visible to userspace through three
+made inputfs's internal state visible to userspace through three
 shared-memory regions under `/var/run/sema/input/`. The regions
 are specified in `inputfs/docs/adr/0002-shared-memory-regions.md`
 with byte-level layouts in `shared/INPUT_STATE.md`,
-`shared/INPUT_EVENTS.md`, and `shared/INPUT_FOCUS.md` (all already
-landed as Stage A artifacts). Stage C implements against those
-specs. semainputd is unchanged; evdev still drives production;
-inputfs gains a user-visible output but no consumers yet.
+`shared/INPUT_EVENTS.md`, and `shared/INPUT_FOCUS.md` (all
+landed as Stage A artifacts). Stage C implemented against those
+specs. semainputd remained unchanged; evdev still drove
+production; inputfs gained a user-visible output but no
+consumers yet.
 
-Stage C breaks into five sub-stages, mirroring Stage B's rhythm:
-each sub-stage lands independently, gets verified before the next
-starts.
+Stage C broke into five sub-stages, mirroring Stage B's rhythm:
+each sub-stage landed and was verified independently before the
+next started. Sub-stage detail follows.
 
 - **C.1** `shared/src/input.zig` library: `StateWriter`/`StateReader`,
   `EventRingWriter`/`EventRingReader`, `FocusWriter`/`FocusReader`.
@@ -1002,7 +1013,9 @@ arrives in Stage D. The state region remains structurally correct
 across the transition; only the semantics of what's in those
 two fields changes.
 
-**C.2 kernel-side considerations.** The state region is 11,328
+**C.2 kernel-side considerations** *(historical, pre-implementation
+design notes; the choices below were made and the implementation
+landed accordingly)*. The state region is 11,328
 bytes on disk, single-writer (the kernel), multiple-reader
 (userspace). Userspace consumers mmap the file shared and read
 via `StateReader` from `shared/src/input.zig`; the kernel
@@ -1053,7 +1066,9 @@ shape the implementation:
   becomes false at C.3, not C.2; C.2 publishes state but not
   yet the event ring).
 
-**C.5 verification signals (preview).** When C.2 lands the
+**C.5 verification signals (preview)** *(historical, pre-implementation
+design notes; the verification protocol that landed in C.5 covers
+all of these signals plus several more)*. When C.2 lands the
 verification protocol in `inputfs/docs/C_VERIFICATION.md` should
 exercise, in the pattern established by `b5-verify-reports.sh`:
 
@@ -1077,6 +1092,61 @@ exercise, in the pattern established by `b5-verify-reports.sh`:
 
 These signals are concrete enough to write the verification
 script against once C.2 and C.4 are both landed.
+
+**Stage C closeout (2026-04-27).** All five sub-stages landed
+and were verified end-to-end on PGSD-bare-metal with six HID
+devices: the ELECOM BlueLED Mouse, HAILUCK touchpad keyboard
+and pointer TLCs, Broadcom Bluetooth keyboard and pointer TLCs,
+and Apple Keyboard. State region and event ring publish
+correctly, magic and version match the spec, device inventory
+matches dmesg, lifecycle events fire one per attaching device
+with monotonic seqs, pointer.motion events stream from the
+ELECOM mouse, button transitions emit pointer.button_down and
+pointer.button_up correctly. Module load, unload, and reload
+cycles are clean with no `M_INPUTFS` leaks. The verification
+protocol at `inputfs/docs/C_VERIFICATION.md` captures the full
+test recipe; `inputfs/test/c/c-verify.sh` reports 26 of 26
+automated checks passing.
+
+**Stage C deferred items.** Three items were scoped out of Stage
+C and remain to be done before Stage D, after Stage D, or rolled
+into Stage D as it scopes. They are tracked here as sub-items of
+AD-1 rather than separate AD entries:
+
+- *Pollable fd.* The `/dev/inputfs` cdev with `kqfilter` and
+  `EVFILT_READ` support, so userspace consumers can block on
+  events instead of polling the ring. Stage C's userspace
+  consumers poll at an interval (the inputdump default is 100 ms);
+  this is fine for a diagnostic tool but inadequate for production
+  consumers. Likely a focused sub-stage of its own.
+- *chronofs `ts_sync` integration.* Every event currently
+  publishes `ts_sync = 0`; Stage C publishes only `ts_ordering`
+  via `nanouptime`. Wiring `ts_sync` to the audio-clock-stamped
+  value from chronofs is the measurement substrate ADR 0011
+  needs, and is itself a non-trivial sub-stage (the kernel must
+  read the chronofs userland clock file, likely via a kernel-side
+  mmap or a periodic vnode read).
+- *Descriptor-driven event generation for keyboard, touch, pen,
+  and scroll.* Stage C's interrupt path emits pointer.motion and
+  pointer.button events using the boot-protocol mouse layout. To
+  emit keyboard, touch, pen, and scroll events the interrupt
+  path needs to consult the report descriptor walked in B.3.
+  This is the largest of the three deferred items by code volume
+  and is naturally Stage D work.
+
+**Stage D: focus routing and coordinate transform.** Stage C
+publishes input data in raw device space; Stage D adds the
+transform machinery that maps device coordinates to compositor
+space, and consumes the focus region to route events to the
+correct session. Concrete sub-stages are not yet scoped; the
+substantive design work begins after Stage C closes out and
+before Stage D opens. Two open design questions are likely to
+shape Stage D: how the per-device transform is published (a
+fourth shared-memory region, or stored alongside device records
+in the state region), and where the focus-routing logic sits
+(in inputfs, in the compositor, or split between them). The
+descriptor-driven event generation deferred from Stage C will
+likely roll into early Stage D.
 
 ### `[ ]` AD-2: Retire semainputd  *(Open, Medium; depends: AD-1)*
 

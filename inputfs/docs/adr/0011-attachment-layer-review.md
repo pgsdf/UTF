@@ -4,6 +4,18 @@
 
 Proposed: awaiting Stage C measurements.
 
+**Update (2026-04-27):** Stage C completed without the chronofs
+ts_sync integration that this ADR's measurements depend on. Every
+event published in Stage C carries `ts_sync = 0`; only `ts_ordering`
+(via `nanouptime`) is populated. The chronofs integration is
+tracked as a Stage C deferred item under AD-1 in BACKLOG.md and
+will likely be addressed in Stage D or a dedicated chronofs-
+integration sub-stage. The measurement work this ADR is waiting
+for will follow that integration: with `ts_sync` populated,
+end-to-end latency and jitter from interrupt-callback entry
+through publication can be quantified, which is the input
+criterion 1 (Chronofs jitter measurement) calls for.
+
 This ADR opens the question of whether inputfs's current attachment to
 `hidbus` (per ADR 0007) remains the right long-term layer, or whether
 inputfs should attach lower in the FreeBSD USB/HID stack (at `usbhid`
