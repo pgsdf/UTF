@@ -276,6 +276,8 @@ MALLOC_DEFINE(M_INPUTFS, "inputfs", "inputfs report buffers");
 #define INPUTFS_POINTER_BUTTON_DOWN     2u
 #define INPUTFS_POINTER_BUTTON_UP       3u
 #define INPUTFS_POINTER_SCROLL          4u
+#define INPUTFS_POINTER_ENTER           5u
+#define INPUTFS_POINTER_LEAVE           6u
 #define INPUTFS_KEYBOARD_KEY_DOWN       1u
 #define INPUTFS_KEYBOARD_KEY_UP         2u
 #define INPUTFS_LIFECYCLE_ATTACH        1u
@@ -531,6 +533,18 @@ static u_int			 inputfs_geom_height;
 static u_int			 inputfs_geom_stride;
 static u_int			 inputfs_geom_bpp;
 static int			 inputfs_geom_known;
+
+/*
+ * Pointer routing state (Stage D.4).
+ *
+ * Tracks the session_id under the cursor across consecutive
+ * pointer events so leave / enter pairs can be synthesised when
+ * the cursor crosses a surface boundary. Reset to 0 (no
+ * session) at module load and after the cursor leaves all
+ * surfaces. Protected by inputfs_state_mtx, which is already
+ * held during pointer event publication.
+ */
+static uint32_t			 inputfs_pointer_session_prev;
 
 /*
  * Match table for HID_PNP_INFO. Matches HID Top-Level
@@ -1445,6 +1459,141 @@ inputfs_focus_snapshot(struct inputfs_focus_snapshot *out)
 }
 
 /*
+ * inputfs_focus_resolve_pointer -- Stage D.4.
+ *
+ * Narrow helper that resolves a pointer position (x, y) to the
+ * session_id of the surface containing it, without copying out
+ * the full focus snapshot. If pointer_grab is set in the focus
+ * file, that grab session wins regardless of position. Otherwise
+ * we walk the surface_map and return the first hit.
+ *
+ * Walks the surfaces from index 0 upward, matching the
+ * compositor's z-order convention (lower index = higher z-order
+ * per shared/INPUT_FOCUS.md), so the topmost surface containing
+ * (x, y) is returned. If no surface contains the point, *out is
+ * set to 0 (no session) and the function still returns
+ * normally.
+ *
+ * If the focus cache is invalid (compositor not running, or
+ * focus file failed validation), *out is set to 0 and the
+ * function returns. Routing falls back to "no session" in that
+ * case, which preserves Stage C / D.0a / D.0b semantics.
+ *
+ * Safe to call from interrupt context: only spin-locks and
+ * memory reads.
+ */
+static void
+inputfs_focus_resolve_pointer(int32_t x, int32_t y, uint32_t *out)
+{
+	uint32_t i, surface_count;
+	uint32_t pointer_grab;
+	uint32_t seqlock;
+
+	if (out == NULL)
+		return;
+	*out = 0;
+
+	mtx_lock_spin(&inputfs_focus_mtx);
+
+	if (!inputfs_focus_cache_valid) {
+		mtx_unlock_spin(&inputfs_focus_mtx);
+		return;
+	}
+
+	seqlock = inputfs_get_u32le(inputfs_focus_buf, FC_OFF_SEQLOCK);
+	if ((seqlock & 1u) != 0) {
+		/* Cached buffer was captured mid-update by the
+		 * userspace compositor. Treat as "no session" for
+		 * this event; the next kthread refresh will likely
+		 * capture a consistent state. */
+		mtx_unlock_spin(&inputfs_focus_mtx);
+		return;
+	}
+
+	/* pointer_grab takes precedence over surface-under-cursor:
+	 * a compositor that has set a grab wants all pointer events
+	 * to go to that session regardless of cursor position. */
+	pointer_grab = inputfs_get_u32le(inputfs_focus_buf, FC_OFF_PTR_GRAB);
+	if (pointer_grab != 0) {
+		*out = pointer_grab;
+		mtx_unlock_spin(&inputfs_focus_mtx);
+		return;
+	}
+
+	surface_count = (uint32_t)(
+	    inputfs_focus_buf[FC_OFF_SURFACE_COUNT] |
+	    ((uint32_t)inputfs_focus_buf[FC_OFF_SURFACE_COUNT + 1] << 8));
+	if (surface_count > INPUTFS_FOCUS_SLOT_COUNT)
+		surface_count = INPUTFS_FOCUS_SLOT_COUNT;
+
+	for (i = 0; i < surface_count; i++) {
+		size_t off = INPUTFS_FOCUS_HEADER_SIZE +
+		    i * INPUTFS_FOCUS_SLOT_SIZE;
+		uint32_t sid = inputfs_get_u32le(
+		    inputfs_focus_buf, off + FC_SLOT_OFF_SESSION_ID);
+		int32_t sx = inputfs_get_i32le(
+		    inputfs_focus_buf, off + FC_SLOT_OFF_X);
+		int32_t sy = inputfs_get_i32le(
+		    inputfs_focus_buf, off + FC_SLOT_OFF_Y);
+		uint32_t sw = inputfs_get_u32le(
+		    inputfs_focus_buf, off + FC_SLOT_OFF_WIDTH);
+		uint32_t sh = inputfs_get_u32le(
+		    inputfs_focus_buf, off + FC_SLOT_OFF_HEIGHT);
+
+		if (sid == 0)
+			continue; /* Empty slot. */
+		if (x < sx || y < sy)
+			continue;
+		if ((uint32_t)(x - sx) >= sw)
+			continue;
+		if ((uint32_t)(y - sy) >= sh)
+			continue;
+
+		*out = sid;
+		break;
+	}
+
+	mtx_unlock_spin(&inputfs_focus_mtx);
+}
+
+/*
+ * inputfs_focus_keyboard_session -- Stage D.4.
+ *
+ * Narrow helper that returns the session_id of the keyboard
+ * focus, without copying out the full focus snapshot.
+ *
+ * If the focus cache is invalid, *out is set to 0 (no session).
+ *
+ * Safe to call from interrupt context: only spin-locks and
+ * memory reads.
+ */
+static void
+inputfs_focus_keyboard_session(uint32_t *out)
+{
+	uint32_t seqlock;
+
+	if (out == NULL)
+		return;
+	*out = 0;
+
+	mtx_lock_spin(&inputfs_focus_mtx);
+
+	if (!inputfs_focus_cache_valid) {
+		mtx_unlock_spin(&inputfs_focus_mtx);
+		return;
+	}
+
+	seqlock = inputfs_get_u32le(inputfs_focus_buf, FC_OFF_SEQLOCK);
+	if ((seqlock & 1u) != 0) {
+		mtx_unlock_spin(&inputfs_focus_mtx);
+		return;
+	}
+
+	*out = inputfs_get_u32le(inputfs_focus_buf, FC_OFF_KB_FOCUS);
+	mtx_unlock_spin(&inputfs_focus_mtx);
+}
+
+/*
  * inputfs_geom_read -- Stage D.2.
  *
  * Read display geometry from drawfs's hw.drawfs.efifb.* sysctls
@@ -2092,10 +2241,18 @@ inputfs_keyboard_diff_emit(struct inputfs_softc *sc,
 	uint8_t payload[32];
 	int i;
 	uint32_t bit;
+	uint32_t kbd_session = 0;
 
 	dev_slot = (sc->sc_state_slot == INPUTFS_NO_STATE_SLOT)
 	    ? INPUTFS_SYNTHETIC_DEVICE
 	    : (uint16_t)sc->sc_state_slot;
+
+	/* Stage D.4: resolve keyboard focus once at function entry.
+	 * All key_up / key_down events emitted by this diff carry
+	 * the same session_id (the focus snapshot at the moment of
+	 * the report). If keyboard_focus is 0 (no session focused,
+	 * or compositor not running), events go out unrouted. */
+	inputfs_focus_keyboard_session(&kbd_session);
 
 	/* Modifier ups: bits set in prev but not in new. */
 	for (bit = 0; bit < 8; bit++) {
@@ -2108,7 +2265,7 @@ inputfs_keyboard_diff_emit(struct inputfs_softc *sc,
 		inputfs_put_u32le(payload, 0, 0xE0u + bit);
 		inputfs_put_u32le(payload, 4, 0xFFFFFFFFu); /* positional */
 		inputfs_put_u32le(payload, 8, modifiers);
-		/* session_id at offset 12, currently 0. */
+		inputfs_put_u32le(payload, 12, kbd_session);
 		inputfs_events_publish(INPUTFS_SOURCE_KEYBOARD,
 		    INPUTFS_KEYBOARD_KEY_UP,
 		    dev_slot, 0, payload, 16);
@@ -2127,6 +2284,7 @@ inputfs_keyboard_diff_emit(struct inputfs_softc *sc,
 		inputfs_put_u32le(payload, 0, usage);
 		inputfs_put_u32le(payload, 4, 0xFFFFFFFFu);
 		inputfs_put_u32le(payload, 8, modifiers);
+		inputfs_put_u32le(payload, 12, kbd_session);
 		inputfs_events_publish(INPUTFS_SOURCE_KEYBOARD,
 		    INPUTFS_KEYBOARD_KEY_UP,
 		    dev_slot, 0, payload, 16);
@@ -2143,6 +2301,7 @@ inputfs_keyboard_diff_emit(struct inputfs_softc *sc,
 		inputfs_put_u32le(payload, 0, 0xE0u + bit);
 		inputfs_put_u32le(payload, 4, 0xFFFFFFFFu);
 		inputfs_put_u32le(payload, 8, modifiers);
+		inputfs_put_u32le(payload, 12, kbd_session);
 		inputfs_events_publish(INPUTFS_SOURCE_KEYBOARD,
 		    INPUTFS_KEYBOARD_KEY_DOWN,
 		    dev_slot, 0, payload, 16);
@@ -2161,6 +2320,7 @@ inputfs_keyboard_diff_emit(struct inputfs_softc *sc,
 		inputfs_put_u32le(payload, 0, usage);
 		inputfs_put_u32le(payload, 4, 0xFFFFFFFFu);
 		inputfs_put_u32le(payload, 8, modifiers);
+		inputfs_put_u32le(payload, 12, kbd_session);
 		inputfs_events_publish(INPUTFS_SOURCE_KEYBOARD,
 		    INPUTFS_KEYBOARD_KEY_DOWN,
 		    dev_slot, 0, payload, 16);
@@ -2278,6 +2438,58 @@ inputfs_intr(void *context, void *data, hid_size_t len)
 			    : (uint16_t)sc->sc_state_slot;
 
 			/*
+			 * Stage D.4: resolve the session_id under the
+			 * cursor at the new position. If the cursor
+			 * crossed a surface boundary since the last
+			 * report (curr_session != prev_session_under_cursor),
+			 * synthesise pointer.leave for the old surface
+			 * and pointer.enter for the new surface before
+			 * emitting any other events from this report.
+			 *
+			 * Per shared/INPUT_EVENTS.md, enter and leave
+			 * payloads are 16 bytes: x, y, surface_id,
+			 * session_id. inputfs's focus model has one
+			 * session per surface, so surface_id and
+			 * session_id are set to the same value. Synthesised
+			 * events carry flags bit 0 (synthesised) per spec.
+			 */
+			uint32_t curr_session = 0;
+			inputfs_focus_resolve_pointer(new_x, new_y,
+			    &curr_session);
+
+			if (curr_session != inputfs_pointer_session_prev) {
+				uint8_t lp[32];
+
+				if (inputfs_pointer_session_prev != 0) {
+					memset(lp, 0, sizeof(lp));
+					inputfs_put_i32le(lp, 0, new_x);
+					inputfs_put_i32le(lp, 4, new_y);
+					inputfs_put_u32le(lp, 8,
+					    inputfs_pointer_session_prev);
+					inputfs_put_u32le(lp, 12,
+					    inputfs_pointer_session_prev);
+					inputfs_events_publish(
+					    INPUTFS_SOURCE_POINTER,
+					    INPUTFS_POINTER_LEAVE,
+					    dev_slot, 1u, lp, 16);
+				}
+
+				if (curr_session != 0) {
+					memset(lp, 0, sizeof(lp));
+					inputfs_put_i32le(lp, 0, new_x);
+					inputfs_put_i32le(lp, 4, new_y);
+					inputfs_put_u32le(lp, 8, curr_session);
+					inputfs_put_u32le(lp, 12, curr_session);
+					inputfs_events_publish(
+					    INPUTFS_SOURCE_POINTER,
+					    INPUTFS_POINTER_ENTER,
+					    dev_slot, 1u, lp, 16);
+				}
+
+				inputfs_pointer_session_prev = curr_session;
+			}
+
+			/*
 			 * pointer.motion: emit if X or Y was extracted
 			 * (a button-only or wheel-only report does not
 			 * produce a motion event).
@@ -2290,7 +2502,7 @@ inputfs_intr(void *context, void *data, hid_size_t len)
 				inputfs_put_i32le(payload, 8, dx);
 				inputfs_put_i32le(payload, 12, dy);
 				inputfs_put_u32le(payload, 16, buttons);
-				/* session_id at offset 20, currently 0. */
+				inputfs_put_u32le(payload, 20, curr_session);
 				inputfs_events_publish(
 				    INPUTFS_SOURCE_POINTER,
 				    INPUTFS_POINTER_MOTION,
@@ -2315,7 +2527,7 @@ inputfs_intr(void *context, void *data, hid_size_t len)
 				inputfs_put_i32le(payload, 4, new_y);
 				inputfs_put_u32le(payload, 8, mask);
 				inputfs_put_u32le(payload, 12, buttons);
-				/* session_id at offset 16, currently 0. */
+				inputfs_put_u32le(payload, 16, curr_session);
 				inputfs_events_publish(
 				    INPUTFS_SOURCE_POINTER,
 				    (buttons & mask) != 0
@@ -2339,7 +2551,7 @@ inputfs_intr(void *context, void *data, hid_size_t len)
 				inputfs_put_i32le(payload, 8, 0); /* dx */
 				inputfs_put_i32le(payload, 12, dw);
 				inputfs_put_u32le(payload, 16, 0); /* lines */
-				/* session_id at offset 20, currently 0. */
+				inputfs_put_u32le(payload, 20, curr_session);
 				inputfs_events_publish(
 				    INPUTFS_SOURCE_POINTER,
 				    INPUTFS_POINTER_SCROLL,
@@ -2764,6 +2976,12 @@ inputfs_modevent(module_t mod, int what, void *arg)
 		inputfs_focus_vp = NULL;
 		inputfs_focus_cache_valid = 0;
 		inputfs_focus_logged_absent = 0;
+
+		/* Stage D.4: pointer routing state. Reset to 0 (no
+		 * session) so the first pointer event after load
+		 * never synthesises a spurious leave for a stale
+		 * session_id. */
+		inputfs_pointer_session_prev = 0;
 
 		/* Initialize the spin mutex used by the interrupt
 		 * path and the kthread worker. */
