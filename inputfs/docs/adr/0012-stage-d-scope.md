@@ -12,10 +12,10 @@ format additions that downstream specs (`shared/INPUT_STATE.md`,
 `shared/INPUT_EVENTS.md`) will encode and that
 `shared/src/input.zig` will expose.
 
-**Update (2026-04-29):** Sub-stages D.0a, D.0b, D.1, D.2, D.3,
-D.4, and D.5 have landed and verified on PGSD-bare-metal; the
-remaining sub-stage D.6 is not yet implemented. Per-sub-stage
-status is recorded in §7 below.
+**Update (2026-04-29):** All eight sub-stages (D.0a, D.0b,
+D.1, D.2, D.3, D.4, D.5, D.6) have landed and verified on
+PGSD-bare-metal. Stage D is complete. Per-sub-stage status
+is recorded in §7 below.
 
 ## Context
 
@@ -357,9 +357,24 @@ the next starts:
   Steady-state cost is one int read per kthread tick. Focus
   refresh runs unconditionally (the focus cache is read
   input, not output).
-- **D.6** *(pending)*: Stage D verification protocol (mirrors
-  C.5's `c-verify.sh` pattern with new manual checks for
-  keyboard events, transform behaviour, and routing).
+- **D.6** *(landed)*: Stage D verification protocol. Three
+  new files: `inputfs/test/d/d-fixtures.sh` (sources
+  `c-fixtures.sh` for the common module-load helpers,
+  overrides the output prefix to `[d6 ...]`, adds D-specific
+  helpers for state-byte / sysctl reads); `inputfs/test/d/
+  d-verify.sh` (phases 0–7 covering preconditions, module
+  load with optional drawfs, D.2 geometry sysctls, D.3
+  transform_active byte and pointer seed, D.1 focus reader
+  infrastructure, D.5 enable-tunable transitions, module
+  unload); `inputfs/docs/D_VERIFICATION.md` (manual
+  checklist for D.0a / D.0b under live input, D.4 routing
+  with a focus writer, HID hotplug, stress test).
+  D.4 routing tests are deferred to the manual checklist
+  pending a synthetic focus-writer harness; the structural
+  publication checks (event types, payload sizes, sequence
+  monotonicity) are exercised by C.5. Verified end-to-end
+  on PGSD-bare-metal: 18 automated checks pass, C.5 26
+  passes preserved.
 
 Sub-stages may interleave or merge during implementation if
 dependencies surface; the breakdown is a planning aid, not a

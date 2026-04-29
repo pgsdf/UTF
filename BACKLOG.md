@@ -854,9 +854,9 @@ Closes the coordinate-space bug (previously tracked as D-6 and
 superseded by this item), eliminates device-accumulated coordinates,
 and removes userspace semainputd as a component (see AD-2).
 
-**Status**: Stages A, B, and C complete; Stage D in progress
-(sub-stages D.0a, D.0b, D.1, D.2, D.3, D.4, and D.5 landed;
-D.6 remaining).
+**Status**: Stages A, B, C, and D complete (all eight Stage D
+sub-stages landed: D.0a, D.0b, D.1, D.2, D.3, D.4, D.5, D.6).
+Stage E (semainputd retirement, AD-2) is now possible.
 
 Stage A delivered the proposal, foundations,
 `UTF_ARCHITECTURAL_DISCIPLINE.md`, ADRs 0001 through 0011, and
@@ -1204,7 +1204,9 @@ then D.6.
   `D_VERIFICATION.md` document. Mirrors C.5's automated
   phases plus a manual checklist for keyboard events
   (D.0b), transform behaviour (D.3), routing (D.4), and
-  the tunable's transitions (D.5). Not started.
+  the tunable's transitions (D.5). *Landed (commit
+  `f5e2ada`); chose new `d-verify.sh` rather than
+  extending `c-verify.sh`.*
 
 Touch and pen events are explicitly out of scope for Stage D
 (per ADR 0012); they are tracked as a separate AD-1 sub-item
