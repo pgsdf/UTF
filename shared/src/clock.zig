@@ -59,8 +59,13 @@ pub const ClockWriter = struct {
             };
         }
 
-        // Open or create the file.
-        const fd = try std.fs.createFileAbsolute(path, .{ .truncate = true, .read = true });
+        // Open or create the file. Mode 0o600 per ADR 0013;
+        // operators override via daemon's process group and umask.
+        const fd = try std.fs.createFileAbsolute(path, .{
+            .truncate = true,
+            .read = true,
+            .mode = 0o600,
+        });
         errdefer posix.close(fd.handle);
 
         // Size the file.

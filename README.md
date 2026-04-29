@@ -232,6 +232,73 @@ competing `.ko` files out of `/boot/kernel/` and regenerating
 
 ---
 
+## Multi-user deployment
+
+UTF's substrate publication files default to mode `0600` owned
+by `root:wheel`, per ADR 0013
+(`inputfs/docs/adr/0013-publication-permissions.md`). On a
+single-user dev or bench system, no further configuration is
+needed: all UTF daemons run as root by default, all consumers
+run via `sudo`, and the substrate is uniformly accessible
+within that root context.
+
+On a multi-user system, operators relax the defaults via the
+operating system rather than via UTF-specific configuration.
+Two layers control the result:
+
+**Kernel-side (`inputfs`).** Three sysctl tunables apply at
+module load and at runtime:
+
+```
+sysctl hw.inputfs.dev_uid=0
+sysctl hw.inputfs.dev_gid=$(getent group operator | cut -d: -f3)
+sysctl hw.inputfs.dev_mode=0640
+```
+
+These can also live in `/boot/loader.conf` for boot-time
+defaults:
+
+```
+hw.inputfs.dev_uid=0
+hw.inputfs.dev_gid=920
+hw.inputfs.dev_mode=0640
+```
+
+The sysctls take effect for files created after the change.
+Already-open files retain the attributes they were created
+with. Reload the inputfs module to refresh.
+
+**Userspace (`semaaud`, `semadraw`, etc.).** Daemon process
+group is set via `/etc/rc.conf`:
+
+```
+semaaud_user="root"
+semaaud_group="operator"
+chronofs_user="root"
+chronofs_group="operator"
+semadrawd_user="root"
+semadrawd_group="operator"
+```
+
+Daemon umask is set per-script (see the existing rc.d entries
+for the pattern). Setting `umask 027` together with the
+explicit `0o600` UTF passes to `createFile` produces files at
+mode `0600`; setting `umask 037` with explicit `0o640`
+produces group-readable files. UTF cannot expose more
+permissions than its explicit mode, so the umask only ever
+restricts further.
+
+Authorized consumers are added to the chosen group via
+`pw groupmod operator -m <user>`. After this, the user can
+run `inputdump`, `chrono_dump`, and similar diagnostic tools
+without `sudo`.
+
+drawfs's cdev follows the same convention with parallel
+sysctls (`hw.drawfs.dev_uid`, `hw.drawfs.dev_gid`,
+`hw.drawfs.dev_mode`).
+
+---
+
 ## Build
 
 Each subsystem builds independently. Use `start.sh` to build and run all

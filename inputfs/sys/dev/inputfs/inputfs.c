@@ -122,6 +122,41 @@
 MALLOC_DEFINE(M_INPUTFS, "inputfs", "inputfs report buffers");
 
 /*
+ * Publication file ownership and mode (ADR 0013).
+ *
+ * Files created under /var/run/sema/input/ are stamped with
+ * these attributes immediately after vn_open. Defaults are
+ * root:wheel:0600, matching drawfs's existing convention for
+ * its cdev. Operators on multi-user systems can relax to
+ * group-readable by raising dev_mode (e.g. 0640) and setting
+ * dev_gid to a deployment group (e.g. operator). Tunable from
+ * /boot/loader.conf or live via sysctl(8).
+ *
+ * uid_t and gid_t are u32 in FreeBSD; expose as int because
+ * sysctl(9) does not take an unsigned u32 macro and uid -1 has
+ * no useful meaning here. mode_t is small enough that int is
+ * fine for the storage.
+ */
+static SYSCTL_NODE(_hw, OID_AUTO, inputfs, CTLFLAG_RW | CTLFLAG_MPSAFE,
+    0, "inputfs driver parameters");
+
+static int inputfs_dev_uid = 0;
+SYSCTL_INT(_hw_inputfs, OID_AUTO, dev_uid, CTLFLAG_RWTUN,
+    &inputfs_dev_uid, 0,
+    "Publication file owner UID (applied at module load)");
+
+static int inputfs_dev_gid = 0;
+SYSCTL_INT(_hw_inputfs, OID_AUTO, dev_gid, CTLFLAG_RWTUN,
+    &inputfs_dev_gid, 0,
+    "Publication file group GID (applied at module load)");
+
+static int inputfs_dev_mode = 0600;
+SYSCTL_INT(_hw_inputfs, OID_AUTO, dev_mode, CTLFLAG_RWTUN,
+    &inputfs_dev_mode, 0,
+    "Publication file permissions (applied at module load)");
+
+
+/*
  * Role bitmask (Stage B.5, per ADR 0010 Decision section 1).
  */
 #define INPUTFS_ROLE_POINTER    (1u << 0)
@@ -909,6 +944,47 @@ inputfs_state_advance_seq(void)
 }
 
 /*
+ * inputfs_apply_attrs -- stamp uid/gid/mode on a freshly-opened
+ * publication file vnode (ADR 0013).
+ *
+ * Called immediately after a successful vn_open(O_CREAT) on a
+ * publication file. Applies inputfs_dev_uid, inputfs_dev_gid,
+ * and inputfs_dev_mode via VOP_SETATTR while the vnode is still
+ * exclusively locked from vn_open. The caller is responsible
+ * for VOP_UNLOCK afterwards.
+ *
+ * Failures are logged but non-fatal. If VOP_SETATTR fails the
+ * file remains with whatever attributes vn_open established
+ * (typically root:wheel:0644 or whatever umask permits), which
+ * is more permissive than intended but does not break the
+ * substrate. The kthread will still sync data to it; consumers
+ * that cannot read it will get EACCES at open time, which is
+ * the expected failure path for a misconfigured deployment
+ * rather than for a substrate fault.
+ */
+static void
+inputfs_apply_attrs(struct vnode *vp, struct thread *td, const char *path)
+{
+	struct vattr vattr;
+	int error;
+
+	if (vp == NULL)
+		return;
+
+	VATTR_NULL(&vattr);
+	vattr.va_uid = (uid_t)inputfs_dev_uid;
+	vattr.va_gid = (gid_t)inputfs_dev_gid;
+	vattr.va_mode = (mode_t)(inputfs_dev_mode & 07777);
+
+	error = VOP_SETATTR(vp, &vattr, td->td_ucred);
+	if (error != 0) {
+		printf("inputfs: VOP_SETATTR(%s) failed: %d "
+		    "(file remains with vn_open default attributes)\n",
+		    path, error);
+	}
+}
+
+/*
  * inputfs_state_open_file -- attempt to create the parent
  * directories and open the state file for writing. On success,
  * inputfs_state_vp is set to the vnode and the file is sized
@@ -937,7 +1013,7 @@ inputfs_state_open_file(struct thread *td)
 		int flags = FWRITE | O_CREAT | O_TRUNC;
 		NDINIT(&nd, LOOKUP, FOLLOW, UIO_SYSSPACE,
 		    __DECONST(char *, INPUTFS_STATE_PATH));
-		error = vn_open(&nd, &flags, 0644, NULL);
+		error = vn_open(&nd, &flags, inputfs_dev_mode & 07777, NULL);
 	}
 	if (error != 0) {
 		printf("inputfs: vn_open(%s) failed: %d "
@@ -949,9 +1025,17 @@ inputfs_state_open_file(struct thread *td)
 
 	NDFREE_PNBUF(&nd);
 	inputfs_state_vp = nd.ni_vp;
+
+	/* Stamp ownership and mode per ADR 0013. The vnode is still
+	 * exclusively locked from vn_open; apply attrs before unlock. */
+	inputfs_apply_attrs(inputfs_state_vp, td, INPUTFS_STATE_PATH);
+
 	VOP_UNLOCK(inputfs_state_vp);
-	printf("inputfs: opened state file %s (size=%lu bytes)\n",
-	    INPUTFS_STATE_PATH, (unsigned long)INPUTFS_STATE_SIZE);
+	printf("inputfs: opened state file %s (size=%lu bytes, "
+	    "uid=%d gid=%d mode=%04o)\n",
+	    INPUTFS_STATE_PATH, (unsigned long)INPUTFS_STATE_SIZE,
+	    inputfs_dev_uid, inputfs_dev_gid,
+	    inputfs_dev_mode & 07777);
 }
 
 static void
@@ -1130,7 +1214,7 @@ inputfs_events_open_file(struct thread *td)
 		int flags = FWRITE | O_CREAT | O_TRUNC;
 		NDINIT(&nd, LOOKUP, FOLLOW, UIO_SYSSPACE,
 		    __DECONST(char *, INPUTFS_EVENTS_PATH));
-		error = vn_open(&nd, &flags, 0644, NULL);
+		error = vn_open(&nd, &flags, inputfs_dev_mode & 07777, NULL);
 	}
 	if (error != 0) {
 		printf("inputfs: vn_open(%s) failed: %d "
@@ -1142,9 +1226,17 @@ inputfs_events_open_file(struct thread *td)
 
 	NDFREE_PNBUF(&nd);
 	inputfs_events_vp = nd.ni_vp;
+
+	/* Stamp ownership and mode per ADR 0013. The vnode is still
+	 * exclusively locked from vn_open; apply attrs before unlock. */
+	inputfs_apply_attrs(inputfs_events_vp, td, INPUTFS_EVENTS_PATH);
+
 	VOP_UNLOCK(inputfs_events_vp);
-	printf("inputfs: opened events file %s (size=%lu bytes)\n",
-	    INPUTFS_EVENTS_PATH, (unsigned long)INPUTFS_EVENTS_SIZE);
+	printf("inputfs: opened events file %s (size=%lu bytes, "
+	    "uid=%d gid=%d mode=%04o)\n",
+	    INPUTFS_EVENTS_PATH, (unsigned long)INPUTFS_EVENTS_SIZE,
+	    inputfs_dev_uid, inputfs_dev_gid,
+	    inputfs_dev_mode & 07777);
 
 	/* Write the entire buffer (zero-initialized slots plus the
 	 * header) so the file is the correct total size from the

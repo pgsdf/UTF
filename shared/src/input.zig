@@ -224,7 +224,13 @@ pub const StateWriter = struct {
     pub fn init(path: []const u8) !StateWriter {
         try ensureParents(path);
 
-        const file = try std.fs.createFileAbsolute(path, .{ .truncate = true, .read = true });
+        // Mode 0o600 per ADR 0013; operators relax via daemon's
+        // process group and umask, not code.
+        const file = try std.fs.createFileAbsolute(path, .{
+            .truncate = true,
+            .read = true,
+            .mode = 0o600,
+        });
         errdefer posix.close(file.handle);
 
         try file.setEndPos(STATE_SIZE);
@@ -614,7 +620,13 @@ pub const EventRingWriter = struct {
     pub fn init(path: []const u8) !EventRingWriter {
         try ensureParents(path);
 
-        const file = try std.fs.createFileAbsolute(path, .{ .truncate = true, .read = true });
+        // Mode 0o600 per ADR 0013; operators relax via daemon's
+        // process group and umask, not code.
+        const file = try std.fs.createFileAbsolute(path, .{
+            .truncate = true,
+            .read = true,
+            .mode = 0o600,
+        });
         errdefer posix.close(file.handle);
 
         try file.setEndPos(EVENTS_SIZE);
@@ -888,7 +900,13 @@ pub const FocusWriter = struct {
     pub fn init(path: []const u8) !FocusWriter {
         try ensureParents(path);
 
-        const file = try std.fs.createFileAbsolute(path, .{ .truncate = true, .read = true });
+        // Mode 0o600 per ADR 0013; operators relax via daemon's
+        // process group and umask, not code.
+        const file = try std.fs.createFileAbsolute(path, .{
+            .truncate = true,
+            .read = true,
+            .mode = 0o600,
+        });
         errdefer posix.close(file.handle);
 
         try file.setEndPos(FOCUS_SIZE);
