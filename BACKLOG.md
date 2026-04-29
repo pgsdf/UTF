@@ -855,7 +855,7 @@ superseded by this item), eliminates device-accumulated coordinates,
 and removes userspace semainputd as a component (see AD-2).
 
 **Status**: Stages A, B, and C complete; Stage D in progress
-(sub-stages D.0a, D.0b, D.1, D.2, and D.3 landed; D.4 through
+(sub-stages D.0a, D.0b, D.1, D.2, D.3, and D.4 landed; D.5 and
 D.6 remaining).
 
 Stage A delivered the proposal, foundations,
@@ -1193,7 +1193,7 @@ then D.6.
   `pointer.enter` and `pointer.leave` events when
   surface-under-cursor changes between successive pointer
   events. Apply keyboard-focus routing (events delivered to
-  `keyboard_focus` if non-zero). Not started.
+  `keyboard_focus` if non-zero). *Landed (commit `0c610fd`).*
 - **D.5** `hw.inputfs.enable` tunable: gate publication.
   When `0`, inputfs is fully inert (no state updates, no
   ring updates, `state_valid = 0`, `events_valid = 0`).

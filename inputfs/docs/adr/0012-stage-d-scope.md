@@ -12,9 +12,9 @@ format additions that downstream specs (`shared/INPUT_STATE.md`,
 `shared/INPUT_EVENTS.md`) will encode and that
 `shared/src/input.zig` will expose.
 
-**Update (2026-04-29):** Sub-stages D.0a, D.0b, D.1, D.2, and
-D.3 have landed and verified on PGSD-bare-metal; the remaining
-sub-stages D.4, D.5, and D.6 are not yet implemented.
+**Update (2026-04-29):** Sub-stages D.0a, D.0b, D.1, D.2, D.3,
+and D.4 have landed and verified on PGSD-bare-metal; the
+remaining sub-stages D.5 and D.6 are not yet implemented.
 Per-sub-stage status is recorded in §7 below.
 
 ## Context
@@ -325,9 +325,25 @@ the next starts:
   the accumulator runs unclamped (Stage C semantics preserved).
   `dx` / `dy` in event payloads remain raw deltas regardless
   of clamping.
-- **D.4** *(pending)*: routing application: stamp events with
-  `session_id` from focus snapshot, synthesise pointer.enter /
-  pointer.leave, apply keyboard-focus routing.
+- **D.4** *(landed)*: routing application. The pointer
+  interrupt path resolves the session under the cursor via a
+  narrow helper `inputfs_focus_resolve_pointer` (respects
+  `pointer_grab` as an override; walks `surface_map` in
+  z-order; returns 0 if the cache is invalid or no surface
+  contains the point). When the session changes between
+  consecutive reports, `pointer.leave` and `pointer.enter`
+  events are synthesised with 16-byte payloads
+  (`x, y, surface_id, session_id`) per
+  `shared/INPUT_EVENTS.md`, carrying `flags` bit 0
+  (synthesised). The report's own pointer.motion,
+  pointer.button_down/up, and pointer.scroll events are
+  emitted with `session_id` stamped at the documented payload
+  offsets. Keyboard events derive `session_id` from
+  `inputfs_focus_keyboard_session`, captured once per diff so
+  all key_up / key_down events from a single report carry the
+  same session. Under no compositor (focus cache invalid),
+  all sessions resolve to 0 and behaviour is bit-for-bit
+  compatible with Stage C / D.0a / D.0b / D.3 consumers.
 - **D.5** *(pending)*: `hw.inputfs.enable` tunable with clean
   `state_valid` / `events_valid` transitions.
 - **D.6** *(pending)*: Stage D verification protocol (mirrors
