@@ -1332,6 +1332,73 @@ status).
   is a separate decision deserving its own track. Not folded into
   AD-8.
 
+### `[ ]` AD-9: HID descriptor and report fuzzing  *(Open, Small–Medium)*
+
+**Tracks**: hardening of inputfs's HID parser surface
+(`inputfs/sys/dev/inputfs/inputfs.c`).
+
+inputfs's interrupt path consumes attacker-controlled bytes:
+HID report descriptors arrive from USB devices at attach time,
+and raw HID reports arrive on every input event. The descriptor
+walker (`inputfs_pointer_locate`, `inputfs_keyboard_locate`,
+the keys-array fallback walk) and the per-report extractors
+(`inputfs_extract_pointer`, `inputfs_keyboard_diff_emit`) read
+these bytes and dispatch on them. Malformed HID is a classic
+kernel panic vector: out-of-range usage codes, oversized item
+counts, recursive collections, nonsensical bit/byte offsets
+that point past the report end.
+
+C.5 (Stage C verification) covers the happy path with real
+devices. It does not cover adversarial input.
+
+**Scope:**
+
+- A userspace harness that takes a binary descriptor blob
+  and/or a raw report blob and feeds it through the same
+  parsing code paths the kernel uses. The kernel parser
+  source compiles in user-space behind a small `_KERNEL`
+  shim that stubs the kernel-only headers.
+- A small initial corpus of malformed inputs:
+  truncated descriptors, descriptors with collections that
+  open without closing, descriptors with bit offsets past
+  the report length, descriptors with usage pages out of
+  range, reports shorter than the descriptor implies,
+  reports with all-bits-set values in fields that are
+  signed.
+- Exit code 0 if the parser handles the blob without
+  asserting, returning success or a graceful error code.
+  Exit code non-zero if the parser asserts, segfaults, or
+  loops indefinitely (under a timeout).
+
+**Out of scope:**
+
+- Coverage-guided fuzzing (AFL-style instrumentation in
+  Zig is non-trivial; cost outweighs benefit at this
+  stage).
+- Kernel-side fuzzing (would require a dtrace probe
+  surface and a kernel-resident fuzzing driver; cost
+  outweighs benefit at this stage).
+- Generating a comprehensive corpus from real-world
+  malformed devices. The initial corpus is hand-written
+  to exercise documented error paths; corpus expansion
+  is a follow-up.
+
+**Why now-ish:** the parser is stable enough after Stage D.0a
+and D.0b that fuzzing it produces actionable bugs rather than
+churn against active development. The window before Stage E
+(semainputd retirement, AD-2) is the right time: once inputfs
+is the sole input path, panics in its parser become
+load-bearing for the whole system.
+
+**Depends on:** none. Can land independently of remaining
+Stage D work.
+
+**Blocks:** AD-2 is more defensible after this lands, for the
+same reason as ADR 0013: cutover increases the surface that
+benefits from hardening.
+
+**Status:** scheduled; implementation pending.
+
 ### Priority
 
 Rough priority ordering within this section, not strict:
@@ -1341,11 +1408,12 @@ Rough priority ordering within this section, not strict:
 2. **AD-8**: in progress; supports AD-1's bare-metal verification
    substrate.
 3. **AD-2**: follows AD-1 naturally.
-4. **AD-5, AD-7**: small doc tasks; make the discipline honest.
-5. **AD-6**: small-medium; applies the discipline's verification
+4. **AD-9**: hardens AD-1's parser before AD-2 cutover.
+5. **AD-5, AD-7**: small doc tasks; make the discipline honest.
+6. **AD-6**: small-medium; applies the discipline's verification
    rule to existing code.
-6. **AD-3**: large; not scheduled.
-7. **AD-4**: largest; not scheduled.
+7. **AD-3**: large; not scheduled.
+8. **AD-4**: largest; not scheduled.
 
 "Not scheduled" here means: no commitment to start, no commitment to
 an outcome date, but explicitly tracked so the discipline's forward
