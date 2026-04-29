@@ -169,6 +169,7 @@ MALLOC_DEFINE(M_INPUTFS, "inputfs", "inputfs report buffers");
 #define OFF_PTR_BUTTONS     40
 #define OFF_DEVICE_COUNT    44
 #define OFF_TOUCH_COUNT     46
+#define OFF_TRANSFORM_ACTIVE 48
 
 /* Device slot field offsets (relative to slot start). */
 #define DEV_OFF_DEVICE_ID       0
@@ -787,20 +788,98 @@ inputfs_state_clear_device(uint8_t slot)
  * into the live buffer's global pointer position fields. Caller
  * holds inputfs_state_mtx.
  *
- * Stage C.2 publishes raw device-space coordinates with no
- * coordinate transform applied. Each pointer report contributes
- * its dx/dy to the accumulator; buttons replace the previous
- * bitmask. Stage D will introduce the transform layer.
+ * Stage C.2 published raw device-space coordinates with no
+ * coordinate transform applied: each pointer report contributed
+ * its dx/dy to the accumulator without bounds.
+ *
+ * Stage D.3 introduces the coordinate transform: when display
+ * geometry is known (inputfs_geom_known == 1), the new
+ * accumulated position is clamped to [0, geom_width-1] x
+ * [0, geom_height-1] before being written. This places the
+ * pointer in compositor pixel space, suitable for direct use
+ * as surface-map coordinates. The state header byte
+ * transform_active is set to 1 in inputfs_state_apply_geom to
+ * advertise this. When geometry is not known (inputfs_geom_known
+ * == 0; drawfs sysctls were absent at module load), the
+ * accumulator runs unclamped exactly as in Stage C and
+ * transform_active is left at 0.
+ *
+ * Note: dx/dy in event payloads remain raw deltas regardless of
+ * whether clamping happens. Consumers that want raw deltas read
+ * the event payload's dx/dy fields; consumers that want
+ * compositor-space coordinates read pointer_x/pointer_y from the
+ * state region or the x/y fields of motion events. This split
+ * preserves both intentions per ADR 0012.
  */
 static void
 inputfs_state_update_pointer(int32_t dx, int32_t dy, uint32_t buttons)
 {
-	int32_t cur_x, cur_y;
+	int32_t cur_x, cur_y, new_x, new_y;
 	cur_x = inputfs_get_i32le(inputfs_state_buf, OFF_PTR_X);
 	cur_y = inputfs_get_i32le(inputfs_state_buf, OFF_PTR_Y);
-	inputfs_put_i32le(inputfs_state_buf, OFF_PTR_X, cur_x + dx);
-	inputfs_put_i32le(inputfs_state_buf, OFF_PTR_Y, cur_y + dy);
+	new_x = cur_x + dx;
+	new_y = cur_y + dy;
+
+	if (inputfs_geom_known) {
+		/* Clamp to [0, width-1] x [0, height-1]. */
+		if (new_x < 0)
+			new_x = 0;
+		else if ((u_int)new_x >= inputfs_geom_width)
+			new_x = (int32_t)(inputfs_geom_width - 1);
+		if (new_y < 0)
+			new_y = 0;
+		else if ((u_int)new_y >= inputfs_geom_height)
+			new_y = (int32_t)(inputfs_geom_height - 1);
+	}
+
+	inputfs_put_i32le(inputfs_state_buf, OFF_PTR_X, new_x);
+	inputfs_put_i32le(inputfs_state_buf, OFF_PTR_Y, new_y);
 	inputfs_put_u32le(inputfs_state_buf, OFF_PTR_BUTTONS, buttons);
+}
+
+/*
+ * inputfs_state_apply_geom -- Stage D.3.
+ *
+ * Called from MOD_LOAD after inputfs_geom_read has populated the
+ * geometry globals. Updates the state header to reflect the
+ * coordinate-transform regime:
+ *
+ *   - If geometry is known (drawfs sysctls were readable),
+ *     transform_active is set to 1 to advertise that
+ *     pointer_x/pointer_y are in compositor pixel space, and
+ *     the pointer is seeded at the centre of the display
+ *     (geom_width/2, geom_height/2). The seeded position
+ *     replaces the zero from inputfs_state_init_buf so the
+ *     pointer does not start in the top-left corner.
+ *
+ *   - If geometry is not known, transform_active stays 0 and
+ *     the pointer accumulator runs unclamped exactly as in
+ *     Stage C; the pointer position remains (0, 0). This
+ *     avoids advertising "compositor pixel space" when we
+ *     are clamping to the wrong rectangle (the conservative
+ *     fallback default of 1024x768).
+ *
+ * Called from MOD_LOAD context before the kthread starts; no
+ * spin lock is held. The state region's seqlock is not modified
+ * here because no consumer is reading at this point.
+ */
+static void
+inputfs_state_apply_geom(void)
+{
+	if (inputfs_geom_known) {
+		inputfs_put_u8(inputfs_state_buf, OFF_TRANSFORM_ACTIVE, 1);
+		inputfs_put_i32le(inputfs_state_buf, OFF_PTR_X,
+		    (int32_t)(inputfs_geom_width / 2u));
+		inputfs_put_i32le(inputfs_state_buf, OFF_PTR_Y,
+		    (int32_t)(inputfs_geom_height / 2u));
+		printf("inputfs: D.3 transform active; pointer seeded "
+		    "at (%u, %u)\n",
+		    inputfs_geom_width / 2u, inputfs_geom_height / 2u);
+	} else {
+		inputfs_put_u8(inputfs_state_buf, OFF_TRANSFORM_ACTIVE, 0);
+		printf("inputfs: D.3 transform inactive (geometry not "
+		    "available); pointer reports raw accumulated deltas\n");
+	}
 }
 
 /*
@@ -2706,6 +2785,11 @@ inputfs_modevent(module_t mod, int what, void *arg)
 		 * starts because no spin lock is held and sleeping is
 		 * permitted in MOD_LOAD context. */
 		inputfs_geom_read(curthread);
+
+		/* Stage D.3: apply geometry to the state header.
+		 * Sets transform_active and seeds the pointer at the
+		 * centre of the display when geometry is known. */
+		inputfs_state_apply_geom();
 
 		/* Start the kthread worker. */
 		inputfs_kthread_run = 1;
