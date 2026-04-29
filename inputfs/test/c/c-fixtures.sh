@@ -149,8 +149,14 @@ c_load_module() {
         c_info "module already loaded; unloading first."
         kldunload inputfs >/dev/null 2>&1 || true
     fi
-    if ! kldload inputfs 2>/dev/null; then
-        c_warn "kldload inputfs failed."
+    # Load by full path to the development tree's .ko, not by
+    # bare name. kldload(8) given a bare name searches
+    # kern.module_path (default /boot/modules and /boot/kernel)
+    # and would silently pick up any stale module installed
+    # there from an earlier `make install`, masking the freshly
+    # built version we want to test.
+    if ! kldload "${C_MODULE_DIR}/inputfs.ko" 2>/dev/null; then
+        c_warn "kldload ${C_MODULE_DIR}/inputfs.ko failed."
         return 1
     fi
     return 0
