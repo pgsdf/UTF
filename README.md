@@ -371,7 +371,7 @@ drm-kmod port.
 | semadraw | drawfs backend operational. semadraw-term functional on bare metal and X11. |
 | semaaud | Phase 12 (durable policy) complete. |
 | semainput | Stable for pointer and touch hardware. To be retired by inputfs (AD-2). |
-| inputfs | Stages A, B, C complete on PGSD-bare-metal. Stage D (focus routing, coordinate transform) not started. |
+| inputfs | Stages A, B, C complete on PGSD-bare-metal. Stage D (focus routing, coordinate transform) 6 of 8 sub-stages landed: D.0a, D.0b, D.1, D.2, D.3, D.4. D.5 (`hw.inputfs.enable` tunable) and D.6 (verification protocol) remaining. |
 | shared/ | Protocol constants, generator, event schema, session identity, clock interface: all complete. |
 | chronofs | Complete. Audio-driven frame scheduler operational. |
 
