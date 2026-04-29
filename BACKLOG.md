@@ -855,7 +855,7 @@ superseded by this item), eliminates device-accumulated coordinates,
 and removes userspace semainputd as a component (see AD-2).
 
 **Status**: Stages A, B, and C complete; Stage D in progress
-(sub-stages D.0a, D.0b, D.1, D.2, D.3, and D.4 landed; D.5 and
+(sub-stages D.0a, D.0b, D.1, D.2, D.3, D.4, and D.5 landed;
 D.6 remaining).
 
 Stage A delivered the proposal, foundations,
@@ -1198,7 +1198,7 @@ then D.6.
   When `0`, inputfs is fully inert (no state updates, no
   ring updates, `state_valid = 0`, `events_valid = 0`).
   When `1`, full publication. Clean valid-byte transitions
-  on flip. Not started.
+  on flip. *Landed (commit `d0dd1fc`).*
 - **D.6** Stage D verification protocol: extend
   `c-verify.sh` (or write a new `d-verify.sh`) and a
   `D_VERIFICATION.md` document. Mirrors C.5's automated

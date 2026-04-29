@@ -13,9 +13,9 @@ format additions that downstream specs (`shared/INPUT_STATE.md`,
 `shared/src/input.zig` will expose.
 
 **Update (2026-04-29):** Sub-stages D.0a, D.0b, D.1, D.2, D.3,
-and D.4 have landed and verified on PGSD-bare-metal; the
-remaining sub-stages D.5 and D.6 are not yet implemented.
-Per-sub-stage status is recorded in §7 below.
+D.4, and D.5 have landed and verified on PGSD-bare-metal; the
+remaining sub-stage D.6 is not yet implemented. Per-sub-stage
+status is recorded in §7 below.
 
 ## Context
 
@@ -344,8 +344,19 @@ the next starts:
   same session. Under no compositor (focus cache invalid),
   all sessions resolve to 0 and behaviour is bit-for-bit
   compatible with Stage C / D.0a / D.0b / D.3 consumers.
-- **D.5** *(pending)*: `hw.inputfs.enable` tunable with clean
-  `state_valid` / `events_valid` transitions.
+- **D.5** *(landed)*: `hw.inputfs.enable` tunable. Default 1
+  (publication active). When set to 0, the kthread skips
+  publication-file syncs and writes `valid=0` to both file
+  headers (state offset 5, events offset 5); readers detect
+  the substrate as inactive via the same code path they use
+  before MOD_LOAD finishes. The interrupt path keeps updating
+  the in-memory buffers, so re-enabling exports the current
+  pointer / device state immediately. Edge-detected by the
+  kthread: a 1→0 transition writes `valid=0` once; a 0→1
+  transition writes `valid=1` and forces a full state sync.
+  Steady-state cost is one int read per kthread tick. Focus
+  refresh runs unconditionally (the focus cache is read
+  input, not output).
 - **D.6** *(pending)*: Stage D verification protocol (mirrors
   C.5's `c-verify.sh` pattern with new manual checks for
   keyboard events, transform behaviour, and routing).
