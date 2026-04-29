@@ -27,11 +27,38 @@ Total size: **20 bytes**. All fields are little-endian.
 | 0 | 4 | u32 | `magic` | `0x534D434B` ("SMCK") |
 | 4 | 1 | u8 | `version` | Region format version (currently `1`) |
 | 5 | 1 | u8 | `clock_valid` | `0` = no stream started, `1` = clock is live |
-| 6 | 2 | u8[2] | `_pad` | Reserved, zero |
+| 6 | 1 | u8 | `clock_source` | `0` = invalid, `1` = audio, `2` = wall (reserved), `3` = tsc (reserved) |
+| 7 | 1 | u8 | `_pad` | Reserved, zero |
 | 8 | 4 | u32 | `sample_rate` | PCM sample frames per second |
 | 12 | 8 | u64 | `samples_written` | Monotonic sample frame counter (atomic) |
 
 The `u64` at offset 12 is naturally aligned. No additional padding is needed.
+
+### clock_source: observability metadata
+
+`clock_source` exists to let readers and diagnostic tools identify which
+writer produced the region without guessing. UTF's clock is audio-driven
+by construction (see `docs/Thoughts.md` and
+`docs/UTF_ARCHITECTURAL_DISCIPLINE.md`); this field does not enable a
+runtime fallback to a different clock source. Values 2 (wall) and 3 (tsc)
+are reserved for writers that may exist in test scaffolding or
+alternative builds; they are not used by the canonical UTF stack.
+
+The field was promoted from a previously-reserved padding byte at offset 6
+without bumping `version`. Compatibility holds in both directions:
+
+- Old writers (which wrote 0 at offset 6) appear to readers as
+  `clock_source = invalid`. This is accurate semantics for legacy data:
+  the old writer did not advertise a source, so the reader should not
+  assume one.
+- Old readers (which ignored the byte at offset 6) continue to function
+  unchanged. They read `clock_valid` and `samples_written` exactly as
+  before.
+
+A reader that depends on `clock_source` being meaningful should check
+`clock_valid == 1` first; the SeqCst store on `clock_valid` (written
+last by `streamBegin`) provides the happens-before edge that guarantees
+`clock_source` is also visible.
 
 ## Concurrency model
 

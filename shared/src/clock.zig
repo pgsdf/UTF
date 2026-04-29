@@ -13,27 +13,53 @@ const posix = std.posix;
 //  0       4    magic           0x534D434B ("SMCK") little-endian
 //  4       1    version         Region format version (currently 1)
 //  5       1    clock_valid     0 = no stream ever started, 1 = clock is live
-//  6       2    _pad            Reserved, must be zero
+//  6       1    clock_source    0 = invalid/unset, 1 = audio (default),
+//                                2 = wall (reserved), 3 = tsc (reserved)
+//  7       1    _pad            Reserved, must be zero
 //  8       4    sample_rate     Sample frames per second of the active stream
 // 12       8    samples_written Monotonic PCM sample frame counter (atomic u64)
 //
 // Total: 20 bytes. The u64 at offset 12 is naturally aligned.
 //
+// clock_source is observability metadata, not a fallback selector. UTF's
+// clock is audio-driven by construction (see docs/Thoughts.md and
+// docs/UTF_ARCHITECTURAL_DISCIPLINE.md). The field exists so readers and
+// diagnostic tools can identify which writer produced the region without
+// guessing. Values 2 (wall) and 3 (tsc) are reserved for future writers
+// that may exist in test scaffolding or alternative builds; they are not
+// used by the canonical UTF stack and do not enable runtime fallback.
+//
+// The field was promoted from the previously-reserved _pad byte at offset
+// 6 without bumping version. Old writers (which wrote 0 at this offset)
+// remain compatible: their value is read as "invalid/unset" which is
+// accurate semantics for legacy data. Old readers (which ignored the byte)
+// remain compatible: they continue to ignore it.
+//
 // Concurrency model:
 //   samples_written is written with SeqCst atomics by the semaaud stream
 //   worker and read with SeqCst atomics by all readers. No mutex is required.
-//   clock_valid is written once (0 → 1) and never reset.
+//   clock_valid is written once (0 → 1) and never reset. clock_source is
+//   written by streamBegin alongside clock_valid; readers that see
+//   clock_valid = 1 also see the matching clock_source, courtesy of the
+//   sequentially-consistent store on clock_valid.
 
 pub const CLOCK_PATH = "/var/run/sema/clock";
 pub const CLOCK_MAGIC: u32 = 0x534D434B; // "SMCK"
 pub const CLOCK_VERSION: u8 = 1;
 pub const CLOCK_SIZE: usize = 20;
 
+// clock_source values.
+pub const CLOCK_SOURCE_INVALID: u8 = 0;
+pub const CLOCK_SOURCE_AUDIO: u8 = 1;
+pub const CLOCK_SOURCE_WALL: u8 = 2; // reserved, not used by canonical UTF
+pub const CLOCK_SOURCE_TSC: u8 = 3; // reserved, not used by canonical UTF
+
 // Byte offsets within the region.
 const OFF_MAGIC: usize = 0;
 const OFF_VERSION: usize = 4;
 const OFF_VALID: usize = 5;
-const OFF_PAD: usize = 6;
+const OFF_SOURCE: usize = 6;
+const OFF_PAD: usize = 7;
 const OFF_SAMPLE_RATE: usize = 8;
 const OFF_SAMPLES: usize = 12;
 
@@ -91,8 +117,8 @@ pub const ClockWriter = struct {
         writer.writeU32(OFF_MAGIC, CLOCK_MAGIC);
         writer.map[OFF_VERSION] = CLOCK_VERSION;
         writer.map[OFF_VALID] = 0; // not valid until first stream
+        writer.map[OFF_SOURCE] = CLOCK_SOURCE_INVALID; // set by streamBegin
         writer.map[OFF_PAD] = 0;
-        writer.map[OFF_PAD + 1] = 0;
         writer.writeU32(OFF_SAMPLE_RATE, 0);
         writer.writeU64Atomic(OFF_SAMPLES, 0);
 
@@ -106,9 +132,15 @@ pub const ClockWriter = struct {
 
     /// Called when a stream begins. Sets sample_rate and marks the clock valid.
     /// Must be called before the first update().
+    ///
+    /// Also stamps clock_source = CLOCK_SOURCE_AUDIO. The store on
+    /// clock_valid (sequentially consistent, written last) provides the
+    /// happens-before edge that guarantees readers seeing clock_valid = 1
+    /// also see the matching clock_source.
     pub fn streamBegin(self: ClockWriter, sample_rate: u32) void {
         self.writeU32(OFF_SAMPLE_RATE, sample_rate);
-        // Mark valid last — readers check clock_valid before reading samples.
+        self.map[OFF_SOURCE] = CLOCK_SOURCE_AUDIO;
+        // Mark valid last; readers check clock_valid before reading samples.
         @atomicStore(u8, &self.map[OFF_VALID], 1, .seq_cst);
     }
 
@@ -201,6 +233,22 @@ pub const ClockReader = struct {
         if (@atomicLoad(u8, &m[OFF_VALID], .seq_cst) == 0) return 0;
         return std.mem.readInt(u32, m[OFF_SAMPLE_RATE..][0..4], .little);
     }
+
+    /// Read the clock source identifier. Observability metadata only;
+    /// readers should not switch behaviour based on this value.
+    /// Returns CLOCK_SOURCE_INVALID if the file is not open or the writer
+    /// has not yet called streamBegin.
+    ///
+    /// Possible return values:
+    ///   CLOCK_SOURCE_INVALID (0): file open but no stream has started yet,
+    ///       or writer is a legacy version that did not set this field.
+    ///   CLOCK_SOURCE_AUDIO   (1): canonical UTF audio-driven clock.
+    ///   CLOCK_SOURCE_WALL    (2): reserved; not used by canonical UTF.
+    ///   CLOCK_SOURCE_TSC     (3): reserved; not used by canonical UTF.
+    pub fn source(self: ClockReader) u8 {
+        const m = self.map orelse return CLOCK_SOURCE_INVALID;
+        return m[OFF_SOURCE];
+    }
 };
 
 // ============================================================================
@@ -272,12 +320,16 @@ test "ClockWriter and ClockReader two-thread atomic visibility" {
     defer reader.deinit();
     try std.testing.expect(!reader.isValid());
     try std.testing.expectEqual(@as(u64, 0), reader.read());
+    // Source is invalid until streamBegin sets it.
+    try std.testing.expectEqual(CLOCK_SOURCE_INVALID, reader.source());
 
     // Simulate stream begin at 48kHz.
     writer.streamBegin(48_000);
     try std.testing.expect(reader.isValid());
     try std.testing.expectEqual(@as(u32, 48_000), reader.sampleRate());
     try std.testing.expectEqual(@as(u64, 0), reader.read());
+    // Source is now audio.
+    try std.testing.expectEqual(CLOCK_SOURCE_AUDIO, reader.source());
 
     // Write sample counts and confirm reader sees them.
     writer.update(1_000);
