@@ -12,10 +12,10 @@ format additions that downstream specs (`shared/INPUT_STATE.md`,
 `shared/INPUT_EVENTS.md`) will encode and that
 `shared/src/input.zig` will expose.
 
-**Update (2026-04-28):** Sub-stages D.0a, D.0b, D.1, and D.2 have
-landed and verified on PGSD-bare-metal; the remaining sub-stages
-D.3, D.4, D.5, and D.6 are not yet implemented. Per-sub-stage
-status is recorded in §7 below.
+**Update (2026-04-29):** Sub-stages D.0a, D.0b, D.1, D.2, and
+D.3 have landed and verified on PGSD-bare-metal; the remaining
+sub-stages D.4, D.5, and D.6 are not yet implemented.
+Per-sub-stage status is recorded in §7 below.
 
 ## Context
 
@@ -314,9 +314,17 @@ the next starts:
   `SYSCTL_PROC` + accessor functions) and inputfs reads at
   module load via `kernel_sysctlbyname` with fallback to
   `1024x768x32` when sysctls are absent.
-- **D.3** *(pending)*: coordinate transform: clamp pointer to
-  display bounds, publish in compositor pixel space, add
-  `transform_active` byte to state header.
+- **D.3** *(landed)*: coordinate transform applied to pointer
+  state. When display geometry is known
+  (`inputfs_geom_known == 1` from D.2), the pointer accumulator
+  in `inputfs_state_update_pointer` is clamped to
+  `[0, geom_width-1] × [0, geom_height-1]` and the state
+  header's `transform_active` byte at offset 48 is set to 1.
+  The pointer is seeded at the display centre at module load.
+  When geometry is not known, `transform_active` stays 0 and
+  the accumulator runs unclamped (Stage C semantics preserved).
+  `dx` / `dy` in event payloads remain raw deltas regardless
+  of clamping.
 - **D.4** *(pending)*: routing application: stamp events with
   `session_id` from focus snapshot, synthesise pointer.enter /
   pointer.leave, apply keyboard-focus routing.

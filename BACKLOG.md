@@ -855,8 +855,8 @@ superseded by this item), eliminates device-accumulated coordinates,
 and removes userspace semainputd as a component (see AD-2).
 
 **Status**: Stages A, B, and C complete; Stage D in progress
-(sub-stages D.0a, D.0b, D.1, and D.2 landed; D.3 through D.6
-remaining).
+(sub-stages D.0a, D.0b, D.1, D.2, and D.3 landed; D.4 through
+D.6 remaining).
 
 Stage A delivered the proposal, foundations,
 `UTF_ARCHITECTURAL_DISCIPLINE.md`, ADRs 0001 through 0011, and
@@ -1187,7 +1187,7 @@ then D.6.
   display bounds learned from D.2, publish in compositor
   pixel space, set `transform_active = 1` in the state region
   header. Seed pointer to display centre on first activation.
-  Not started.
+  *Landed (commit `e644594`).*
 - **D.4** routing application: stamp events with
   `session_id` from the focus snapshot, synthesise
   `pointer.enter` and `pointer.leave` events when
