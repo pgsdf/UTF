@@ -155,6 +155,34 @@ SYSCTL_INT(_hw_inputfs, OID_AUTO, dev_mode, CTLFLAG_RWTUN,
     &inputfs_dev_mode, 0,
     "Publication file permissions (applied at module load)");
 
+/*
+ * Publication enable/disable tunable (ADR 0012 Stage D.5).
+ *
+ * Default 1 (publication active). Set to 0 to gate the
+ * substrate off without unloading the module: the kthread
+ * stops syncing in-memory buffers to the publication files
+ * and writes valid=0 to both file headers so readers detect
+ * the substrate as inactive (the same code path as before
+ * MOD_LOAD finished). The interrupt path keeps updating the
+ * in-memory buffers, so re-enabling exports the current
+ * pointer / device state immediately rather than a stale
+ * snapshot from the moment of disable.
+ *
+ * Edge-detected by the kthread: a 1->0 transition writes
+ * valid=0 once; a 0->1 transition writes valid=1 once and
+ * forces a full re-sync. Steady-state values cost one int
+ * read per kthread tick.
+ *
+ * Useful for: stopping all input event flow without
+ * unloading the kernel module (debugging consumer races,
+ * isolating substrate from the rest of the system, clean
+ * shutdown ordering during system stop).
+ */
+static int inputfs_enable = 1;
+SYSCTL_INT(_hw_inputfs, OID_AUTO, enable, CTLFLAG_RWTUN,
+    &inputfs_enable, 0,
+    "Publication enable: 1 = active (default), 0 = gated off");
+
 
 /*
  * Role bitmask (Stage B.5, per ADR 0010 Decision section 1).
@@ -1763,6 +1791,55 @@ inputfs_geom_read(struct thread *td)
  */
 #define INPUTFS_SYNC_HZ 1000
 
+/*
+ * inputfs_publish_valid -- Stage D.5.
+ *
+ * Write the valid byte (offset 5) of both publication files
+ * directly. Used by the D.5 enable/disable transition logic to
+ * make the change immediately visible to readers without waiting
+ * for the next dirty-driven sync. Also updates the in-memory
+ * buffers so subsequent full-buffer syncs do not undo the change.
+ *
+ * Called from kthread context only; vnode I/O may sleep and is
+ * illegal from interrupt context. Caller must not hold
+ * inputfs_state_mtx.
+ *
+ * Failures are logged but non-fatal: if either write fails, the
+ * substrate continues to run with the old valid state in the
+ * file (and the matching value in the in-memory buffer, since
+ * we update the buffer *after* the file write succeeds).
+ */
+static void
+inputfs_publish_valid(struct thread *td, uint8_t valid)
+{
+	uint8_t b = valid;
+	int error;
+
+	if (inputfs_state_vp != NULL) {
+		error = vn_rdwr(UIO_WRITE, inputfs_state_vp,
+		    &b, 1, (off_t)OFF_VALID, UIO_SYSSPACE,
+		    IO_UNIT | IO_SYNC, NOCRED, NULL, NULL, td);
+		if (error != 0) {
+			printf("inputfs: D.5 valid-byte write to state "
+			    "failed: %d\n", error);
+		} else {
+			inputfs_state_buf[OFF_VALID] = valid;
+		}
+	}
+
+	if (inputfs_events_vp != NULL) {
+		error = vn_rdwr(UIO_WRITE, inputfs_events_vp,
+		    &b, 1, (off_t)EV_OFF_VALID, UIO_SYSSPACE,
+		    IO_UNIT | IO_SYNC, NOCRED, NULL, NULL, td);
+		if (error != 0) {
+			printf("inputfs: D.5 valid-byte write to events "
+			    "failed: %d\n", error);
+		} else {
+			inputfs_events_buf[EV_OFF_VALID] = valid;
+		}
+	}
+}
+
 static void
 inputfs_state_worker(void *arg)
 {
@@ -1770,6 +1847,7 @@ inputfs_state_worker(void *arg)
 	int min_ticks;
 	int focus_refresh_ticks;
 	int do_state, do_events;
+	int prev_enable, curr_enable;
 
 	min_ticks = hz / INPUTFS_SYNC_HZ;
 	if (min_ticks < 1)
@@ -1782,6 +1860,13 @@ inputfs_state_worker(void *arg)
 	focus_refresh_ticks = hz / 10;
 	if (focus_refresh_ticks < 1)
 		focus_refresh_ticks = 1;
+
+	/* Stage D.5: track enable state across iterations so we can
+	 * detect transitions and write valid=0/1 to the publication
+	 * files exactly once per edge. Initialise to match the default
+	 * tunable value so the first iteration is a steady-state read
+	 * unless an operator set hw.inputfs.enable in loader.conf. */
+	prev_enable = inputfs_enable ? 1 : 0;
 
 	(void)arg;
 
@@ -1823,15 +1908,57 @@ inputfs_state_worker(void *arg)
 		inputfs_events_dirty = 0;
 		mtx_unlock_spin(&inputfs_state_mtx);
 
-		if (do_state)
-			inputfs_state_sync_to_file(td);
-		if (do_events)
-			inputfs_events_sync_to_file(td);
+		/* Stage D.5: detect enable/disable transitions. The
+		 * sysctl tunable hw.inputfs.enable is read without a
+		 * lock; that race is benign because we only act on
+		 * edges and a missed edge will be picked up on the
+		 * next iteration. */
+		curr_enable = inputfs_enable ? 1 : 0;
+		if (curr_enable != prev_enable) {
+			if (curr_enable == 0) {
+				/* 1 -> 0 transition: gate publication
+				 * off. Write valid=0 to both files so
+				 * readers see the substrate as inactive
+				 * immediately. The in-memory buffers
+				 * keep updating from the interrupt path
+				 * so re-enabling exports current state
+				 * rather than a stale snapshot. */
+				inputfs_publish_valid(td, 0);
+				printf("inputfs: D.5 publication gated "
+				    "off (hw.inputfs.enable=0)\n");
+			} else {
+				/* 0 -> 1 transition: gate back on.
+				 * Write valid=1 and force a full state
+				 * sync so the in-memory buffer's
+				 * current contents reach the file
+				 * immediately. Events sync follows
+				 * naturally on the next event publish. */
+				inputfs_publish_valid(td, 1);
+				inputfs_state_sync_to_file(td);
+				printf("inputfs: D.5 publication gated "
+				    "on (hw.inputfs.enable=1)\n");
+			}
+			prev_enable = curr_enable;
+		}
+
+		/* Stage D.5: skip publication-file syncs when gated
+		 * off. The interrupt path keeps the in-memory buffers
+		 * current; only the propagation to /var/run/sema/
+		 * pauses. */
+		if (curr_enable) {
+			if (do_state)
+				inputfs_state_sync_to_file(td);
+			if (do_events)
+				inputfs_events_sync_to_file(td);
+		}
 
 		/* Stage D.1: opportunistic focus refresh on every wake.
 		 * Cheap when the file is unchanged (vn_rdwr against
 		 * tmpfs is microseconds); rate-bounded by min_ticks
-		 * below. */
+		 * below. Runs regardless of enable state because the
+		 * focus cache is read input, not output: gating off
+		 * publication should not also gate off our consumption
+		 * of the compositor's focus updates. */
 		inputfs_focus_refresh(td);
 
 		/* Rate cap: ensure at least min_ticks between iterations. */
