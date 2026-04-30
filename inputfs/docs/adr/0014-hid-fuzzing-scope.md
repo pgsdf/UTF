@@ -204,35 +204,175 @@ It is purely a refactor that makes AD-9.2 possible.
 #### AD-9.2: Userspace shim and build *(pending)*
 
 Build infrastructure to compile inputfs's parser code in
-userspace alongside FreeBSD's `dev/hid/hid.c`.
+userspace alongside FreeBSD's `dev/hid/hid.c`. The shim
+strategy was settled after a source survey of FreeBSD's
+`hid.c` (1105 lines), `hid.h`, `hidquirk.c`, and `hidquirk.h`.
+The earlier description of this sub-stage in this ADR (before
+the source survey) is corrected here.
+
+**Corrections from the pre-survey plan:**
+
+- The pre-survey plan said hid.c would be compiled with
+  "`_KERNEL` undefined". That was wrong: hid.h gates the
+  type declarations and prototypes the harness needs behind
+  `#if defined(_KERNEL) || defined(_STANDALONE)`. Defining
+  `_KERNEL` in userspace pulls in too much from `<sys/*>`;
+  defining `_STANDALONE` (the FreeBSD bootloader build flag)
+  activates the gated declarations without the kernel-mode
+  semantics in `<sys/*>`. The build uses `-D_STANDALONE`.
+- The pre-survey plan listed `panic redirected to abort` as
+  a shim responsibility. hid.c does not call panic. The
+  shim does not need a panic stub.
+- The pre-survey plan said hid.c would be compiled from
+  `/usr/src/sys/dev/hid/hid.c`. The harness instead vendors
+  hid.c, hid.h, and hidquirk.h verbatim into
+  `inputfs/test/fuzz/vendored/dev/hid/`. Reasons: (1)
+  reproducibility for AD-9.4 results ("this corpus was
+  tested against this exact hid.c"); (2) the harness builds
+  on developer machines that may not have `/usr/src` checked
+  out; (3) hid.c changes infrequently, and explicit vendor
+  updates are preferable to silent upstream drift in a fuzz
+  target. Each vendored file carries a top-of-file comment
+  noting the FreeBSD source revision it was copied from.
+- The pre-survey plan implied a single-commit deliverable.
+  AD-9.2 is split into three commits below; the first
+  modifies the production kernel module and is verified by
+  C.5 + D.6 + smoke test before any harness code lands.
+
+**AD-9.2a: Extract inputfs parser to its own translation unit.**
+
+AD-9.1 grouped the parser-output fields into
+`struct inputfs_parser_state`, but the four parser functions
+still live inside `inputfs.c` (a 3300-line file with kernel
+dependencies the harness cannot satisfy). AD-9.2a moves the
+parser functions to a separate translation unit so the
+harness can compile them in isolation.
 
 Deliverables:
 
-- `inputfs/test/fuzz/kernel_shim.h`: minimal shim providing
-  the kernel-only types and macros that `hid.c` expects
-  (`MALLOC`, `M_TEMP`, `panic` redirected to `abort`,
-  `printf` redirected to `fprintf(stderr, ...)`, fixed-width
-  type aliases). Estimated 100-200 lines.
-- `inputfs/test/fuzz/Makefile` or `build.zig`: builds a
-  harness binary at `inputfs/zig-out/bin/inputfs-fuzz` (or
-  equivalent) that links the parser code, FreeBSD's hid.c
-  (compiled from `/usr/src/sys/dev/hid/hid.c` with
-  `_KERNEL` undefined and the shim header forced in), and a
-  `main` function.
-- `inputfs/test/fuzz/main.c` or `main.zig`: harness driver.
-  Reads a binary blob from stdin or a file, parses a small
-  prefix as "descriptor length" plus optional "report
-  length, report bytes", calls the locate then optionally
-  extract functions, exits 0 on graceful handling, non-zero
-  on bug detected.
-- AddressSanitizer enabled in the build (`-fsanitize=address`).
-- A timeout wrapper invoked by the harness's outer loop or
-  via shell `timeout(1)`.
+- `inputfs/sys/dev/inputfs/inputfs_parser.h`: declares
+  `struct inputfs_parser_state` and the four parser
+  function prototypes (`inputfs_pointer_locate`,
+  `inputfs_extract_pointer`, `inputfs_keyboard_locate`,
+  `inputfs_extract_keyboard`).
+- `inputfs/sys/dev/inputfs/inputfs_parser.c`: contains the
+  four function bodies plus the `inputfs_report_id_matches`
+  and `inputfs_keyboard_key_in_set` static helpers they
+  depend on.
+- `inputfs.c` reduced by approximately 250 lines, with
+  `#include "inputfs_parser.h"` for the type and prototypes.
+- `inputfs_keyboard_diff_emit` stays in `inputfs.c` because
+  it mixes parser concerns with event-emission (per
+  AD-9.1's analysis); it accesses parser state via
+  `sc->sc_parser.X` as it does today.
+- The kernel module's Makefile is updated to compile both
+  `inputfs.c` and `inputfs_parser.c` into the module.
 
-Verifiable: harness compiles cleanly. Smoke test: a known-
-good descriptor blob (extracted from a working USB mouse via
-`usbhidctl -r` or similar) processes without errors and
-exits 0.
+Verifiable: production behaviour unchanged. Verified by
+C.5 (26/26), D.6 (14/14 with D.4 deferred to manual
+procedure), and a manual pointer smoke test on
+PGSD-bare-metal, the same gate AD-9.1 used.
+
+This sub-stage produces no fuzzing capability on its own.
+It is the prerequisite that makes AD-9.2b possible.
+
+**AD-9.2b: Harness build infrastructure.**
+
+Deliverables:
+
+- `inputfs/test/fuzz/kernel_shim.h`: force-included header
+  (~150 lines) providing the kernel symbols that
+  vendored hid.c references. Pre-defines kernel header
+  include guards (`_SYS_PARAM_H_`, `_SYS_BUS_H_`,
+  `_SYS_KDB_H_`, `_SYS_KERNEL_H_`, `_SYS_MALLOC_H_`,
+  `_SYS_MODULE_H_`, `_SYS_SYSCTL_H_`) so the
+  corresponding `#include` lines in hid.c become no-ops,
+  then provides the symbols hid.c needs:
+    - `device_t` as `void *`.
+    - `M_TEMP`, `M_WAITOK`, `M_ZERO` as opaque constants;
+      `malloc(size, type, flags)` macro mapping to
+      `calloc`-with-zero (treats `M_ZERO` as zero-fill
+      and ignores `type`). `free(ptr, type)` ignoring
+      `type`.
+    - `MODULE_VERSION(name, ver)` as no-op.
+    - `SYSCTL_NODE`, `SYSCTL_INT`, `SYSCTL_DECL`,
+      `CTLFLAG_RW`, `CTLFLAG_RWTUN`, `OID_AUTO` as
+      no-ops.
+    - `kdb_active` as `0`, `SCHEDULER_STOPPED()` as `0`.
+    - `pause()` as no-op, `hz` as `0`.
+    - `device_get_parent` returning `NULL`.
+    - `bootverbose` as `0`.
+    - `#define _STANDALONE` so hid.h emits its gated
+      declarations.
+- `inputfs/test/fuzz/shim_includes/opt_hid.h`: empty file.
+  Suppresses `HID_DEBUG` definition that the FreeBSD
+  kernel build would inject.
+- `inputfs/test/fuzz/shim_includes/hid_if.h`: macro stubs
+  for the eleven `HID_INTR_*` / `HID_GET_*` / `HID_SET_*`
+  / `HID_READ` / `HID_WRITE` / `HID_IOCTL` kobj-method
+  dispatch macros. Each expands to
+  `((void)(parent), (void)(dev), 0)` so the device-wrapper
+  functions at the bottom of hid.c (lines 1036-1102)
+  compile. These functions are not called by the harness;
+  the stubs exist only to satisfy the compiler.
+- `inputfs/test/fuzz/vendored/dev/hid/hid.c`: verbatim copy
+  of FreeBSD's `/usr/src/sys/dev/hid/hid.c`.
+- `inputfs/test/fuzz/vendored/dev/hid/hid.h`: verbatim
+  copy.
+- `inputfs/test/fuzz/vendored/dev/hid/hidquirk.h`: verbatim
+  copy. Used in its default-include form (HQ macro
+  undefined), which emits the `HQ_NONE`-through-
+  `HID_QUIRK_MAX` enum that hid.c needs. `hidquirk.c` is
+  not vendored or compiled; hid.c's `hid_test_quirk_p`
+  function pointer keeps its default initialiser
+  (`&hid_test_quirk_w`, returns false), which is harmless
+  for the parser path.
+- `inputfs/test/fuzz/main.c`: harness driver. Reads a
+  binary blob from stdin or a file, splits the blob into
+  a descriptor portion and (optionally) a report portion
+  by a small length-prefixed format, calls
+  `inputfs_pointer_locate` followed by
+  `inputfs_extract_pointer`, then
+  `inputfs_keyboard_locate` followed by
+  `inputfs_extract_keyboard`. Exits 0 on graceful
+  handling, non-zero on bug detected.
+- `inputfs/test/fuzz/Makefile`: build rules. Compiles
+  vendored hid.c with `-D_STANDALONE -include kernel_shim.h
+  -I shim_includes -I vendored`. Compiles
+  `inputfs_parser.c` with the same flags plus
+  `-I ../../sys/dev/inputfs`. Links the harness with
+  AddressSanitizer enabled (`-fsanitize=address`). Honours
+  CC override for cross-compiler use.
+- A trivial known-good descriptor blob in
+  `inputfs/test/fuzz/corpus/known-good.bin` for smoke
+  testing. The full malformed-input corpus comes in
+  AD-9.3.
+
+Verifiable: `make` builds cleanly with one warning at most
+(any warnings other than the `inputfs_focus_snapshot`-style
+"unused function" pre-existing warning are bugs to fix
+before commit). Smoke test: `./inputfs-fuzz < corpus/known-
+good.bin` exits 0. Deliberately corrupting one byte of the
+known-good blob and re-running should still exit 0 (the
+harness's job is to detect *crashes*, not to validate
+parses).
+
+**AD-9.2c: Documentation.**
+
+Deliverables:
+
+- `inputfs/test/fuzz/README.md`: how to build the harness,
+  how to run it against a corpus entry, how to add new
+  corpus entries, what counts as a bug, how to update the
+  vendored hid.c when FreeBSD upstream changes.
+- This ADR's AD-9.2 section marked landed retrospectively
+  with corrections (same pattern as the AD-9.1 doc-update).
+
+**Verification gate for the whole AD-9.2:** AD-9.2a passes
+C.5 + D.6 on PGSD-bare-metal. AD-9.2b's harness compiles
+cleanly with AddressSanitizer and the smoke test exits 0.
+AD-9.2c's README is reviewable for accuracy against what
+landed.
 
 #### AD-9.3: Initial corpus *(pending)*
 
