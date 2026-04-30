@@ -1214,7 +1214,7 @@ post Stage D. The chronofs `ts_sync` integration (Stage C
 deferred item) also stays separate from Stage D unless D.6
 verification surfaces a need for it.
 
-### `[ ]` AD-2: Retire semainputd  *(Open, Medium; depends: AD-1)*
+### `[ ]` AD-2: Retire semainputd  *(Open, Medium; depends: AD-1; AD-9 hardening complete)*
 
 **Tracks**: `inputfs/docs/inputfs-proposal.md` Stage E (cutover).
 
@@ -1224,6 +1224,14 @@ responsibilities. Classification and device-role logic move into the
 kernel module. Gesture recognition moves into the compositor or
 per-client libraries. The `start.sh` sequence drops semainputd
 entirely. evdev-related code in `semainput/src/adapters/` is removed.
+
+**Hardening precondition cleared** (2026-04-30): AD-9 closed.
+The inputfs HID parser is both crash-resistant (no faults on
+24 corpus entries under AddressSanitizer) and output-correct
+(14 of those entries have explicit expected outputs that the
+parser produces). The button-bitmap truncation bug found by
+AD-9.4 was fixed in commit `3887091`. Stage E cutover may now
+proceed without inheriting known-unsafe parser behaviour.
 
 ### `[ ]` AD-3: Audio output: replace OSS dependency  *(Open, Large; not scheduled)*
 
@@ -1352,7 +1360,7 @@ status).
   is a separate decision deserving its own track. Not folded into
   AD-8.
 
-### `[~]` AD-9: HID descriptor and report fuzzing  *(In progress, Medium)*
+### `[x]` AD-9: HID descriptor and report fuzzing  *(Done, Medium)*
 
 **Tracks**: `inputfs/docs/adr/0014-hid-fuzzing-scope.md`.
 
@@ -1430,9 +1438,26 @@ crash oracles).
   AD-9.2b (root cause: heredoc-escaping bug in the AD-9.2b
   commit script's safety regex; AD-9.3's commit script uses
   a self-testing regex without backslash escapes).
-- AD-9.4 *(pending)*: run the corpus, inspect output values
-  for correctness (not just absence of crashes), document
-  any bugs found, fix them.
+- AD-9.4 *(landed, `3887091`)*: ran the AD-9.3 corpus
+  through the parser with output-value inspection; found
+  and fixed one bug. `inputfs_extract_pointer` was reading
+  only the low bit of the button bitmap because
+  `loc_buttons.size = 1` (the location of Button 1 alone)
+  rather than `button_count` (the parser's count of all
+  button usages). Effect: every multi-button mouse on UTF
+  systems would lose buttons 2-N once inputfs becomes the
+  active input path, post-Stage E cutover. Fix is 10 lines
+  in `inputfs_extract_pointer`'s button block: build a
+  temporary `hid_location` at `loc_buttons.pos` with
+  `size = button_count`, read via `hid_get_udata`. Same
+  commit shipped output-correctness infrastructure
+  (verbose mode in `main.c` triggered by
+  `INPUTFS_FUZZ_VERBOSE=1`, `check-corpus.py` runner with
+  per-entry expected values, regression test entry
+  `23-multi-button-mouse`, `findings.md` documenting the
+  bug). Verified on PGSD-bare-metal: 24/24 crash-resistance
+  PASS, 14/14 output-correctness PASS, identical to the
+  Linux dev environment.
 
 **Out of scope:** coverage-guided (AFL-style) fuzzing,
 state-leak detection across extract calls, fuzzing FreeBSD's
@@ -1450,9 +1475,17 @@ entirely). Hardening before cutover, not after.
 **Depends on:** none. Can land independently of AD-2; the
 ordering is preference, not a hard dependency.
 
-**Status:** AD-9.1, AD-9.2 (AD-9.2a + AD-9.2b + AD-9.2c),
-and AD-9.3 landed and verified on PGSD-bare-metal. AD-9.4
-pending.
+**Status:** AD-9 closed. All four sub-stages (AD-9.1,
+AD-9.2 a/b/c, AD-9.3, AD-9.4) landed and verified on
+PGSD-bare-metal across 14 commits between `4ec0d3b`
+(initial ADR) and `3887091` (AD-9.4 with the bug fix),
+plus this doc-update commit making 15.
+One bug found and fixed (button-bitmap truncation in
+`inputfs_extract_pointer`). The corpus +
+`fuzz-verify.sh` (24/24 crash-resistance) +
+`check-corpus.py` (14/14 output-correctness) form a
+regression gate for future parser changes. AD-2 is now
+unblocked.
 
 ### Priority
 
@@ -1462,10 +1495,14 @@ Rough priority ordering within this section, not strict:
    current bug (input coordinates).
 2. **AD-8**: in progress; supports AD-1's bare-metal verification
    substrate.
-3. **AD-9**: hardens AD-1's parser before AD-2 makes it
-   load-bearing.
-4. **AD-2**: follows AD-1 naturally; cutover after AD-9
-   hardening.
+3. **AD-9**: done; hardened AD-1's parser before AD-2 makes it
+   load-bearing. One bug found and fixed (button-bitmap
+   truncation) plus regression-test infrastructure left in
+   place.
+4. **AD-2**: now unblocked; cutover after AD-9 hardening (which
+   produced one real fix). The recommended ordering held: the
+   button-bitmap bug would have manifested as silently-dropped
+   mouse buttons post-cutover.
 5. **AD-5, AD-7**: small doc tasks; make the discipline honest.
 6. **AD-6**: small-medium; applies the discipline's verification
    rule to existing code.

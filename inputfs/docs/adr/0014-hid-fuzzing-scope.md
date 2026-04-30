@@ -2,7 +2,14 @@
 
 ## Status
 
-Proposed, 2026-04-30.
+Accepted, 2026-04-30. AD-9 closed: all four sub-stages
+landed (AD-9.1 through AD-9.4) and verified on
+PGSD-bare-metal. One bug surfaced and was fixed during
+AD-9.4 (button-bitmap truncation in
+`inputfs_extract_pointer`); see `inputfs/test/fuzz/findings.md`
+for the full write-up. The corpus and verifiers
+(`fuzz-verify.sh`, `check-corpus.py`) form a regression gate
+that future parser changes must clear before landing.
 
 ## Context
 
@@ -607,7 +614,7 @@ the AD-9.1 parser refactor handles the documented bug-class
 shapes robustly. AD-9.4 will inspect output values for
 correctness, not just absence of crashes.
 
-#### AD-9.4: Run, fix, document *(pending)*
+#### AD-9.4: Run, fix, document *(landed in commit `3887091`)*
 
 Run the AD-9.3 harness against the AD-9.3 corpus. For each
 bug surfaced:
@@ -627,6 +634,99 @@ list.
 Final deliverable: a one-page summary at
 `inputfs/test/fuzz/RESULTS.md` describing what was run,
 what was found, and what fixes landed.
+
+*Retrospective (post-landing):* AD-9.4 landed in commit
+`3887091` with one bug found and fixed, output-correctness
+infrastructure shipped, and a regression test added to lock
+the fix in place. Files changed: 9 total (4 modifications, 5
+additions including the regression test corpus entry pair),
++661 lines, -18 lines.
+
+Honest corrections from the pre-landing plan:
+
+1. The summary file is `findings.md`, not `RESULTS.md`. The
+   filename was changed during drafting to read more
+   naturally; the AD-9.4 plan above predates the rename.
+   `findings.md` carries the same content the plan intended
+   for `RESULTS.md`.
+2. The plan said "It is possible AD-9.4 finds no bugs."
+   AD-9.4 found one. That outcome turned out to be much
+   more useful than zero bugs would have been: the
+   button-bitmap truncation in `inputfs_extract_pointer`
+   would have manifested as silently-dropped mouse buttons
+   the moment AD-2 cut over to inputfs as the sole input
+   path. Pre-AD-2, semainputd is still primary, so the bug
+   was latent. AD-9 was designed to find exactly this class
+   of bug: a parser issue that becomes load-bearing once
+   Stage E cuts over. The structured-output check found it
+   on the first run.
+3. The plan listed "File a tracking entry in BACKLOG.md if
+   the bug requires more than a one-line fix." The
+   button-bitmap fix was 10 lines, did not need a separate
+   tracking entry; it landed in the same commit as the
+   AD-9.4 infrastructure. `findings.md` carries the
+   technical write-up; this retrospective records the
+   higher-level summary.
+
+The bug:
+
+`inputfs_pointer_locate` calls
+`hid_locate(HID_USAGE2(HUP_BUTTON, 1), ...)`, which returns
+the location of Button 1 specifically (size = 1 bit). The
+cached `loc_buttons` therefore has `size = 1`. A separate
+descriptor walk populates `button_count` (3 for a boot
+mouse, up to 32 saturated), but `inputfs_extract_pointer`
+read buttons via `hid_get_udata(buf, len, &loc_buttons)`,
+which reads `loc_buttons.size` bits at `loc_buttons.pos`.
+With `size = 1`, only the first button bit was ever read.
+`button_count` was populated but unused at extract time.
+
+The fix (10 lines, `inputfs_parser.c` lines 225-247):
+construct a temporary `hid_location` with
+`size = button_count` at `loc_buttons.pos`, read via
+`hid_get_udata` with that. Reads the full button bitmap.
+No interface change; no caller-side change required.
+
+Verification path:
+
+`main.c` gained a verbose output mode triggered by
+`INPUTFS_FUZZ_VERBOSE=1`, dumping parser state and
+extracted values as `key=value` lines. `check-corpus.py`
+runs the harness in verbose mode against each entry and
+validates outputs against per-entry expected values.
+Initial run found the bug: entries `16-report-truncated`
+and `18-report-too-long` produced
+`out_buttons=0x00000001` where `0x00000007` (all three
+boot-mouse button bits set) was expected.
+
+Regression test: corpus entry `23-multi-button-mouse`
+declares a 5-button mouse with all five button bits set
+in the report. The `.txt` companion expects
+`out_buttons=0x0000001f`. Sanity check during AD-9.4
+development: reverting the parser fix and rerunning
+`check-corpus.py` flagged entries 16, 18, AND 23 as
+failing in the predicted way (`out_buttons=0x00000001`
+instead of the correct value). Restoring the fix produced
+14/14 PASS. The test has discriminating power.
+
+Verification on PGSD-bare-metal: `make` built clean, both
+verifiers passed identically to the result on the Linux
+dev environment (24/24 crash-resistance, 14/14
+output-correctness). The kernel module also rebuilds with
+the fix. The build-verify-before-push gate ran on `system`
+first, so the bare-metal first-run was the second run.
+
+The corpus + `fuzz-verify.sh` + `check-corpus.py` form a
+regression gate. Future parser changes must clear both
+verifiers, or document why they don't.
+
+Closure: this commit closes AD-9. Three of four sub-stages
+were doc-driven (AD-9.1 refactor, AD-9.2 harness, AD-9.3
+corpus); AD-9.4 turned the harness loose and produced one
+real fix. The fuzzing infrastructure is now both a
+crash-resistance test (existing) and an output-correctness
+test (new). AD-2 (semainputd retirement, Stage E cutover)
+is unblocked.
 
 ### Open questions
 
