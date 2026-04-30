@@ -1397,12 +1397,23 @@ crash oracles).
   keyboard key_down/up events). The linkage-fix follow-up
   removed `static` from the four function definitions
   after the kernel build caught the linkage conflict.
-- AD-9.2b *(pending)*: harness build infrastructure
-  (kernel_shim.h, shim_includes/{opt_hid.h, hid_if.h},
-  vendored hid.c/hid.h/hidquirk.h, main.c, Makefile,
-  known-good corpus blob). AddressSanitizer enabled.
-- AD-9.2c *(pending)*: harness README plus retrospective
-  ADR 0014 update marking AD-9.2 landed.
+- AD-9.2b *(landed, `7d4eaec`)*: harness build
+  infrastructure under `inputfs/test/fuzz/` (kernel_shim.h,
+  shim_includes/ including 8 empty kernel-header stubs and
+  the opt_hid.h / hid_if.h replacements, vendored
+  hid.c/hid.h/hidquirk.h byte-identical to upstream,
+  main.c, Makefile, README.md, corpus/known-good.bin from
+  the USB HID 1.11 boot-protocol mouse spec).
+  AddressSanitizer enabled. Verified on PGSD-bare-metal:
+  `make` builds clean, `make smoke` passes all three
+  checks (empty input, known-good descriptor, 4 KiB
+  random data).
+- AD-9.2c *(landed, this commit)*: retrospective ADR 0014
+  update marking AD-9.2a, AD-9.2b, and AD-9.2 itself as
+  landed. The harness README originally planned for
+  AD-9.2c shipped in AD-9.2b instead, because it
+  documented files landing in the same change; AD-9.2c is
+  therefore the doc retrospective only.
 - AD-9.3 *(pending)*: hand-rolled malformed-input corpus,
   ~15-30 entries with companion descriptions.
 - AD-9.4 *(pending)*: run, fix any bugs found, document
@@ -1424,8 +1435,8 @@ entirely). Hardening before cutover, not after.
 **Depends on:** none. Can land independently of AD-2; the
 ordering is preference, not a hard dependency.
 
-**Status:** AD-9.1 and AD-9.2a landed and verified on
-PGSD-bare-metal. AD-9.2b, AD-9.2c, AD-9.3, and AD-9.4
+**Status:** AD-9.1 and AD-9.2 (AD-9.2a + AD-9.2b + AD-9.2c)
+landed and verified on PGSD-bare-metal. AD-9.3 and AD-9.4
 pending.
 
 ### Priority

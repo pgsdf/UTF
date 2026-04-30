@@ -201,7 +201,7 @@ have survived.
 This sub-stage produced no fuzzing capability on its own.
 It is purely a refactor that makes AD-9.2 possible.
 
-#### AD-9.2: Userspace shim and build *(pending)*
+#### AD-9.2: Userspace shim and build *(landed)*
 
 Build infrastructure to compile inputfs's parser code in
 userspace alongside FreeBSD's `dev/hid/hid.c`. The shim
@@ -312,7 +312,7 @@ end-to-end smoke we have for the keyboard parser path
 local keyboard goes through atkbd rather than HID; this
 session used a USB keyboard that inputfs claims).
 
-**AD-9.2b: Harness build infrastructure.**
+**AD-9.2b: Harness build infrastructure.** *(landed in commit `7d4eaec`)*
 
 Deliverables:
 
@@ -402,22 +402,95 @@ known-good blob and re-running should still exit 0 (the
 harness's job is to detect *crashes*, not to validate
 parses).
 
-**AD-9.2c: Documentation.**
+*Retrospective (post-landing):* AD-9.2b landed in a single
+commit (`7d4eaec`) of 19 new files under
+`inputfs/test/fuzz/`. The `kernel_shim.h` came in at about
+200 lines; `main.c` at 130 lines; the Makefile at 90 lines;
+the README at 180 lines. The vendored `hid.c`, `hid.h`, and
+`hidquirk.h` are byte-identical to FreeBSD upstream (md5
+checksums recorded against the source files surveyed
+earlier in this ADR's drafting). `hidquirk.c` is not
+vendored, as planned.
 
-Deliverables:
+Two surprises during development worth recording so future
+maintainers do not re-derive them:
 
-- `inputfs/test/fuzz/README.md`: how to build the harness,
-  how to run it against a corpus entry, how to add new
-  corpus entries, what counts as a bug, how to update the
-  vendored hid.c when FreeBSD upstream changes.
-- This ADR's AD-9.2 section marked landed retrospectively
-  with corrections (same pattern as the AD-9.1 doc-update).
+1. The pre-defining-include-guards trick alone is not
+   sufficient to neutralise `<sys/bus.h>` and friends. The
+   compiler errors out when the header file does not
+   exist on the path, before it can read the guard inside.
+   The shim therefore also provides empty stub headers
+   under `shim_includes/sys/` for each kernel header hid.c
+   includes (eight of them: `param.h`, `bus.h`, `kdb.h`,
+   `kernel.h`, `malloc.h`, `module.h`, `sysctl.h`,
+   `systm.h`). The `-I shim_includes` ordering ensures
+   these are found before FreeBSD's actual kernel headers
+   on PGSD-bare-metal.
+2. hid.c uses `nitems()` once (in `hid_item_resolution`),
+   a FreeBSD `<sys/param.h>` macro for
+   `(sizeof(x) / sizeof((x)[0]))`. The shim defines it.
 
-**Verification gate for the whole AD-9.2:** AD-9.2a passes
-C.5 + D.6 on PGSD-bare-metal. AD-9.2b's harness compiles
-cleanly with AddressSanitizer and the smoke test exits 0.
-AD-9.2c's README is reviewable for accuracy against what
-landed.
+Both were caught by the first two compile attempts on the
+Linux dev environment and fixed before pushing. Applies to
+the AD-9.2a build-verify-before-push lesson: doing the
+build locally before commit caught these without ceremony.
+
+A single correction from the pre-landing plan in this
+ADR: the third bullet of "Corrections from the pre-survey
+plan" above says "Each vendored file carries a top-of-file
+comment noting the FreeBSD source revision it was copied
+from." In practice, the vendored files are kept
+byte-identical to upstream and the vendoring metadata
+(provenance, resync command, hidquirk.c absence rationale)
+goes in a separate `vendored/dev/hid/VENDORED.md`. That is
+better than modifying the vendored files: it preserves
+verbatim status, and a single sibling file is easier to
+keep current than per-file headers.
+
+The README originally planned for AD-9.2c shipped in this
+commit instead, because it documented the files landing in
+the same change and was clearer to read alongside them.
+AD-9.2c becomes purely the retrospective ADR update;
+see below.
+
+Verification on PGSD-bare-metal: `make` built clean (the
+four `-Wno-*` warning suppressions in the Makefile cover
+pre-existing FreeBSD-upstream patterns the kernel build
+also tolerates; no harness-introduced warnings appeared);
+all three `make smoke` checks passed (empty input, the
+boot-protocol mouse known-good blob, 4 KiB of random
+data). The build-verify-before-push gate in the AD-9.2b
+commit script ran on `system` first, so the bare-metal
+first-run was the second build, not the first. The
+discipline operated as intended.
+
+**AD-9.2c: Documentation.** *(landed in the same commit that updates this ADR)*
+
+The original AD-9.2c plan listed two deliverables: a
+harness `README.md` and a retrospective ADR update. The
+README shipped with AD-9.2b instead, because it documented
+files landing in the same change. AD-9.2c is therefore just
+the retrospective ADR update: marking AD-9.2a, AD-9.2b, and
+AD-9.2 itself as landed, with a per-sub-stage retrospective
+recording what each commit did, what surprises came up, and
+what verification confirmed. Same pattern as the AD-9.1
+doc-update commit (`0b38a14`) and the AD-9.2a doc-update
+commit (`a8a8245`).
+
+This ADR commit also updates BACKLOG.md so the AD-9 entry's
+sub-stage list and status line reflect AD-9.2 fully landed.
+
+**Verification gate for the whole AD-9.2:** AD-9.2a passed
+C.5 + D.6 plus a comprehensive smoke test on
+PGSD-bare-metal (pointer motion + buttons + scroll +
+keyboard key events). AD-9.2b's harness compiled cleanly
+on both the Linux dev environment and FreeBSD's clang on
+PGSD-bare-metal, with AddressSanitizer enabled, and all
+three `make smoke` checks passed. AD-9.2c is reviewable
+against the actual files that landed; the retrospectives
+above name what is in each commit precisely enough that a
+future reader can audit the description against the
+working tree.
 
 #### AD-9.3: Initial corpus *(pending)*
 
