@@ -481,6 +481,75 @@ mixing window. For reference, current OSS-based semaaud runs
 with a buffer that gives ~20 ms of audio per refill; audiofs
 should at minimum match this and ideally improve on it.
 
+### Q6: Serialization format for semasound's userland surfaces
+
+semasound publishes runtime UI state under
+`/tmp/draw/audio/<target>/` (current state, active policy,
+last event, capabilities, errors). semaaud uses JSON for
+these surfaces today; semasound inherits that work. The
+question is whether the inheritance is verbatim, or whether
+some of these surfaces should switch to a binary format
+(FlatBuffers being the leading candidate among binary
+options).
+
+The substrate side of audiofs is not in scope for this
+question. `/var/run/sema/audio/{state,events}` and any
+audio-data-path file follow the same pattern as inputfs's
+publication regions: hand-specified byte layouts in
+`shared/AUDIO_*.md`, fixed offsets, atomic field updates,
+no parser on the read path. FlatBuffers is the wrong shape
+for kernel substrate publication regardless of how this
+question resolves.
+
+Four ways the userland-surface question could go:
+
+**JSON throughout (status quo).** Inherit semaaud's JSON
+verbatim. Lowest effort; aligns with the existing tools
+(`inputdump`, `chrono_dump`) that emit JSON for human
+inspection via `jq` and similar pipelines. Cost: parsing
+overhead grows linearly with consumer poll rate. With no
+hot-path consumer driving a requirement today, the cost is
+theoretical.
+
+**FlatBuffers throughout.** Switch every userland surface
+to FlatBuffers. Wins zero-copy reads; loses
+human-inspectability without a decoder; loses
+`jq`-pipeline compatibility for diagnostics; introduces a
+schema-compilation step in the build. The schema-compilation
+step is real cost: every consumer of the surfaces (UI
+dashboards, log viewers, CI checks) needs the schema
+available at build time, in whatever language they use.
+
+**Split: JSON for diagnostic / log surfaces, binary for
+hot-path consumer surfaces.** Treat the JSON-vs-binary
+question per surface, not per daemon. `last-event` and
+`policy-errors` and capabilities stay JSON because they are
+read by humans and tools more often than by hot-path code.
+A dedicated "subscribe to current playback state" surface
+gets a binary format (FlatBuffers or hand-specified)
+because that surface is what a hot-path consumer would
+poll.
+
+**Defer until a real consumer drives the requirement.**
+Inherit JSON in F.5 (semasound). When a real consumer
+emerges that needs zero-copy reads at sustained high
+rates, *that consumer's* requirements drive the format
+choice for the specific surface it cares about. No
+preemptive switch.
+
+Recommended posture, subject to F.0 ADR-level review:
+**defer**, on the grounds that picking a binary format
+preemptively without a consumer requirement is premature
+optimization. The existing JSON surfaces work for the
+current consumer set (none of which exist yet for
+semasound, and all of which work on tools that prefer
+JSON). The criterion that would reopen this question is a
+concrete proposed consumer that polls
+`/tmp/draw/audio/<target>/` at a sustained rate where JSON
+parsing cost matters. Until that consumer exists in design,
+JSON is the right answer; this question is tracked here so
+the decision is explicit-by-deferral rather than implicit.
+
 ## What this document is not
 
 - **A specification.** No ioctl numbers, struct layouts, or
