@@ -1352,72 +1352,59 @@ status).
   is a separate decision deserving its own track. Not folded into
   AD-8.
 
-### `[ ]` AD-9: HID descriptor and report fuzzing  *(Open, Small–Medium)*
+### `[ ]` AD-9: HID descriptor and report fuzzing  *(Open, Medium)*
 
-**Tracks**: hardening of inputfs's HID parser surface
-(`inputfs/sys/dev/inputfs/inputfs.c`).
+**Tracks**: `inputfs/docs/adr/0014-hid-fuzzing-scope.md`.
 
-inputfs's interrupt path consumes attacker-controlled bytes:
-HID report descriptors arrive from USB devices at attach time,
-and raw HID reports arrive on every input event. The descriptor
-walker (`inputfs_pointer_locate`, `inputfs_keyboard_locate`,
-the keys-array fallback walk) and the per-report extractors
-(`inputfs_extract_pointer`, `inputfs_keyboard_diff_emit`) read
-these bytes and dispatch on them. Malformed HID is a classic
-kernel panic vector: out-of-range usage codes, oversized item
-counts, recursive collections, nonsensical bit/byte offsets
-that point past the report end.
+Harden inputfs's parser-output consumer code against
+malformed HID descriptors and reports. ADR 0014 establishes
+the scope precisely: the fuzz target is *not* the HID
+descriptor walker (which is FreeBSD's `hid_locate` /
+`hid_get_data` / `hid_start_parse` etc., accepted as
+platform transport), but inputfs's locate phase
+(`inputfs_pointer_locate`, `inputfs_keyboard_locate`) and
+extract phase (`inputfs_extract_pointer`,
+`inputfs_keyboard_diff_emit`), which trust the walker's
+outputs and read HID reports using cached bit-positions
+those outputs produced.
 
-C.5 (Stage C verification) covers the happy path with real
-devices. It does not cover adversarial input.
+Bug surfaces: trust assumptions about `hid_locate` outputs,
+report-buffer bounds checks, modifier and keys-array bit
+walking, descriptor-derived state used as bounds. The fuzz
+oracle treats assert failures, segfaults, infinite loops,
+and allocation explosions as bugs; incorrect-but-non-crashing
+parses are out of scope (they need correctness oracles, not
+crash oracles).
 
-**Scope:**
+**Sub-stages** (full detail in ADR 0014):
 
-- A userspace harness that takes a binary descriptor blob
-  and/or a raw report blob and feeds it through the same
-  parsing code paths the kernel uses. The kernel parser
-  source compiles in user-space behind a small `_KERNEL`
-  shim that stubs the kernel-only headers.
-- A small initial corpus of malformed inputs:
-  truncated descriptors, descriptors with collections that
-  open without closing, descriptors with bit offsets past
-  the report length, descriptors with usage pages out of
-  range, reports shorter than the descriptor implies,
-  reports with all-bits-set values in fields that are
-  signed.
-- Exit code 0 if the parser handles the blob without
-  asserting, returning success or a graceful error code.
-  Exit code non-zero if the parser asserts, segfaults, or
-  loops indefinitely (under a timeout).
+- AD-9.1: parser-state refactor in `inputfs.c`. Extract
+  parser-relevant fields into a fuzz-friendly substruct.
+  Production behaviour unchanged; verified by C.5 + D.6.
+- AD-9.2: userspace shim plus build infrastructure to
+  compile FreeBSD's `/usr/src/sys/dev/hid/hid.c` alongside
+  inputfs's parser code, with AddressSanitizer enabled.
+- AD-9.3: hand-rolled malformed-input corpus, ~15-30
+  entries with companion descriptions.
+- AD-9.4: run, fix any bugs found, document results.
 
-**Out of scope:**
+**Out of scope:** coverage-guided (AFL-style) fuzzing,
+state-leak detection across extract calls, fuzzing FreeBSD's
+hid.c upstream. Each is named in ADR 0014 with a reopen
+criterion.
 
-- Coverage-guided fuzzing (AFL-style instrumentation in
-  Zig is non-trivial; cost outweighs benefit at this
-  stage).
-- Kernel-side fuzzing (would require a dtrace probe
-  surface and a kernel-resident fuzzing driver; cost
-  outweighs benefit at this stage).
-- Generating a comprehensive corpus from real-world
-  malformed devices. The initial corpus is hand-written
-  to exercise documented error paths; corpus expansion
-  is a follow-up.
+**Why before AD-2:** AD-2 makes inputfs the sole input path
+on UTF systems. Panics in the parser become load-bearing
+once semainputd is retired. AD-9.1's refactor and AD-9.4's
+fixes are cheaper to land while semainputd still exists as
+a fallback against inputfs misbehaviour (it is a fallback
+that operators can return to without losing input
+entirely). Hardening before cutover, not after.
 
-**Why now-ish:** the parser is stable enough after Stage D.0a
-and D.0b that fuzzing it produces actionable bugs rather than
-churn against active development. The window before Stage E
-(semainputd retirement, AD-2) is the right time: once inputfs
-is the sole input path, panics in its parser become
-load-bearing for the whole system.
+**Depends on:** none. Can land independently of AD-2; the
+ordering is preference, not a hard dependency.
 
-**Depends on:** none. Can land independently of remaining
-Stage D work.
-
-**Blocks:** AD-2 is more defensible after this lands, for the
-same reason as ADR 0013: cutover increases the surface that
-benefits from hardening.
-
-**Status:** scheduled; implementation pending.
+**Status:** scoped (ADR 0014). Implementation pending.
 
 ### Priority
 
@@ -1427,8 +1414,10 @@ Rough priority ordering within this section, not strict:
    current bug (input coordinates).
 2. **AD-8**: in progress; supports AD-1's bare-metal verification
    substrate.
-3. **AD-2**: follows AD-1 naturally.
-4. **AD-9**: hardens AD-1's parser before AD-2 cutover.
+3. **AD-9**: hardens AD-1's parser before AD-2 makes it
+   load-bearing.
+4. **AD-2**: follows AD-1 naturally; cutover after AD-9
+   hardening.
 5. **AD-5, AD-7**: small doc tasks; make the discipline honest.
 6. **AD-6**: small-medium; applies the discipline's verification
    rule to existing code.

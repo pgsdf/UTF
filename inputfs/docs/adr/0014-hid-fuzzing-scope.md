@@ -30,10 +30,14 @@ inputfs. It corrects the BACKLOG entry's framing, defines the
 fuzz oracle precisely, and breaks the work into four
 sub-stages with explicit deliverables.
 
-The work is deferred until after AD-2 (semainputd retirement)
-per the existing BACKLOG priority ordering. This ADR captures
-the scope so it can be picked up in a future session without
-re-litigating what AD-9 means.
+The work is scheduled before AD-2 (semainputd retirement)
+per the existing BACKLOG priority ordering: hardening the
+parser is cheaper while semainputd still exists as a
+fallback that operators can return to without losing input
+entirely. Once AD-2 retires semainputd, panics in inputfs's
+parser become load-bearing for the whole system. This ADR
+captures the scope so it can be picked up in a future session
+without re-litigating what AD-9 means.
 
 ## Decision
 
@@ -379,9 +383,16 @@ Each is its own commit with its own verification step. The
 sub-stages are not work-in-progress merge candidates; each
 lands as a finished piece.
 
-The work is scheduled after AD-2 (semainputd retirement).
-This ordering is deliberate: AD-2 closes the inputfs cutover
-and any inputfs.c refactor is safer once the cutover-related
-churn has settled. Reversing the order (AD-9 before AD-2) is
-defensible if AD-2 is delayed for unrelated reasons; the
-ADR's deliverables do not depend on AD-2 having landed.
+The work is scheduled before AD-2 (semainputd retirement).
+This ordering is deliberate: AD-2 makes inputfs the sole
+input path on UTF systems, and panics in the parser become
+load-bearing once semainputd is retired. AD-9.1's refactor
+and AD-9.4's fixes are cheaper to land while semainputd
+still exists as a fallback that operators can return to
+without losing input entirely. The two pieces of work do not
+conflict in inputfs.c: AD-2 retires semainputd, which is a
+different daemon entirely; AD-9.1 refactors fields within
+`struct inputfs_softc`; the two changes touch disjoint code.
+Reversing the order (AD-9 after AD-2) is defensible if
+AD-9.1 turns out larger than estimated; the ADR's
+deliverables do not depend on AD-2's state.
