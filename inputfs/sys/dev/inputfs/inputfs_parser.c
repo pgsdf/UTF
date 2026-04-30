@@ -84,7 +84,7 @@ inputfs_report_id_matches(uint8_t cached_id, const uint8_t *buf,
  * accordingly. This avoids tying cache population to a specific
  * order of role classification.
  */
-static void
+void
 inputfs_pointer_locate(struct inputfs_parser_state *p,
     const void *rdesc, hid_size_t rdesc_len)
 {
@@ -193,7 +193,7 @@ inputfs_pointer_locate(struct inputfs_parser_state *p,
  * not use IDs and the byte is part of the data; if cached id
  * is non-zero, the byte must match.
  */
-static int
+int
 inputfs_extract_pointer(struct inputfs_parser_state *p,
     const uint8_t *buf, hid_size_t len,
     int32_t *out_dx, int32_t *out_dy, int32_t *out_dw,
@@ -259,7 +259,7 @@ inputfs_extract_pointer(struct inputfs_parser_state *p,
  * pointer-only descriptor will simply have all keyboard
  * locations report size == 0.
  */
-static void
+void
 inputfs_keyboard_locate(struct inputfs_parser_state *p,
     const void *rdesc, hid_size_t rdesc_len)
 {
@@ -354,7 +354,7 @@ inputfs_keyboard_locate(struct inputfs_parser_state *p,
  * Each element of the keys array is extracted by cloning the
  * cached location and advancing pos by size * index.
  */
-static int
+int
 inputfs_extract_keyboard(struct inputfs_parser_state *p,
     const uint8_t *buf, hid_size_t len,
     uint8_t *out_modifiers, uint8_t out_keys[6])
