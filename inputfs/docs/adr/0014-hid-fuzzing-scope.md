@@ -464,6 +464,18 @@ commit script ran on `system` first, so the bare-metal
 first-run was the second build, not the first. The
 discipline operated as intended.
 
+*Follow-up correction landed in AD-9.3:* AD-9.2b
+accidentally tracked the `inputfs/test/fuzz/inputfs-fuzz`
+binary (a 6 MB FreeBSD ELF produced by the local
+build-verify step). The AD-9.2b commit script's
+safety-check regex was broken by a heredoc-escaping bug
+detailed in the AD-9.3 retrospective below. AD-9.3's
+commit removes the leaked binary via `git rm` and adds a
+`.gitignore` to prevent recurrence. AD-9.2b's
+build-verify-before-push lesson held; the heredoc-escaping
+sub-bug it did not catch is an addition to the lesson
+rather than a counterexample to it.
+
 **AD-9.2c: Documentation.** *(landed in the same commit that updates this ADR)*
 
 The original AD-9.2c plan listed two deliverables: a
@@ -492,7 +504,7 @@ above name what is in each commit precisely enough that a
 future reader can audit the description against the
 working tree.
 
-#### AD-9.3: Initial corpus *(pending)*
+#### AD-9.3: Initial corpus *(landed in commit `b480432`)*
 
 Hand-rolled malformed-input corpus exercising the documented
 error paths. Estimated 15-30 entries. Each entry is a binary
@@ -526,6 +538,74 @@ entry and summarises results.
 
 This sub-stage produces no expected bug findings. It produces
 the inputs against which AD-9.4 runs.
+
+*Retrospective (post-landing):* AD-9.3 landed in commit
+`b480432` with 23 corpus entries (22 numbered plus a
+regenerated known-good baseline), a declarative corpus
+generator (`gen-corpus.py`, ~390 lines), the verify script
+(`fuzz-verify.sh`, ~75 lines), and a `.gitignore` to keep
+build artefacts out of git. Per-category counts: 5 truncated
+descriptors, 3 recursive-collection cases, 3 out-of-range
+usages, 3 lying descriptors, 5 pathological reports, 2
+cross-paired blobs, 2 baselines (the regenerated known-good
+mouse and a new boot-keyboard companion). 22 + 1 = 23 lands
+inside the original 15-30 estimate.
+
+A small honest correction from the pre-landing plan: the
+sub-stage description above is unchanged because it accurately
+describes what shipped, but the original ADR did not name the
+known-good baseline as a corpus entry in its own right. In
+practice, regenerating known-good through the same recipe
+script as the malformed entries is what makes
+`gen-corpus.py` the single source of truth for the corpus
+shape; treating known-good as a separate file maintained by
+hand would have created a divergence risk. The baseline now
+lives alongside the malformed entries with the same .txt
+companion shape.
+
+The corpus generator (`gen-corpus.py`) is the source of
+truth for every entry. The .bin files are derivable; running
+`python3 gen-corpus.py` from `inputfs/test/fuzz/` regenerates
+the corpus byte-identically. Each entry's companion `.txt`
+follows a fixed five-field shape (NAME, CATEGORY, TARGETS,
+INPUT, EXPECTED BEHAVIOR, EXPECTED FAILURE MODE IF BROKEN)
+so a future reader can audit each test case against the
+parser path it claims to exercise.
+
+A surprise discovered during AD-9.3 development: the AD-9.2b
+commit (`7d4eaec`) accidentally tracked the
+`inputfs/test/fuzz/inputfs-fuzz` binary, a 6 MB FreeBSD ELF
+produced by the local build-verify step. Root cause: the
+AD-9.2b commit script's safety-check regex was written in a
+single-quoted heredoc using four backslashes (`\\\\.o`) to
+escape the `.` in `*.o`. Single-quoted heredocs preserve
+backslashes literally, so the script-on-disk contained
+`\\\\.o`. The shell's double-quote handling then reduced this
+to `\\.o`, which `grep -E` interpreted as a literal backslash
+followed by `.o`. The regex matched only files literally
+named `\.o` and silently passed `inputfs-fuzz` and any `.o`
+file through. AD-9.3's commit script bundled a fix into the
+same change: `git rm` on the leaked binary, plus
+`.gitignore` to prevent recurrence. The AD-9.3 commit
+script's safety regex (`'inputfs-fuzz$|\.o$'`) avoids
+backslash escapes entirely, and self-tests itself against
+six known cases (three artefacts that should match, three
+source files that should not) before running for real. If
+the regex is ever garbled by a future copy-paste, the
+self-test catches it before any commit goes through.
+
+Verification on PGSD-bare-metal: `make clean && make` built
+clean; `sh fuzz-verify.sh` produced 23/23 PASS, exit 0,
+identical to the result on the Linux dev environment. No
+ASan reports on any of the 22 malformed inputs or the two
+baselines. This is the expected outcome for AD-9.3 (the
+corpus exists; AD-9.4 is where bug-finding happens, and even
+then "zero bugs" is acceptable per ADR 0014's framing
+above). Worth recording: zero crashes across 23 hand-rolled
+adversarial inputs is a strong-but-not-absolute signal that
+the AD-9.1 parser refactor handles the documented bug-class
+shapes robustly. AD-9.4 will inspect output values for
+correctness, not just absence of crashes.
 
 #### AD-9.4: Run, fix, document *(pending)*
 

@@ -1414,10 +1414,25 @@ crash oracles).
   AD-9.2c shipped in AD-9.2b instead, because it
   documented files landing in the same change; AD-9.2c is
   therefore the doc retrospective only.
-- AD-9.3 *(pending)*: hand-rolled malformed-input corpus,
-  ~15-30 entries with companion descriptions.
-- AD-9.4 *(pending)*: run, fix any bugs found, document
-  results.
+- AD-9.3 *(landed, `b480432`)*: 23-entry hand-rolled
+  malformed-input corpus under `inputfs/test/fuzz/corpus/`
+  with five-line `.txt` companions (CATEGORY, TARGETS,
+  INPUT, EXPECTED BEHAVIOR, EXPECTED FAILURE MODE IF
+  BROKEN). Coverage by ADR 0014 category: 5 truncated
+  descriptors, 3 recursive-collection cases, 3 out-of-range
+  usages, 3 lying descriptors, 5 pathological reports, 2
+  cross-paired blobs, 2 baselines (boot mouse, boot
+  keyboard). Generated declaratively from
+  `gen-corpus.py`. `fuzz-verify.sh` runs the harness against
+  every entry; result on PGSD-bare-metal: 23/23 PASS, exit
+  0, no ASan reports. Same commit also fixed a leaked
+  6 MB `inputfs-fuzz` binary tracked accidentally by
+  AD-9.2b (root cause: heredoc-escaping bug in the AD-9.2b
+  commit script's safety regex; AD-9.3's commit script uses
+  a self-testing regex without backslash escapes).
+- AD-9.4 *(pending)*: run the corpus, inspect output values
+  for correctness (not just absence of crashes), document
+  any bugs found, fix them.
 
 **Out of scope:** coverage-guided (AFL-style) fuzzing,
 state-leak detection across extract calls, fuzzing FreeBSD's
@@ -1435,8 +1450,8 @@ entirely). Hardening before cutover, not after.
 **Depends on:** none. Can land independently of AD-2; the
 ordering is preference, not a hard dependency.
 
-**Status:** AD-9.1 and AD-9.2 (AD-9.2a + AD-9.2b + AD-9.2c)
-landed and verified on PGSD-bare-metal. AD-9.3 and AD-9.4
+**Status:** AD-9.1, AD-9.2 (AD-9.2a + AD-9.2b + AD-9.2c),
+and AD-9.3 landed and verified on PGSD-bare-metal. AD-9.4
 pending.
 
 ### Priority
