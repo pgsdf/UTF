@@ -841,7 +841,7 @@ represent multi-stage replacements, not individual features; each
 item typically has its own design document or proposal that details
 the stages.
 
-### `[~]` AD-1: inputfs: native input substrate  *(In progress, Large; supersedes: D-6)*
+### `[~]` AD-1: inputfs: native input substrate  *(In progress, Large)*
 
 **Tracks**: `inputfs/docs/inputfs-proposal.md` and
 `inputfs/docs/foundations.md`.
@@ -1216,7 +1216,7 @@ verification surfaces a need for it.
 
 ### `[ ]` AD-2: Retire semainputd  *(Open, Medium; depends: AD-1)*
 
-**Tracks**: `inputfs/docs/inputfs-proposal.md` Stage F.
+**Tracks**: `inputfs/docs/inputfs-proposal.md` Stage E (cutover).
 
 Once inputfs owns input classification, device identification, and
 routing, the userspace semainputd daemon has no remaining
@@ -1227,18 +1227,36 @@ entirely. evdev-related code in `semainput/src/adapters/` is removed.
 
 ### `[ ]` AD-3: Audio output: replace OSS dependency  *(Open, Large; not scheduled)*
 
+**Tracks**: `audiofs/docs/audiofs-proposal.md` (Stage F).
+
 semaaud currently uses OSS (FreeBSD's kernel audio framework) for
 audio output. OSS is accepted as platform transport today
 (`docs/UTF_ARCHITECTURAL_DISCIPLINE.md`). Direct hardware driving,
 analogous to how inputfs replaces evdev, would remove this
 dependency entirely.
 
+The native substrate is named **audiofs** on the kernel side and
+**semasound** on the userland side, mirroring inputfs / semainput.
+audiofs attaches to PCM hardware via FreeBSD's `snd(4)` framework,
+publishes `/var/run/sema/audio/{state,events}`, and takes over
+clock-writing duty from semaaud (the kernel knows the actual
+sample position more accurately than userland readback). semasound
+inherits semaaud's durable-policy work (Phase 12), named-target
+topology, mixer logic, control socket, and runtime UI state, but
+talks to audiofs instead of `/dev/dsp*`. semaaud retires once
+semasound is verified end-to-end (analogous to AD-2 for semainput).
+
 This is substantial work. Real-time audio has harder timing
 constraints than input (buffer underrun is immediately audible),
 vendor-specific audio hardware programming is complex, and the
-existing OSS interface is reasonably stable. No design document
-exists yet. Not scheduled; listed here so the discipline is honest
-about the forward implication.
+existing OSS interface is reasonably stable. The proposal landed
+2026-04-29 (commit `88b9405`) and identifies four open
+architectural questions that subsequent ADRs will resolve before
+any kernel code is written: data path (tmpfs ring vs kernel-mapped
+DMA vs hybrid), mixer location, OSS coexistence model, and format
+negotiation. Implementation depends on AD-2 closing first;
+listed here so the discipline is honest about the forward
+implication and so the proposal has a tracking entry.
 
 ### `[ ]` AD-4: Graphics output: replace efifb / DRM dependency  *(Open, Large; not scheduled)*
 
