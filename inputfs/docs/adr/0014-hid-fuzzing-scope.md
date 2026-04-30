@@ -239,7 +239,7 @@ the source survey) is corrected here.
   modifies the production kernel module and is verified by
   C.5 + D.6 + smoke test before any harness code lands.
 
-**AD-9.2a: Extract inputfs parser to its own translation unit.**
+**AD-9.2a: Extract inputfs parser to its own translation unit.** *(landed in commits `64cd245` and `5071ad7`)*
 
 AD-9.1 grouped the parser-output fields into
 `struct inputfs_parser_state`, but the four parser functions
@@ -275,6 +275,42 @@ PGSD-bare-metal, the same gate AD-9.1 used.
 
 This sub-stage produces no fuzzing capability on its own.
 It is the prerequisite that makes AD-9.2b possible.
+
+*Retrospective (post-landing):* AD-9.2a landed in two
+commits. The first (`64cd245`) did the extraction:
+358 lines moved verbatim from `inputfs.c` to the new
+`inputfs_parser.c`, the `struct inputfs_parser_state`
+definition moved from `inputfs.c` to the new
+`inputfs_parser.h`, `inputfs.c` shrank by 395 lines net,
+the kernel module Makefile picked up `SRCS+= inputfs_parser.c`.
+The second (`5071ad7`) corrected a linkage attribute: the
+four parser function definitions retained the `static`
+qualifier from their previous file-private state in
+`inputfs.c`, which conflicted with the external-linkage
+prototypes in the new header. The kernel build on
+PGSD-bare-metal caught the conflict cleanly with four
+`static declaration of 'inputfs_X' follows non-static
+declaration` errors. The fix removed `static` from the
+four definitions; `inputfs_report_id_matches` correctly
+stayed `static inline` because it remains file-private to
+`inputfs_parser.c`. The fix would have been caught by a
+build check on the `system` host before pushing; the
+extraction commit was pushed without one because it
+"looked" mechanical. Build-verify before push, even for
+extractions that look trivial.
+
+Verification on PGSD-bare-metal after the fix landed:
+build clean (one pre-existing `inputfs_focus_snapshot`
+unused-function warning, unchanged); kldload succeeds; C.5
+passes 26/26; D.6 passes 14/14; and a manual smoke test
+exercised pointer.motion, pointer.button_down,
+pointer.button_up, pointer.scroll, keyboard.key_down, and
+keyboard.key_up events flowing through the new
+translation unit. The keyboard exercise is the first
+end-to-end smoke we have for the keyboard parser path
+(AD-9.1's smoke covered only pointer because PGSD-bare-metal's
+local keyboard goes through atkbd rather than HID; this
+session used a USB keyboard that inputfs claims).
 
 **AD-9.2b: Harness build infrastructure.**
 
