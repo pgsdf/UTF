@@ -1,6 +1,7 @@
 .PATH: ${.CURDIR}/../../dev/inputfs
 KMOD=	inputfs
 SRCS=	inputfs.c
+SRCS+=	inputfs_parser.c
 SRCS+=	opt_global.h
 SRCS+=	bus_if.h device_if.h vnode_if.h
 
