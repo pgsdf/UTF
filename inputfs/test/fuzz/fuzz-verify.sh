@@ -82,8 +82,9 @@ if [ "$FAIL" = "0" ]; then
     echo "All corpus entries passed. The harness handles every input"
     echo "without crashing under AddressSanitizer. (This does NOT mean"
     echo "the parser is bug-free; it means the corpus has not yet"
-    echo "exposed any bugs. AD-9.4 will inspect each result for"
-    echo "correctness, not just absence of crashes.)"
+    echo "exposed any *crashes*. Run check-corpus.py to verify output"
+    echo "values against the predictions in each entry's .txt"
+    echo "companion.)"
     exit 0
 else
     echo

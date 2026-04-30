@@ -100,23 +100,50 @@ of fuzz scope per ADR 0014. AD-9 hardens the locate and extract
 phases; downstream emission is hardened by tests in stage D
 verification.
 
-## Adding corpus entries (AD-9.3)
+## Corpus entries
 
-Hand-rolled malformed inputs go in `corpus/`. Each entry is a
-binary file in the wire format above. Companion `.txt` files
-are encouraged: describe what bug class the entry is meant to
-provoke. AD-9.3 will add an initial 15-30 entries.
+Hand-rolled malformed inputs live in `corpus/`. Each entry
+is a binary file in the wire format above plus a `.txt`
+companion describing what bug class the entry provokes (in
+the standard five-field shape: NAME, CATEGORY, TARGETS,
+INPUT, EXPECTED BEHAVIOR, EXPECTED FAILURE MODE IF BROKEN).
 
-To run the harness against every corpus entry:
+The corpus is generated declaratively from `gen-corpus.py`,
+which is the source of truth. To regenerate after editing
+the script:
 
 ```
-for f in corpus/*.bin; do
-    ./inputfs-fuzz "$f" || echo "FAIL: $f"
-done
+python3 gen-corpus.py
 ```
 
-AD-9.4 will add a more structured runner with bug-categorisation
-and report aggregation.
+To run the harness against every corpus entry (crash-resistance
+check from AD-9.3):
+
+```
+sh fuzz-verify.sh
+```
+
+To run the harness against every corpus entry whose `.txt`
+makes a specific output prediction, comparing actual outputs
+against expected (output-correctness check from AD-9.4):
+
+```
+python3 check-corpus.py
+```
+
+The harness's verbose mode (used by `check-corpus.py`) dumps
+parser state and extracted values as `key=value` lines on
+stdout when `INPUTFS_FUZZ_VERBOSE=1` is set in the
+environment. Useful for ad-hoc inspection:
+
+```
+INPUTFS_FUZZ_VERBOSE=1 ./inputfs-fuzz corpus/known-good.bin
+```
+
+`findings.md` in this directory records what AD-9.4 found
+when running the corpus. The summary: one bug fixed
+(button-bitmap truncation), and a regression-test entry
+(`23-multi-button-mouse`) added to lock the fix in place.
 
 ## Updating the vendored hid sources
 
@@ -147,8 +174,14 @@ correct for the parser path we exercise.
 inputfs/test/fuzz/
 ├── README.md                       this file
 ├── Makefile                        build rules
+├── .gitignore                      excludes inputfs-fuzz, *.o
 ├── kernel_shim.h                   force-included shim
 ├── main.c                          harness driver
+├── gen-corpus.py                   declarative corpus generator (AD-9.3)
+├── fuzz-verify.sh                  crash-resistance runner (AD-9.3)
+├── check-corpus.py                 output-correctness runner (AD-9.4)
+├── findings.md                     AD-9.4 findings, including the
+│                                   button-bitmap-truncation bug
 ├── shim_includes/
 │   ├── opt_hid.h                   empty (suppresses HID_DEBUG)
 │   ├── hid_if.h                    11 kobj-method-dispatch macro stubs
@@ -167,8 +200,13 @@ inputfs/test/fuzz/
 │       ├── hid.c                   verbatim from FreeBSD
 │       ├── hid.h                   verbatim from FreeBSD
 │       └── hidquirk.h              verbatim from FreeBSD
-└── corpus/
-    └── known-good.bin              boot-protocol mouse + 3-byte report
+└── corpus/                         24 entries (.bin + .txt each)
+    ├── known-good.bin              boot-protocol mouse + 3-byte report
+    ├── 01-truncated-empty.bin..21-cross-pair-kbd-with-mouse-report.bin
+    │                               malformed inputs (AD-9.3)
+    ├── 22-baseline-boot-keyboard.bin
+    │                               boot-protocol keyboard baseline
+    └── 23-multi-button-mouse.bin   AD-9.4 regression test
 ```
 
 ## Caveats

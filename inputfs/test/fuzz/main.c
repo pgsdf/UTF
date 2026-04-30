@@ -81,6 +81,7 @@ main(int argc, char **argv)
 	uint8_t blob[MAX_BLOB_BYTES];
 	size_t blob_len = 0;
 	FILE *fp = stdin;
+	int verbose = (getenv("INPUTFS_FUZZ_VERBOSE") != NULL);
 
 	if (argc > 1) {
 		fp = fopen(argv[1], "rb");
@@ -131,6 +132,12 @@ main(int argc, char **argv)
 		}
 	}
 
+	if (verbose) {
+		printf("blob_len=%zu\n", blob_len);
+		printf("rdesc_len=%u\n", (unsigned)rdesc_len);
+		printf("report_len=%u\n", (unsigned)report_len);
+	}
+
 	/*
 	 * Phase 2: pointer locate + extract.
 	 */
@@ -139,11 +146,40 @@ main(int argc, char **argv)
 
 	inputfs_pointer_locate(&pstate, rdesc, rdesc_len);
 
+	if (verbose) {
+		printf("pointer_locations_valid=%u\n",
+		    (unsigned)pstate.pointer_locations_valid);
+		printf("loc_x_pos=%u loc_x_size=%u loc_x_count=%u\n",
+		    (unsigned)pstate.loc_x.pos,
+		    (unsigned)pstate.loc_x.size,
+		    (unsigned)pstate.loc_x.count);
+		printf("loc_y_pos=%u loc_y_size=%u loc_y_count=%u\n",
+		    (unsigned)pstate.loc_y.pos,
+		    (unsigned)pstate.loc_y.size,
+		    (unsigned)pstate.loc_y.count);
+		printf("loc_wheel_pos=%u loc_wheel_size=%u\n",
+		    (unsigned)pstate.loc_wheel.pos,
+		    (unsigned)pstate.loc_wheel.size);
+		printf("loc_buttons_pos=%u loc_buttons_size=%u\n",
+		    (unsigned)pstate.loc_buttons.pos,
+		    (unsigned)pstate.loc_buttons.size);
+		printf("button_count=%u\n", (unsigned)pstate.button_count);
+		printf("has_wheel=%u\n", (unsigned)pstate.has_wheel);
+	}
+
 	if (report != NULL && pstate.pointer_locations_valid) {
 		int32_t dx = 0, dy = 0, dw = 0;
 		uint32_t buttons = 0;
-		(void)inputfs_extract_pointer(&pstate, report, report_len,
+		int rc = inputfs_extract_pointer(&pstate, report, report_len,
 		    &dx, &dy, &dw, &buttons);
+		if (verbose) {
+			printf("extract_pointer_rc=%d\n", rc);
+			printf("out_dx=%d out_dy=%d out_dw=%d "
+			    "out_buttons=0x%08x\n",
+			    (int)dx, (int)dy, (int)dw, (unsigned)buttons);
+		}
+	} else if (verbose) {
+		printf("extract_pointer_skipped=1\n");
 	}
 
 	/*
@@ -158,11 +194,33 @@ main(int argc, char **argv)
 
 	inputfs_keyboard_locate(&pstate, rdesc, rdesc_len);
 
+	if (verbose) {
+		printf("keyboard_locations_valid=%u\n",
+		    (unsigned)pstate.keyboard_locations_valid);
+		printf("loc_modifiers_pos=%u loc_modifiers_size=%u\n",
+		    (unsigned)pstate.loc_modifiers.pos,
+		    (unsigned)pstate.loc_modifiers.size);
+		printf("loc_keys_pos=%u loc_keys_size=%u loc_keys_count=%u\n",
+		    (unsigned)pstate.loc_keys.pos,
+		    (unsigned)pstate.loc_keys.size,
+		    (unsigned)pstate.loc_keys.count);
+	}
+
 	if (report != NULL && pstate.keyboard_locations_valid) {
 		uint8_t modifiers = 0;
 		uint8_t keys[6] = { 0 };
-		(void)inputfs_extract_keyboard(&pstate, report, report_len,
+		int rc = inputfs_extract_keyboard(&pstate, report, report_len,
 		    &modifiers, keys);
+		if (verbose) {
+			printf("extract_keyboard_rc=%d\n", rc);
+			printf("out_modifiers=0x%02x\n", (unsigned)modifiers);
+			printf("out_keys=%02x,%02x,%02x,%02x,%02x,%02x\n",
+			    (unsigned)keys[0], (unsigned)keys[1],
+			    (unsigned)keys[2], (unsigned)keys[3],
+			    (unsigned)keys[4], (unsigned)keys[5]);
+		}
+	} else if (verbose) {
+		printf("extract_keyboard_skipped=1\n");
 	}
 
 	return (0);

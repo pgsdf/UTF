@@ -224,8 +224,28 @@ inputfs_extract_pointer(struct inputfs_parser_state *p,
 
 	if (p->loc_buttons.size > 0 &&
 	    inputfs_report_id_matches(p->loc_buttons_id, buf, len)) {
+		/*
+		 * The cached loc_buttons describes the location of
+		 * Button 1 only (size = 1 bit, since hid_locate
+		 * returns the location of a single usage). To extract
+		 * the full button bitmap, we construct a temporary
+		 * location starting at loc_buttons.pos with size =
+		 * button_count, which inputfs_pointer_locate
+		 * populated from a separate descriptor walk over all
+		 * HUP_BUTTON usages in the report. This reads all
+		 * declared button bits, not just button 1.
+		 *
+		 * Without this, mouse buttons 2 and onward would be
+		 * silently dropped from every report. Found by AD-9.4
+		 * regression check on corpus entry 16-report-truncated
+		 * (boot mouse with all three button bits set in a
+		 * 1-byte report).
+		 */
+		struct hid_location buttons_loc = p->loc_buttons;
+		if (p->button_count > 0)
+			buttons_loc.size = p->button_count;
 		*out_buttons = (uint32_t)hid_get_udata(buf, len,
-		    &p->loc_buttons);
+		    &buttons_loc);
 		extracted = 1;
 	}
 

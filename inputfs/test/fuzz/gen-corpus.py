@@ -687,6 +687,69 @@ EXPECTED FAILURE MODE IF BROKEN: same as known-good but for
 """
     )
 
+    # ---------- Regression test added during AD-9.4 ----------
+    # See findings.md: this entry locks in the fix for the
+    # button-count extraction bug. Without the fix, only the
+    # low bit of out_buttons ever sets, dropping mouse buttons
+    # 2-5 silently.
+
+    # 5-button mouse descriptor: identical to boot mouse but
+    # with Report Count 5 (and no padding) for the button block.
+    MULTI_BUTTON_MOUSE = bytes([
+        0x05, 0x01,     # Usage Page (Generic Desktop)
+        0x09, 0x02,     # Usage (Mouse)
+        0xA1, 0x01,     # Collection (Application)
+        0x09, 0x01,     #   Usage (Pointer)
+        0xA1, 0x00,     #   Collection (Physical)
+        0x05, 0x09,     #     Usage Page (Buttons)
+        0x19, 0x01,     #     Usage Minimum (1)
+        0x29, 0x05,     #     Usage Maximum (5)
+        0x15, 0x00,     #     Logical Minimum (0)
+        0x25, 0x01,     #     Logical Maximum (1)
+        0x95, 0x05,     #     Report Count (5)
+        0x75, 0x01,     #     Report Size (1)
+        0x81, 0x02,     #     Input (Data, Variable, Absolute)
+        0x95, 0x01,     #     Report Count (1)
+        0x75, 0x03,     #     Report Size (3)
+        0x81, 0x03,     #     Input (Constant) - padding
+        0x05, 0x01,     #     Usage Page (Generic Desktop)
+        0x09, 0x30,     #     Usage (X)
+        0x09, 0x31,     #     Usage (Y)
+        0x15, 0x81,     #     Logical Minimum (-127)
+        0x25, 0x7F,     #     Logical Maximum (127)
+        0x75, 0x08,     #     Report Size (8)
+        0x95, 0x02,     #     Report Count (2)
+        0x81, 0x06,     #     Input (Data, Variable, Relative)
+        0xC0,           #   End Collection
+        0xC0,           # End Collection
+    ])
+
+    write_entry(
+        "23-multi-button-mouse",
+        MULTI_BUTTON_MOUSE,
+        # Report: all 5 buttons pressed (low 5 bits = 0x1F),
+        # 3 bits padding, then dx=0, dy=0.
+        bytes([0x1F, 0x00, 0x00]),
+        """
+23-multi-button-mouse.bin
+
+CATEGORY: regression test (AD-9.4)
+TARGETS: button-bitmap extraction width. Without the AD-9.4
+  fix, only the low bit of out_buttons would ever set,
+  silently dropping mouse buttons 2-5 from every report.
+INPUT: 5-button mouse descriptor (Report Count 5, Report
+  Size 1 for the button block); 3-byte report with all
+  five button bits set (0x1F) and zero motion.
+EXPECTED BEHAVIOR: pointer_locations_valid=1, button_count=5,
+  extract_pointer_rc=1, out_buttons=0x0000001F (all five
+  bits set in the bitmap), out_dx=0, out_dy=0.
+EXPECTED FAILURE MODE IF BROKEN: out_buttons=0x00000001
+  (only button 1 reported, buttons 2-5 silently dropped).
+  This is the bug AD-9.4 found and fixed in
+  inputfs_extract_pointer's button-extraction path.
+"""
+    )
+
     print(f"Generated {len(list(CORPUS_DIR.glob('*.bin')))} corpus entries in {CORPUS_DIR}")
 
 
