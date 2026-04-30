@@ -389,11 +389,76 @@ struct inputfs_focus_snapshot {
 };
 
 /*
+ * Parser state: the cached HID locations and previous-state
+ * buffer used by inputfs_pointer_locate, inputfs_extract_pointer,
+ * inputfs_keyboard_locate, and inputfs_extract_keyboard
+ * (AD-9.1, ADR 0014).
+ *
+ * Held inside struct inputfs_softc as the field sc_parser; the
+ * four functions above take a struct inputfs_parser_state *
+ * directly so they can be exercised in userspace by AD-9.2's
+ * fuzzing harness without softc dependencies (mtx, sysctls,
+ * device tree).
+ *
+ * inputfs_keyboard_diff_emit still takes struct inputfs_softc *
+ * because it mixes parser concerns with event-emission concerns
+ * (it calls inputfs_focus_keyboard_session and
+ * inputfs_events_publish, and reads sc_state_slot). It is out
+ * of fuzz scope per ADR 0014.
+ *
+ * Field-name convention: dropped the sc_ prefix that softc uses,
+ * since these are no longer softc fields. Access from kernel
+ * code is sc->sc_parser.loc_x rather than sc->sc_loc_x. The
+ * bytes on the wire and the on-disk layout of the kernel
+ * module are unchanged: sc_parser is embedded in softc with
+ * the same field types in the same order, so the compiled
+ * struct is identical at the offset level.
+ *
+ * Pointer location cache (Stage D.0a): each location's size
+ * field is zero when the corresponding usage is not present in
+ * the descriptor. Consumers check size > 0 before extracting.
+ * loc_buttons covers the button usage range as a single
+ * location with one bit per button; we cap at 32 buttons in
+ * the wire format.
+ *
+ * Keyboard location cache and previous-state buffer
+ * (Stage D.0b): the interrupt path extracts the modifier byte
+ * and keys-held array, diffs against prev_modifiers / prev_keys,
+ * and updates the previous-state buffer. n-key rollover beyond
+ * 6 is reported by HID as 0x01 in all six slots and filtered
+ * out. loc_modifiers covers the 8-bit modifier bitfield as a
+ * single location whose size is 8. loc_keys covers the keys-held
+ * array as a single location whose size is the per-element bit
+ * width and count is the array length.
+ */
+struct inputfs_parser_state {
+	uint8_t			 pointer_locations_valid;
+	struct hid_location	 loc_x;
+	struct hid_location	 loc_y;
+	struct hid_location	 loc_wheel;
+	struct hid_location	 loc_buttons;
+	uint8_t			 loc_x_id;
+	uint8_t			 loc_y_id;
+	uint8_t			 loc_wheel_id;
+	uint8_t			 loc_buttons_id;
+	uint8_t			 button_count;
+	uint8_t			 has_wheel;
+
+	uint8_t			 keyboard_locations_valid;
+	struct hid_location	 loc_modifiers;
+	struct hid_location	 loc_keys;
+	uint8_t			 loc_modifiers_id;
+	uint8_t			 loc_keys_id;
+	uint8_t			 prev_modifiers;
+	uint8_t			 prev_keys[6];
+};
+
+/*
  * Per-device softc. Stage B.4 added interrupt buffer fields;
  * Stage B.5 added the per-device role bitmask;
  * Stage C.2 adds the state-region slot index assigned at attach;
  * Stage D.0a adds the cached HID locations for descriptor-driven
- * pointer event extraction.
+ * pointer event extraction (now in struct inputfs_parser_state).
  */
 struct inputfs_softc {
 	device_t	sc_dev;
@@ -423,69 +488,26 @@ struct inputfs_softc {
 	uint8_t		 sc_state_slot;
 
 	/*
-	 * Pointer location cache (Stage D.0a). Populated once at
-	 * attach by inputfs_pointer_locate. Each location's
-	 * size field is zero when the corresponding usage is not
-	 * present in the descriptor; consumers must check size > 0
-	 * before extracting.
+	 * Pointer-location cache, keyboard-location cache, and
+	 * previous-keyboard-state buffer. Populated by
+	 * inputfs_pointer_locate / inputfs_keyboard_locate at
+	 * attach. Read by the extract path on every interrupt.
 	 *
-	 * sc_loc_buttons covers the button usage range as a single
-	 * location with one bit per button (HID button usages are
-	 * 1-indexed in the HUP_BUTTON page; our wire format folds
-	 * the first 32 buttons into a u32 bitmask, so we cap at 32
-	 * when caching).
-	 *
-	 * Each location records the report ID it belongs to, since
-	 * a device may multiplex multiple reports through one
-	 * interrupt callback.
+	 * Extracted into struct inputfs_parser_state (defined
+	 * above) so the parser code can be exercised in
+	 * userspace by AD-9.2's fuzzing harness without
+	 * pulling in softc dependencies (mtx, sysctls, the
+	 * device tree). See ADR 0014. The four pure-parser
+	 * functions (inputfs_pointer_locate,
+	 * inputfs_extract_pointer, inputfs_keyboard_locate,
+	 * inputfs_extract_keyboard) take struct
+	 * inputfs_parser_state * directly;
+	 * inputfs_keyboard_diff_emit still takes struct
+	 * inputfs_softc * because it mixes parser concerns
+	 * with event-emission concerns and is out of fuzz
+	 * scope per ADR 0014.
 	 */
-	uint8_t			 sc_pointer_locations_valid;
-	struct hid_location	 sc_loc_x;
-	struct hid_location	 sc_loc_y;
-	struct hid_location	 sc_loc_wheel;
-	struct hid_location	 sc_loc_buttons;
-	uint8_t			 sc_loc_x_id;
-	uint8_t			 sc_loc_y_id;
-	uint8_t			 sc_loc_wheel_id;
-	uint8_t			 sc_loc_buttons_id;
-	uint8_t			 sc_button_count;
-	uint8_t			 sc_has_wheel;
-
-	/*
-	 * Keyboard location cache and previous-state buffer
-	 * (Stage D.0b). Populated once at attach by
-	 * inputfs_keyboard_locate. The interrupt path extracts
-	 * the modifier byte and the keys-held array, diffs them
-	 * against sc_prev_modifiers / sc_prev_keys to compute
-	 * key_down and key_up transitions, and updates the
-	 * previous-state buffer for the next report.
-	 *
-	 * The HID boot keyboard array reports up to 6 simultaneously
-	 * held keys in unspecified order; comparing as sets (not
-	 * positions) is required. n-key rollover beyond 6 is
-	 * reported as 0x01 in all six slots and is filtered out.
-	 *
-	 * sc_loc_modifiers covers the 8-bit modifier bitfield. A
-	 * single hid_locate against usage 0xE0 (Left Ctrl) yields
-	 * the bit position of bit 0; the eight modifier bits are
-	 * read together via hid_get_udata against a location whose
-	 * size is 8 (one byte) and pos points at bit 0 of the
-	 * modifier byte. We synthesise this by extending the
-	 * located size from 1 (per-bit declaration) to 8.
-	 *
-	 * sc_loc_keys covers the keys-held array as a single
-	 * location whose size is the per-element bit width
-	 * (typically 8) and count is the array length (typically
-	 * 6). Per-element extraction adjusts a copy of the
-	 * location's pos field by size * index.
-	 */
-	uint8_t			 sc_keyboard_locations_valid;
-	struct hid_location	 sc_loc_modifiers;
-	struct hid_location	 sc_loc_keys;
-	uint8_t			 sc_loc_modifiers_id;
-	uint8_t			 sc_loc_keys_id;
-	uint8_t			 sc_prev_modifiers;
-	uint8_t			 sc_prev_keys[6];
+	struct inputfs_parser_state	 sc_parser;
 };
 
 /*
@@ -2091,46 +2113,47 @@ inputfs_report_id_matches(uint8_t cached_id, const uint8_t *buf,
  * order of role classification.
  */
 static void
-inputfs_pointer_locate(struct inputfs_softc *sc)
+inputfs_pointer_locate(struct inputfs_parser_state *p,
+    const void *rdesc, hid_size_t rdesc_len)
 {
 	uint32_t flags;
 	uint8_t id;
 
-	memset(&sc->sc_loc_x, 0, sizeof(sc->sc_loc_x));
-	memset(&sc->sc_loc_y, 0, sizeof(sc->sc_loc_y));
-	memset(&sc->sc_loc_wheel, 0, sizeof(sc->sc_loc_wheel));
-	memset(&sc->sc_loc_buttons, 0, sizeof(sc->sc_loc_buttons));
-	sc->sc_loc_x_id = 0;
-	sc->sc_loc_y_id = 0;
-	sc->sc_loc_wheel_id = 0;
-	sc->sc_loc_buttons_id = 0;
-	sc->sc_button_count = 0;
-	sc->sc_has_wheel = 0;
-	sc->sc_pointer_locations_valid = 0;
+	memset(&p->loc_x, 0, sizeof(p->loc_x));
+	memset(&p->loc_y, 0, sizeof(p->loc_y));
+	memset(&p->loc_wheel, 0, sizeof(p->loc_wheel));
+	memset(&p->loc_buttons, 0, sizeof(p->loc_buttons));
+	p->loc_x_id = 0;
+	p->loc_y_id = 0;
+	p->loc_wheel_id = 0;
+	p->loc_buttons_id = 0;
+	p->button_count = 0;
+	p->has_wheel = 0;
+	p->pointer_locations_valid = 0;
 
-	if (sc->sc_rdesc == NULL || sc->sc_rdesc_len == 0)
+	if (rdesc == NULL || rdesc_len == 0)
 		return;
 
 	/* X axis. */
-	if (hid_locate(sc->sc_rdesc, sc->sc_rdesc_len,
+	if (hid_locate(rdesc, rdesc_len,
 	    HID_USAGE2(HUP_GENERIC_DESKTOP, HUG_X),
-	    hid_input, 0, &sc->sc_loc_x, &flags, &id) != 0) {
-		sc->sc_loc_x_id = id;
+	    hid_input, 0, &p->loc_x, &flags, &id) != 0) {
+		p->loc_x_id = id;
 	}
 
 	/* Y axis. */
-	if (hid_locate(sc->sc_rdesc, sc->sc_rdesc_len,
+	if (hid_locate(rdesc, rdesc_len,
 	    HID_USAGE2(HUP_GENERIC_DESKTOP, HUG_Y),
-	    hid_input, 0, &sc->sc_loc_y, &flags, &id) != 0) {
-		sc->sc_loc_y_id = id;
+	    hid_input, 0, &p->loc_y, &flags, &id) != 0) {
+		p->loc_y_id = id;
 	}
 
 	/* Wheel (optional). */
-	if (hid_locate(sc->sc_rdesc, sc->sc_rdesc_len,
+	if (hid_locate(rdesc, rdesc_len,
 	    HID_USAGE2(HUP_GENERIC_DESKTOP, HUG_WHEEL),
-	    hid_input, 0, &sc->sc_loc_wheel, &flags, &id) != 0) {
-		sc->sc_loc_wheel_id = id;
-		sc->sc_has_wheel = 1;
+	    hid_input, 0, &p->loc_wheel, &flags, &id) != 0) {
+		p->loc_wheel_id = id;
+		p->has_wheel = 1;
 	}
 
 	/*
@@ -2141,16 +2164,16 @@ inputfs_pointer_locate(struct inputfs_softc *sc)
 	 * to count how many button usages are present so we know the
 	 * field width.
 	 */
-	if (hid_locate(sc->sc_rdesc, sc->sc_rdesc_len,
+	if (hid_locate(rdesc, rdesc_len,
 	    HID_USAGE2(HUP_BUTTON, 1),
-	    hid_input, 0, &sc->sc_loc_buttons, &flags, &id) != 0) {
+	    hid_input, 0, &p->loc_buttons, &flags, &id) != 0) {
 		struct hid_data *s;
 		struct hid_item hi;
 		uint8_t count = 0;
 
-		sc->sc_loc_buttons_id = id;
+		p->loc_buttons_id = id;
 
-		s = hid_start_parse(sc->sc_rdesc, sc->sc_rdesc_len,
+		s = hid_start_parse(rdesc, rdesc_len,
 		    1 << hid_input);
 		if (s != NULL) {
 			while (hid_get_item(s, &hi) > 0) {
@@ -2162,12 +2185,12 @@ inputfs_pointer_locate(struct inputfs_softc *sc)
 			}
 			hid_end_parse(s);
 		}
-		sc->sc_button_count = count;
+		p->button_count = count;
 	}
 
-	if (sc->sc_loc_x.size > 0 || sc->sc_loc_y.size > 0 ||
-	    sc->sc_loc_wheel.size > 0 || sc->sc_loc_buttons.size > 0) {
-		sc->sc_pointer_locations_valid = 1;
+	if (p->loc_x.size > 0 || p->loc_y.size > 0 ||
+	    p->loc_wheel.size > 0 || p->loc_buttons.size > 0) {
+		p->pointer_locations_valid = 1;
 	}
 }
 
@@ -2199,38 +2222,38 @@ inputfs_pointer_locate(struct inputfs_softc *sc)
  * is non-zero, the byte must match.
  */
 static int
-inputfs_extract_pointer(struct inputfs_softc *sc,
+inputfs_extract_pointer(struct inputfs_parser_state *p,
     const uint8_t *buf, hid_size_t len,
     int32_t *out_dx, int32_t *out_dy, int32_t *out_dw,
     uint32_t *out_buttons)
 {
 	int extracted = 0;
 
-	if (!sc->sc_pointer_locations_valid || buf == NULL || len == 0)
+	if (!p->pointer_locations_valid || buf == NULL || len == 0)
 		return (0);
 
-	if (sc->sc_loc_x.size > 0 &&
-	    inputfs_report_id_matches(sc->sc_loc_x_id, buf, len)) {
-		*out_dx = (int32_t)hid_get_data(buf, len, &sc->sc_loc_x);
+	if (p->loc_x.size > 0 &&
+	    inputfs_report_id_matches(p->loc_x_id, buf, len)) {
+		*out_dx = (int32_t)hid_get_data(buf, len, &p->loc_x);
 		extracted = 1;
 	}
 
-	if (sc->sc_loc_y.size > 0 &&
-	    inputfs_report_id_matches(sc->sc_loc_y_id, buf, len)) {
-		*out_dy = (int32_t)hid_get_data(buf, len, &sc->sc_loc_y);
+	if (p->loc_y.size > 0 &&
+	    inputfs_report_id_matches(p->loc_y_id, buf, len)) {
+		*out_dy = (int32_t)hid_get_data(buf, len, &p->loc_y);
 		extracted = 1;
 	}
 
-	if (sc->sc_loc_wheel.size > 0 &&
-	    inputfs_report_id_matches(sc->sc_loc_wheel_id, buf, len)) {
-		*out_dw = (int32_t)hid_get_data(buf, len, &sc->sc_loc_wheel);
+	if (p->loc_wheel.size > 0 &&
+	    inputfs_report_id_matches(p->loc_wheel_id, buf, len)) {
+		*out_dw = (int32_t)hid_get_data(buf, len, &p->loc_wheel);
 		extracted = 1;
 	}
 
-	if (sc->sc_loc_buttons.size > 0 &&
-	    inputfs_report_id_matches(sc->sc_loc_buttons_id, buf, len)) {
+	if (p->loc_buttons.size > 0 &&
+	    inputfs_report_id_matches(p->loc_buttons_id, buf, len)) {
 		*out_buttons = (uint32_t)hid_get_udata(buf, len,
-		    &sc->sc_loc_buttons);
+		    &p->loc_buttons);
 		extracted = 1;
 	}
 
@@ -2265,20 +2288,21 @@ inputfs_extract_pointer(struct inputfs_softc *sc,
  * locations report size == 0.
  */
 static void
-inputfs_keyboard_locate(struct inputfs_softc *sc)
+inputfs_keyboard_locate(struct inputfs_parser_state *p,
+    const void *rdesc, hid_size_t rdesc_len)
 {
 	uint32_t flags;
 	uint8_t id;
 
-	memset(&sc->sc_loc_modifiers, 0, sizeof(sc->sc_loc_modifiers));
-	memset(&sc->sc_loc_keys, 0, sizeof(sc->sc_loc_keys));
-	sc->sc_loc_modifiers_id = 0;
-	sc->sc_loc_keys_id = 0;
-	sc->sc_prev_modifiers = 0;
-	memset(sc->sc_prev_keys, 0, sizeof(sc->sc_prev_keys));
-	sc->sc_keyboard_locations_valid = 0;
+	memset(&p->loc_modifiers, 0, sizeof(p->loc_modifiers));
+	memset(&p->loc_keys, 0, sizeof(p->loc_keys));
+	p->loc_modifiers_id = 0;
+	p->loc_keys_id = 0;
+	p->prev_modifiers = 0;
+	memset(p->prev_keys, 0, sizeof(p->prev_keys));
+	p->keyboard_locations_valid = 0;
 
-	if (sc->sc_rdesc == NULL || sc->sc_rdesc_len == 0)
+	if (rdesc == NULL || rdesc_len == 0)
 		return;
 
 	/*
@@ -2287,18 +2311,18 @@ inputfs_keyboard_locate(struct inputfs_softc *sc)
 	 * are packed sequentially in this byte; we read them as one
 	 * 8-bit value.
 	 */
-	if (hid_locate(sc->sc_rdesc, sc->sc_rdesc_len,
+	if (hid_locate(rdesc, rdesc_len,
 	    HID_USAGE2(HUP_KEYBOARD, 0xE0),
-	    hid_input, 0, &sc->sc_loc_modifiers, &flags, &id) != 0) {
-		sc->sc_loc_modifiers_id = id;
+	    hid_input, 0, &p->loc_modifiers, &flags, &id) != 0) {
+		p->loc_modifiers_id = id;
 		/*
 		 * Each modifier is declared as a 1-bit field. Extend
 		 * the located size to 8 so a single hid_get_udata
 		 * yields the full modifier byte. The pos field already
 		 * points at bit 0 of the byte (the LeftCtrl bit).
 		 */
-		sc->sc_loc_modifiers.size = 8;
-		sc->sc_loc_modifiers.count = 1;
+		p->loc_modifiers.size = 8;
+		p->loc_modifiers.count = 1;
 	}
 
 	/*
@@ -2307,10 +2331,10 @@ inputfs_keyboard_locate(struct inputfs_softc *sc)
 	 * non-boot keyboards or unusual descriptors, hid_locate may
 	 * not find this; the array-walk fallback below catches those.
 	 */
-	if (hid_locate(sc->sc_rdesc, sc->sc_rdesc_len,
+	if (hid_locate(rdesc, rdesc_len,
 	    HID_USAGE2(HUP_KEYBOARD, 0x00),
-	    hid_input, 0, &sc->sc_loc_keys, &flags, &id) != 0) {
-		sc->sc_loc_keys_id = id;
+	    hid_input, 0, &p->loc_keys, &flags, &id) != 0) {
+		p->loc_keys_id = id;
 	} else {
 		/*
 		 * Fallback: walk the descriptor and find the first
@@ -2321,7 +2345,7 @@ inputfs_keyboard_locate(struct inputfs_softc *sc)
 		struct hid_data *s;
 		struct hid_item hi;
 
-		s = hid_start_parse(sc->sc_rdesc, sc->sc_rdesc_len,
+		s = hid_start_parse(rdesc, rdesc_len,
 		    1 << hid_input);
 		if (s != NULL) {
 			while (hid_get_item(s, &hi) > 0) {
@@ -2329,8 +2353,8 @@ inputfs_keyboard_locate(struct inputfs_softc *sc)
 				    HID_GET_USAGE_PAGE(hi.usage) == HUP_KEYBOARD &&
 				    hi.loc.count > 1 &&
 				    (hi.flags & HIO_VARIABLE) == 0) {
-					sc->sc_loc_keys = hi.loc;
-					sc->sc_loc_keys_id =
+					p->loc_keys = hi.loc;
+					p->loc_keys_id =
 					    (uint8_t)hi.report_ID;
 					break;
 				}
@@ -2339,8 +2363,8 @@ inputfs_keyboard_locate(struct inputfs_softc *sc)
 		}
 	}
 
-	if (sc->sc_loc_modifiers.size > 0 || sc->sc_loc_keys.size > 0)
-		sc->sc_keyboard_locations_valid = 1;
+	if (p->loc_modifiers.size > 0 || p->loc_keys.size > 0)
+		p->keyboard_locations_valid = 1;
 }
 
 /*
@@ -2359,35 +2383,35 @@ inputfs_keyboard_locate(struct inputfs_softc *sc)
  * cached location and advancing pos by size * index.
  */
 static int
-inputfs_extract_keyboard(struct inputfs_softc *sc,
+inputfs_extract_keyboard(struct inputfs_parser_state *p,
     const uint8_t *buf, hid_size_t len,
     uint8_t *out_modifiers, uint8_t out_keys[6])
 {
 	int extracted = 0;
 
-	if (!sc->sc_keyboard_locations_valid || buf == NULL || len == 0)
+	if (!p->keyboard_locations_valid || buf == NULL || len == 0)
 		return (0);
 
-	if (sc->sc_loc_modifiers.size > 0 &&
-	    inputfs_report_id_matches(sc->sc_loc_modifiers_id, buf, len)) {
+	if (p->loc_modifiers.size > 0 &&
+	    inputfs_report_id_matches(p->loc_modifiers_id, buf, len)) {
 		*out_modifiers = (uint8_t)hid_get_udata(buf, len,
-		    &sc->sc_loc_modifiers);
+		    &p->loc_modifiers);
 		extracted = 1;
 	}
 
-	if (sc->sc_loc_keys.size > 0 &&
-	    inputfs_report_id_matches(sc->sc_loc_keys_id, buf, len)) {
+	if (p->loc_keys.size > 0 &&
+	    inputfs_report_id_matches(p->loc_keys_id, buf, len)) {
 		uint32_t i;
-		uint32_t array_count = sc->sc_loc_keys.count;
+		uint32_t array_count = p->loc_keys.count;
 
 		if (array_count > 6)
 			array_count = 6;
 
 		for (i = 0; i < array_count; i++) {
-			struct hid_location elem = sc->sc_loc_keys;
+			struct hid_location elem = p->loc_keys;
 
-			elem.pos = sc->sc_loc_keys.pos +
-			    sc->sc_loc_keys.size * i;
+			elem.pos = p->loc_keys.pos +
+			    p->loc_keys.size * i;
 			elem.count = 1;
 			out_keys[i] = (uint8_t)hid_get_udata(buf, len, &elem);
 		}
@@ -2455,7 +2479,7 @@ static void
 inputfs_keyboard_diff_emit(struct inputfs_softc *sc,
     uint8_t modifiers, const uint8_t keys[6])
 {
-	uint8_t mod_changed = sc->sc_prev_modifiers ^ modifiers;
+	uint8_t mod_changed = sc->sc_parser.prev_modifiers ^ modifiers;
 	uint16_t dev_slot;
 	uint8_t payload[32];
 	int i;
@@ -2478,7 +2502,7 @@ inputfs_keyboard_diff_emit(struct inputfs_softc *sc,
 		uint8_t mask = (uint8_t)(1u << bit);
 		if ((mod_changed & mask) == 0)
 			continue;
-		if ((sc->sc_prev_modifiers & mask) == 0)
+		if ((sc->sc_parser.prev_modifiers & mask) == 0)
 			continue;
 		memset(payload, 0, sizeof(payload));
 		inputfs_put_u32le(payload, 0, 0xE0u + bit);
@@ -2492,7 +2516,7 @@ inputfs_keyboard_diff_emit(struct inputfs_softc *sc,
 
 	/* Array key ups: keys in prev not in current. */
 	for (i = 0; i < 6; i++) {
-		uint8_t usage = sc->sc_prev_keys[i];
+		uint8_t usage = sc->sc_parser.prev_keys[i];
 		if (usage == 0)
 			continue;
 		if (usage <= 0x03)
@@ -2533,7 +2557,7 @@ inputfs_keyboard_diff_emit(struct inputfs_softc *sc,
 			continue;
 		if (usage <= 0x03)
 			continue;
-		if (inputfs_keyboard_key_in_set(usage, sc->sc_prev_keys))
+		if (inputfs_keyboard_key_in_set(usage, sc->sc_parser.prev_keys))
 			continue;
 		memset(payload, 0, sizeof(payload));
 		inputfs_put_u32le(payload, 0, usage);
@@ -2546,8 +2570,8 @@ inputfs_keyboard_diff_emit(struct inputfs_softc *sc,
 	}
 
 	/* Update previous-state buffer for next report. */
-	sc->sc_prev_modifiers = modifiers;
-	memcpy(sc->sc_prev_keys, keys, sizeof(sc->sc_prev_keys));
+	sc->sc_parser.prev_modifiers = modifiers;
+	memcpy(sc->sc_parser.prev_keys, keys, sizeof(sc->sc_parser.prev_keys));
 }
 
 /*
@@ -2622,13 +2646,13 @@ inputfs_intr(void *context, void *data, hid_size_t len)
 	 * but defensible). In that case we log the hex-dump and stop.
 	 */
 	if ((sc->sc_roles & INPUTFS_ROLE_POINTER) != 0 &&
-	    sc->sc_pointer_locations_valid &&
+	    sc->sc_parser.pointer_locations_valid &&
 	    copy_len > 0) {
 		int32_t dx = 0, dy = 0, dw = 0;
 		uint32_t buttons = 0;
 		int extracted;
 
-		extracted = inputfs_extract_pointer(sc, sc->sc_ibuf,
+		extracted = inputfs_extract_pointer(&sc->sc_parser, sc->sc_ibuf,
 		    copy_len, &dx, &dy, &dw, &buttons);
 
 		if (extracted) {
@@ -2713,8 +2737,8 @@ inputfs_intr(void *context, void *data, hid_size_t len)
 			 * (a button-only or wheel-only report does not
 			 * produce a motion event).
 			 */
-			if (sc->sc_loc_x.size > 0 ||
-			    sc->sc_loc_y.size > 0) {
+			if (sc->sc_parser.loc_x.size > 0 ||
+			    sc->sc_parser.loc_y.size > 0) {
 				memset(payload, 0, sizeof(payload));
 				inputfs_put_i32le(payload, 0, new_x);
 				inputfs_put_i32le(payload, 4, new_y);
@@ -2763,7 +2787,7 @@ inputfs_intr(void *context, void *data, hid_size_t len)
 			 * a future refinement that depends on resolution
 			 * multipliers, which Stage D.0a does not parse.
 			 */
-			if (sc->sc_has_wheel && dw != 0) {
+			if (sc->sc_parser.has_wheel && dw != 0) {
 				memset(payload, 0, sizeof(payload));
 				inputfs_put_i32le(payload, 0, new_x);
 				inputfs_put_i32le(payload, 4, new_y);
@@ -2795,13 +2819,13 @@ inputfs_intr(void *context, void *data, hid_size_t len)
 	 * by the diff emitter for the next report.
 	 */
 	if ((sc->sc_roles & INPUTFS_ROLE_KEYBOARD) != 0 &&
-	    sc->sc_keyboard_locations_valid &&
+	    sc->sc_parser.keyboard_locations_valid &&
 	    copy_len > 0) {
 		uint8_t modifiers = 0;
 		uint8_t keys[6] = { 0, 0, 0, 0, 0, 0 };
 		int extracted;
 
-		extracted = inputfs_extract_keyboard(sc, sc->sc_ibuf,
+		extracted = inputfs_extract_keyboard(&sc->sc_parser, sc->sc_ibuf,
 		    copy_len, &modifiers, keys);
 
 		if (extracted) {
@@ -2973,17 +2997,18 @@ inputfs_attach(device_t dev)
 		 * for non-pointer descriptors and the interrupt path
 		 * checks sc_pointer_locations_valid before extracting.
 		 */
-		inputfs_pointer_locate(sc);
+		inputfs_pointer_locate(&sc->sc_parser, sc->sc_rdesc,
+		    sc->sc_rdesc_len);
 
-		if (sc->sc_pointer_locations_valid) {
+		if (sc->sc_parser.pointer_locations_valid) {
 			device_printf(dev,
 			    "inputfs: pointer locations cached "
 			    "(x=%s y=%s wheel=%s buttons=%u count=%u)\n",
-			    sc->sc_loc_x.size > 0 ? "yes" : "no",
-			    sc->sc_loc_y.size > 0 ? "yes" : "no",
-			    sc->sc_has_wheel ? "yes" : "no",
-			    (unsigned int)sc->sc_loc_buttons.size,
-			    (unsigned int)sc->sc_button_count);
+			    sc->sc_parser.loc_x.size > 0 ? "yes" : "no",
+			    sc->sc_parser.loc_y.size > 0 ? "yes" : "no",
+			    sc->sc_parser.has_wheel ? "yes" : "no",
+			    (unsigned int)sc->sc_parser.loc_buttons.size,
+			    (unsigned int)sc->sc_parser.button_count);
 		}
 
 		/*
@@ -2992,15 +3017,16 @@ inputfs_attach(device_t dev)
 		 * unconditionally, the interrupt path checks
 		 * sc_keyboard_locations_valid before extracting.
 		 */
-		inputfs_keyboard_locate(sc);
+		inputfs_keyboard_locate(&sc->sc_parser, sc->sc_rdesc,
+		    sc->sc_rdesc_len);
 
-		if (sc->sc_keyboard_locations_valid) {
+		if (sc->sc_parser.keyboard_locations_valid) {
 			device_printf(dev,
 			    "inputfs: keyboard locations cached "
 			    "(modifiers=%s keys=%s array_count=%u)\n",
-			    sc->sc_loc_modifiers.size > 0 ? "yes" : "no",
-			    sc->sc_loc_keys.size > 0 ? "yes" : "no",
-			    (unsigned int)sc->sc_loc_keys.count);
+			    sc->sc_parser.loc_modifiers.size > 0 ? "yes" : "no",
+			    sc->sc_parser.loc_keys.size > 0 ? "yes" : "no",
+			    (unsigned int)sc->sc_parser.loc_keys.count);
 		}
 
 		ibuf_size = hid_report_size_max(sc->sc_rdesc,
