@@ -1258,13 +1258,27 @@ This is substantial work. Real-time audio has harder timing
 constraints than input (buffer underrun is immediately audible),
 vendor-specific audio hardware programming is complex, and the
 existing OSS interface is reasonably stable. The proposal landed
-2026-04-29 (commit `88b9405`) and identifies four open
+2026-04-29 (commit `88b9405`) and identifies six open
 architectural questions that subsequent ADRs will resolve before
-any kernel code is written: data path (tmpfs ring vs kernel-mapped
-DMA vs hybrid), mixer location, OSS coexistence model, and format
-negotiation. Implementation depends on AD-2 closing first;
-listed here so the discipline is honest about the forward
-implication and so the proposal has a tracking entry.
+any kernel code is written: Q1 data path (tmpfs ring vs
+kernel-mapped DMA vs hybrid), Q2 mixer location, Q3 OSS
+coexistence model, Q4 format negotiation, Q5 latency targets,
+and Q6 serialization format for semasound's userland surfaces.
+The pre-survey BACKLOG entry counted only four; Q5 (latency)
+and Q6 (serialization) were added to the proposal during
+review and the BACKLOG entry is corrected here.
+
+Stage F.0 (architectural ADRs) is in progress under
+`audiofs/docs/adr/`. ADR 0001 establishes the per-question
+ADR structure; ADR 0002 resolves Q3 (OSS coexistence) with
+end-state Exclusive, migration-time per-device sysctl
+assignment, Layered rejected. Q1, Q2, Q4, Q5, and Q6 remain
+open as of this commit.
+
+Implementation (Stage F.1 onward) depends on AD-2 closing
+first and on F.0's six ADRs being accepted. F.0 ADR work
+itself is documentation, not implementation, and can proceed
+in parallel with AD-2 thinking.
 
 ### `[ ]` AD-4: Graphics output: replace efifb / DRM dependency  *(Open, Large; not scheduled)*
 
