@@ -1352,7 +1352,7 @@ status).
   is a separate decision deserving its own track. Not folded into
   AD-8.
 
-### `[ ]` AD-9: HID descriptor and report fuzzing  *(Open, Medium)*
+### `[~]` AD-9: HID descriptor and report fuzzing  *(In progress, Medium)*
 
 **Tracks**: `inputfs/docs/adr/0014-hid-fuzzing-scope.md`.
 
@@ -1378,15 +1378,21 @@ crash oracles).
 
 **Sub-stages** (full detail in ADR 0014):
 
-- AD-9.1: parser-state refactor in `inputfs.c`. Extract
-  parser-relevant fields into a fuzz-friendly substruct.
-  Production behaviour unchanged; verified by C.5 + D.6.
-- AD-9.2: userspace shim plus build infrastructure to
-  compile FreeBSD's `/usr/src/sys/dev/hid/hid.c` alongside
-  inputfs's parser code, with AddressSanitizer enabled.
-- AD-9.3: hand-rolled malformed-input corpus, ~15-30
-  entries with companion descriptions.
-- AD-9.4: run, fix any bugs found, document results.
+- AD-9.1 *(landed, `b79e8d6`)*: parser-state refactor in
+  `inputfs.c`. Extracted 25 parser-output fields into
+  `struct inputfs_parser_state` embedded in softc as
+  `sc_parser`. Four pure-parser functions take
+  `inputfs_parser_state *` directly. Production behaviour
+  unchanged; verified by C.5 (26/26) and D.6 (14/14) on
+  PGSD-bare-metal.
+- AD-9.2 *(pending)*: userspace shim plus build
+  infrastructure to compile FreeBSD's
+  `/usr/src/sys/dev/hid/hid.c` alongside inputfs's parser
+  code, with AddressSanitizer enabled.
+- AD-9.3 *(pending)*: hand-rolled malformed-input corpus,
+  ~15-30 entries with companion descriptions.
+- AD-9.4 *(pending)*: run, fix any bugs found, document
+  results.
 
 **Out of scope:** coverage-guided (AFL-style) fuzzing,
 state-leak detection across extract calls, fuzzing FreeBSD's
@@ -1404,7 +1410,8 @@ entirely). Hardening before cutover, not after.
 **Depends on:** none. Can land independently of AD-2; the
 ordering is preference, not a hard dependency.
 
-**Status:** scoped (ADR 0014). Implementation pending.
+**Status:** AD-9.1 landed and verified on PGSD-bare-metal.
+AD-9.2 through AD-9.4 pending.
 
 ### Priority
 

@@ -151,37 +151,57 @@ independently verifiable. The sub-stage labels are AD-9.1
 through AD-9.4 to match the BACKLOG numbering convention
 already established for inputfs work.
 
-#### AD-9.1: Parser surface refactor
+#### AD-9.1: Parser surface refactor *(landed in commit `b79e8d6`)*
 
 Extract the parser-relevant fields of `struct inputfs_softc`
-into a sub-struct (proposed name `struct inputfs_parser_state`)
-that:
+into a sub-struct (`struct inputfs_parser_state`) that:
 
 - Has no dependencies on FreeBSD kernel headers beyond
   C99 fixed-width integer types and `<dev/hid/hid.h>` for
   the `struct hid_location` type.
-- Contains exactly the fields enumerated above (the
+- Contains the 25 parser-output fields formerly named
   `sc_loc_*`, `sc_loc_*_id`, `sc_button_count`,
   `sc_has_wheel`, `sc_*_locations_valid`, `sc_prev_keys`,
-  `sc_prev_modifiers`, `sc_rdesc`, `sc_rdesc_len`,
-  `sc_report_id`).
-- Is embedded in `inputfs_softc` so kernel code accesses
-  parser state via `&sc->sc_parser` rather than directly.
+  `sc_prev_modifiers` (with the `sc_` prefix dropped inside
+  the substruct, since they are no longer softc fields).
+- Is embedded in `inputfs_softc` as the field `sc_parser`.
+
+The descriptor pointer/length (`sc_rdesc`, `sc_rdesc_len`)
+stayed in `inputfs_softc` and became explicit parameters to
+`inputfs_pointer_locate` and `inputfs_keyboard_locate`
+rather than being read through softc. `sc_report_id` also
+stayed in softc; it is set during attach but no parser
+function uses it.
 
 The locate and extract functions take `struct
 inputfs_parser_state *` rather than `struct inputfs_softc *`.
 They lose access to softc-level fields (sysctls, mtx, device
 tree handles) which they were not using anyway.
+`inputfs_keyboard_diff_emit` kept its softc parameter
+because it mixes parser concerns with event-emission
+concerns; it accesses parser fields via `sc->sc_parser.X`.
 
-Verifiable: the kernel build is byte-identical in observable
-behaviour. C.5 passes 26/26. D.6 passes all eighteen checks.
-Manual smoke test of pointer and keyboard input on
-PGSD-bare-metal shows no regression.
+Verified on PGSD-bare-metal: kernel build clean (one
+pre-existing unused-function warning unrelated to the
+refactor), `kldload` succeeds, C.5 passes 26/26, D.6 passes
+14/14 (D.4 routing tests deferred to manual procedure per
+the existing D.6 verification protocol), and a manual
+pointer smoke test exercised hundreds of `pointer.motion`,
+`pointer.button_down`, and `pointer.button_up` events
+through the new substruct indirection without anomaly. The
+keyboard locate path was exercised at attach for three
+keyboard descriptors; the keyboard extract path was not
+exercised in smoke testing because PGSD-bare-metal's local
+keyboard goes through atkbd rather than HID, but the
+structural similarity to the pointer path (same access
+pattern, same field rename, same call-site conversion)
+makes a keyboard-only refactor bug vanishingly unlikely to
+have survived.
 
-This sub-stage produces no fuzzing capability on its own. It
-is purely a refactor that makes the next sub-stage possible.
+This sub-stage produced no fuzzing capability on its own.
+It is purely a refactor that makes AD-9.2 possible.
 
-#### AD-9.2: Userspace shim and build
+#### AD-9.2: Userspace shim and build *(pending)*
 
 Build infrastructure to compile inputfs's parser code in
 userspace alongside FreeBSD's `dev/hid/hid.c`.
@@ -214,7 +234,7 @@ good descriptor blob (extracted from a working USB mouse via
 `usbhidctl -r` or similar) processes without errors and
 exits 0.
 
-#### AD-9.3: Initial corpus
+#### AD-9.3: Initial corpus *(pending)*
 
 Hand-rolled malformed-input corpus exercising the documented
 error paths. Estimated 15-30 entries. Each entry is a binary
@@ -249,7 +269,7 @@ entry and summarises results.
 This sub-stage produces no expected bug findings. It produces
 the inputs against which AD-9.4 runs.
 
-#### AD-9.4: Run, fix, document
+#### AD-9.4: Run, fix, document *(pending)*
 
 Run the AD-9.3 harness against the AD-9.3 corpus. For each
 bug surfaced:
