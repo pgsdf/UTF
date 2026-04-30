@@ -856,7 +856,18 @@ and removes userspace semainputd as a component (see AD-2).
 
 **Status**: Stages A, B, C, and D complete (all eight Stage D
 sub-stages landed: D.0a, D.0b, D.1, D.2, D.3, D.4, D.5, D.6).
-Stage E (semainputd retirement, AD-2) is now possible.
+Two AD-1 sub-items remain post-Stage-D and keep this entry at
+`[~]` rather than `[x]`: chronofs `ts_sync` integration
+(small; no new hardware required; currently `ts_sync` is
+published as zero in every event, see `inputfs.c` line 57
+comment) and touch/pen event support (medium-large; requires
+touchscreen or pen tablet for bare-metal verification; the
+wire-format spec in `shared/INPUT_EVENTS.md` is complete and
+the role taxonomy in ADR 0004 covers both, but the
+HUP_DIGITIZERS parser implementation is the deferred work).
+Both items appear in their longer form near the end of this
+entry. Stage E (semainputd retirement, AD-2) is now
+possible; AD-9 hardening complete.
 
 Stage A delivered the proposal, foundations,
 `UTF_ARCHITECTURAL_DISCIPLINE.md`, ADRs 0001 through 0011, and
