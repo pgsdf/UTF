@@ -315,6 +315,15 @@ Deliverables:
   functions at the bottom of hid.c (lines 1036-1102)
   compile. These functions are not called by the harness;
   the stubs exist only to satisfy the compiler.
+  The eleven macros are the subset of methods declared in
+  FreeBSD's `/usr/src/sys/dev/hid/hid_if.m` that hid.c's
+  wrapper functions actually dispatch through; the kernel
+  build normally generates `hid_if.h` from the `.m` source
+  via `awk -f /usr/src/sys/tools/makeobjops.awk`. The shim
+  provides equivalents matching those method signatures
+  (each takes two `device_t` parameters plus method-specific
+  arguments) without dragging in the kobj/newbus
+  infrastructure.
 - `inputfs/test/fuzz/vendored/dev/hid/hid.c`: verbatim copy
   of FreeBSD's `/usr/src/sys/dev/hid/hid.c`.
 - `inputfs/test/fuzz/vendored/dev/hid/hid.h`: verbatim
