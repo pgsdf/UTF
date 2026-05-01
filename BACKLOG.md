@@ -1850,12 +1850,26 @@ relationships are all currently undeclared.
 
 **Sub-stages**:
 
-- **AD-12.1**: install.sh hardening for upgrade. Stop
-  services before copying binaries; copy to temp file
-  and rename for atomicity; restart services in the
-  correct order; skip restart if the service was not
-  previously running. Five-minute change, large
-  operator-experience improvement, no design questions.
+- **AD-12.1** *(landed, this commit)*: install.sh hardening
+  for upgrade. Stop services before copying binaries; copy
+  to temp file and rename for atomicity; restart services
+  in the correct order; skip restart if the service was not
+  previously running. The `stop_service_if_running` helper
+  uses `pgrep -x` (catches both rc.d-managed and direct
+  invocations), tries `service NAME stop` first, waits with
+  a 5-second timeout, falls through to SIGKILL on timeout.
+  The atomic-copy `install_bin` writes to a `.NEW.$$` temp
+  path then renames over the destination. The post-install
+  restart block restarts in dependency order (`semaaud`
+  before `semadraw` before `semainput`) regardless of the
+  order services were stopped in. Services that were not
+  running before the install are deliberately not started:
+  install.sh is an upgrade tool, not a "start everything"
+  tool. Also: BINARIES list grew to include `semadraw-term`
+  (terminal client documented in INSTALL.md Step 9) and
+  `inputdump` (inputfs diagnostic CLI), neither of which
+  was being installed despite documentation referencing
+  them.
 
 - **AD-12.2**: rc.d scripts declare REQUIRE/PROVIDE.
   install.sh's rc.d generators emit `# REQUIRE:` and

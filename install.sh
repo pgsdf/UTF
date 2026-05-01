@@ -30,7 +30,7 @@ CHECK_ONLY=0
 . "$SCRIPT_DIR/scripts/detect-os.sh"
 echo "Host OS: $UTF_OS $UTF_OS_VERSION"
 
-BINARIES="semaaud semainputd semadrawd chrono_dump"
+BINARIES="semaaud semainputd semadrawd chrono_dump semadraw-term inputdump"
 
 # ============================================================================
 # Argument parsing
@@ -223,12 +223,81 @@ echo ""
 echo "=== Installing to $PREFIX/bin/ ==="
 mkdir -p "$PREFIX/bin"
 
+# AD-12.1: Stop running daemons before replacing binaries.
+#
+# `cp` cannot replace a binary that is currently being executed (FreeBSD
+# returns ETXTBSY, "Text file busy"). The pre-AD-12.1 behaviour was to
+# bail out partway through the install with a confusing error, leaving
+# the operator to manually stop services and re-run install.sh. This
+# block records which services were running, stops them with
+# confirmation, and the corresponding restart block at the end of the
+# script brings them back. Services that were not running before the
+# install are left stopped.
+#
+# rc.d's "stop" subcommand sends SIGTERM and trusts the daemon to die.
+# We add a wait-with-timeout to confirm death; if a daemon does not
+# exit within RESTART_TIMEOUT seconds, we SIGKILL it and warn.
+#
+# Determining "is running" via `service NAME status` works regardless
+# of whether the operator started it via service or via direct
+# invocation: pgrep on the binary name catches both.
+SERVICES_TO_RESTART=""
+RESTART_TIMEOUT=5
+
+stop_service_if_running() {
+    svc="$1"   # rc.d service name (semaaud, semainput, semadraw)
+    bin="$2"   # binary name as it appears in `ps` (semaaud, semainputd, semadrawd)
+    if pgrep -x "$bin" >/dev/null 2>&1; then
+        echo "  stopping  $svc (was running)"
+        # Try the rc.d stop first; falls through to direct kill if rc.d
+        # path is missing or fails.
+        if [ -f "$PREFIX/etc/rc.d/$svc" ] || [ -f "/etc/rc.d/$svc" ]; then
+            service "$svc" stop >/dev/null 2>&1 || true
+        fi
+        # Wait for the process to actually die.
+        waited=0
+        while pgrep -x "$bin" >/dev/null 2>&1; do
+            if [ "$waited" -ge "$RESTART_TIMEOUT" ]; then
+                echo "  WARNING: $bin did not exit within ${RESTART_TIMEOUT}s, sending SIGKILL" >&2
+                pkill -9 -x "$bin" 2>/dev/null || true
+                sleep 1
+                break
+            fi
+            sleep 1
+            waited=$((waited + 1))
+        done
+        SERVICES_TO_RESTART="$SERVICES_TO_RESTART $svc"
+    fi
+}
+
+stop_service_if_running semadraw  semadrawd
+stop_service_if_running semainput semainputd
+stop_service_if_running semaaud   semaaud
+
+# install_bin: copy a built binary into PREFIX/bin atomically.
+#
+# The copy goes to a sibling temp path (.NEW suffix), gets its mode
+# set, then is renamed over the destination. rename(2) is atomic on
+# the same filesystem, so the destination is either the old version
+# (if anything before the rename failed) or the new version (if the
+# rename succeeded). Avoids partial-replacement states on disk-full,
+# operator interrupt, or other mid-copy failures.
 install_bin() {
     src="$1"
     dst="$PREFIX/bin/$(basename "$src")"
+    tmp="$dst.NEW.$$"
     if [ -f "$src" ]; then
-        cp "$src" "$dst"
-        chmod 755 "$dst"
+        cp "$src" "$tmp" || {
+            echo "  ERROR: cp $src $tmp failed" >&2
+            rm -f "$tmp"
+            return 1
+        }
+        chmod 755 "$tmp"
+        mv "$tmp" "$dst" || {
+            echo "  ERROR: mv $tmp $dst failed" >&2
+            rm -f "$tmp"
+            return 1
+        }
         echo "  installed  $dst"
     else
         echo "  WARNING: $src not found — skipping" >&2
@@ -239,6 +308,8 @@ install_bin "$SCRIPT_DIR/semaaud/zig-out/bin/semaaud"
 install_bin "$SCRIPT_DIR/semainput/zig-out/bin/semainputd"
 install_bin "$SCRIPT_DIR/semadraw/zig-out/bin/semadrawd"
 install_bin "$SCRIPT_DIR/chronofs/zig-out/bin/chrono_dump"
+install_bin "$SCRIPT_DIR/semadraw/zig-out/bin/semadraw-term"
+install_bin "$SCRIPT_DIR/inputfs/zig-out/bin/inputdump"
 
 # ============================================================================
 # rc.d scripts (FreeBSD service integration)
@@ -380,6 +451,34 @@ if grep -q "drawfs_load" "$LOADER_CONF" 2>/dev/null; then
 else
     echo "drawfs_load=\"YES\"" >> "$LOADER_CONF"
     echo "  added  drawfs_load=\"YES\" to $LOADER_CONF"
+fi
+
+# ============================================================================
+# Restart services that were running before the install
+# ============================================================================
+# AD-12.1: counterpart to the stop_service_if_running block earlier.
+# Services not previously running are deliberately not started — install.sh
+# is not a "start everything" tool, only an upgrade-while-preserving-state
+# tool.
+
+if [ -n "$SERVICES_TO_RESTART" ]; then
+    echo ""
+    echo "=== Restarting previously-running services ==="
+    # Restart in dependency order: semaaud (provides clock) before
+    # semadraw (consumes clock) before semainput (legacy, consumes
+    # semadraw). Order is intentional even though it does not match
+    # SERVICES_TO_RESTART's append order.
+    for svc in semaaud semadraw semainput; do
+        case " $SERVICES_TO_RESTART " in
+            *" $svc "*)
+                if service "$svc" start >/dev/null 2>&1; then
+                    echo "  started   $svc"
+                else
+                    echo "  WARNING: service $svc start failed" >&2
+                fi
+                ;;
+        esac
+    done
 fi
 
 # ============================================================================
