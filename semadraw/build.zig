@@ -574,7 +574,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "backend", .module = backend_mod },
-            .{ .name = "bsdinput", .module = bsdinput_mod },
             .{ .name = "input", .module = shared_input_mod },
         },
     });

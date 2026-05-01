@@ -49,12 +49,27 @@ proceed; UTF will not work correctly on a non-tmpfs `/var/run`.
 
 ## Step 2 — Install build dependencies
 
-Zig 0.15 or newer, plus tooling needed by drawfs and the kernel
-modules:
+Zig 0.15 or newer, plus tooling needed by drawfs and inputfs:
 
 ```
-sudo pkg install -y zig git gmake
+sudo pkg install -y zig git gmake rsync
 ```
+
+`rsync` is used by `drawfs/build.sh` and `inputfs/build.sh` to
+copy module sources into `/usr/src/sys/`. It is not in FreeBSD
+base. Without it, both kernel-module builds fail at the install
+step with `rsync: not found`.
+
+For the interactive backend selector in step 3.5 below, also
+install `bsddialog`:
+
+```
+sudo pkg install -y bsddialog
+```
+
+`bsddialog` is optional — `configure.sh` falls back to a plain
+text menu if it is absent — but the dialog menu is a clearer
+interface and is recommended.
 
 If you intend to build the PGSD kernel, also install the FreeBSD
 source tree:
@@ -89,6 +104,56 @@ ls
 Expect to see `README.md`, `BACKLOG.md`, `install.sh`, `start.sh`,
 `drawfs/`, `inputfs/`, `semadraw/`, `semaaud/`, `semainput/`,
 `chronofs/`, `shared/`, `pgsd-kernel/`.
+
+## Step 3.5 — Configure backend selection
+
+UTF's semadraw compositor has several optional backends — Vulkan,
+X11, Wayland, and bsdinput. On a fresh FreeBSD install without
+the supporting ports, attempting to build any of these fails with
+"unable to find dynamic system library" errors. The fix is to
+record an explicit backend selection in `.config` before
+building.
+
+For a bare-metal PGSD test machine running the drawfs backend
+exclusively, all four optional backends should be off:
+
+```
+sh configure.sh
+```
+
+In the dialog, leave all checkboxes unchecked and confirm.
+`configure.sh` writes `.config` in the repo root with the
+selections. `build.sh` and `install.sh` read `.config`
+automatically.
+
+You can also write `.config` directly without running the
+interactive script:
+
+```
+cat > .config <<'EOF'
+SEMADRAW_VULKAN=false
+SEMADRAW_X11=false
+SEMADRAW_WAYLAND=false
+SEMADRAW_BSDINPUT=false
+DRAWFS_DRM=false
+EOF
+```
+
+To enable a backend later, install its libraries
+(`vulkan-headers + vulkan-loader` for Vulkan, `libX11` for X11,
+`libwayland-client` for Wayland, `libinput + libudev-devd` for
+bsdinput, `drm-kmod` headers for the drawfs DRM/KMS backend),
+then re-run `sh configure.sh` and toggle the relevant boxes.
+
+**Verify:**
+
+```
+sh configure.sh --show
+```
+
+Expect to see the current configuration printed. If the file
+does not exist, configure.sh tells you so; do not proceed
+until `.config` is written.
 
 ## Step 4 — Build UTF userland
 
@@ -336,6 +401,32 @@ publication assumes tmpfs and may produce confusing failures
 degradation, file-mode mismatches) on a regular `/var/run`.
 Always confirm `mount | grep /var/run` shows `tmpfs` before
 proceeding.
+
+### Hazard 6 — Building without `.config` on a fresh FreeBSD install
+
+`semadraw`'s build defaults attempt to enable some optional
+backends (Vulkan, X11, bsdinput) when no `.config` file is
+present. On a fresh FreeBSD install without the supporting
+ports, the link step then fails with errors like:
+
+```
+error: unable to find dynamic system library 'vulkan' ...
+error: unable to find dynamic system library 'X11' ...
+error: unable to find dynamic system library 'input' ...
+error: unable to find dynamic system library 'udev' ...
+```
+
+The fix is to write `.config` before building, with all
+optional backends explicitly disabled. Step 3.5 covers this.
+
+A related symptom: missing `rsync` causes `drawfs/build.sh`
+and `inputfs/build.sh` to fail at the install step with
+`rsync: not found`. rsync is not in FreeBSD base; install it
+explicitly per Step 2.
+
+If you hit either failure mode mid-install, the fix is in the
+build inputs (write `.config`, install `rsync`); no system
+state needs to be unwound. Re-run `sudo sh install.sh`.
 
 ## Recovery checklist
 

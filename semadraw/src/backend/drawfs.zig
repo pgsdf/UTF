@@ -1,7 +1,6 @@
 const std = @import("std");
 const posix = std.posix;
 const backend = @import("backend");
-const bsdinput = @import("bsdinput");
 const inputfs_input = @import("inputfs_input.zig");
 
 const log = std.log.scoped(.drawfs_backend);
@@ -313,15 +312,15 @@ pub const DrawfsBackend = struct {
     /// last_button_state gives the transitions to synthesize.
     last_button_state: u32 = 0,
 
-    // Retained for ABI compatibility with the Backend vtable. Always null
-    // under -b drawfs — input arrives via the inputfs event ring (Phase 1
-    // of AD-2a; see inputfs/docs/STAGE_E/PHASE_1.md), not via a local
-    // evdev/libinput reader. See init() for the rationale.
-    input: ?*bsdinput.BsdInput,
-
     /// inputfs ring reader. Populated by init() if /var/run/sema/input/events
     /// is present and valid; null otherwise (compositor still starts but
     /// receives no input from inputfs). Drained once per pollEventsImpl.
+    ///
+    /// Replaces the previous `input: ?*bsdinput.BsdInput` field that was
+    /// retained as vestigial through Phase 1's first commit; that field
+    /// was always null under -b drawfs (input always arrived via the
+    /// drawfs-injection path before Phase 1, and via the inputfs ring
+    /// after) and is no longer carried.
     inputfs: ?inputfs_input.InputfsInput,
 
     const Self = @This();
@@ -348,7 +347,6 @@ pub const DrawfsBackend = struct {
             .frame_count = 0,
             .render_state = .{},
             .read_buf = undefined,
-            .input = null,
             .inputfs = null,
             .efifb_width  = 0,
             .efifb_height = 0,
@@ -391,7 +389,6 @@ pub const DrawfsBackend = struct {
         // compositor still starts; input simply does not arrive from
         // this source. The legacy DRAWFSGIOC_INJECT_INPUT path is
         // unconsumed in Phase 1 and will be deleted in Phase 3.
-        self.input = null;
         self.inputfs = inputfs_input.InputfsInput.init();
 
         return self;
@@ -800,11 +797,6 @@ pub const DrawfsBackend = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        // Cleanup evdev input
-        if (self.input) |inp| {
-            inp.deinit();
-        }
-
         // Cleanup inputfs ring reader
         if (self.inputfs) |*ifs| {
             ifs.deinit();
