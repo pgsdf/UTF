@@ -1543,6 +1543,78 @@ One bug found and fixed (button-bitmap truncation in
 regression gate for future parser changes. AD-2 is now
 unblocked.
 
+### `[ ]` AD-10: drawfs negotiates framebuffer ownership with `vt(4)`  *(Open, Medium)*
+
+**Tracks**: `drawfs/dev/drawfs/drawfs_efifb.c` and a new ADR
+to be written.
+
+When drawfs maps the EFI framebuffer for its own use,
+FreeBSD's `vt(4)` console keeps writing to the same
+physical memory. Boot messages, daemon startup logs, and
+`dmesg` entries written after semadrawd takes over flash
+across the screen behind the UTF surface, and typing into
+semadraw-term may produce visible artifacts as `vt(4)`
+redraws its scrollback over the just-rendered cells.
+
+**Operator workaround**: `sudo conscontrol mute on` silences
+the console immediately without restarting any daemon. This
+is documented in INSTALL.md Hazard 7 and is the recommended
+mitigation until AD-10 lands.
+
+**Why this is structural, not a quick fix**: `vt(4)` and
+drawfs both believe they own the framebuffer. Neither side
+currently performs the handshake that would make ownership
+exclusive. X11 servers do this with the FreeBSD-specific
+`VT_GETMODE` / `VT_SETMODE` ioctl pair (process-controlled
+VT switching with `VT_PROCESS` mode and `VT_RELDISP`
+acknowledgements). Wayland compositors do the same thing.
+UTF needs the same dance — but at the drawfs layer rather
+than per-client, since drawfs is the framebuffer owner from
+the kernel's perspective.
+
+**Sub-stages** (sketch, to be expanded in the ADR):
+
+- AD-10.1: write the ADR. Capture the design space, why
+  drawfs is the right layer for the takeover (versus
+  per-client), and the lifecycle: who acquires, who releases,
+  what happens on crash.
+- AD-10.2: implement `VT_PROCESS`-mode acquisition in
+  drawfs's efifb attach. Drawfs registers itself as the VT
+  owner via `VT_SETMODE`, suspends `vt(4)` output, and
+  unmaps the console's framebuffer view. Release on
+  drawfs unload or panic-recovery.
+- AD-10.3: handle the VT-switch signals (`SIGUSR1` /
+  `SIGUSR2` in classic Linux semantics; FreeBSD uses a
+  similar but not identical model). Drawfs needs to
+  cooperate with operator-initiated VT switches if any
+  remain meaningful in a UTF system, or document why it
+  doesn't.
+- AD-10.4: bare-metal verification. Boot, take over, write
+  to dmesg from another SSH session, confirm no flashes
+  appear in the UTF surface. Reverse: release ownership,
+  confirm `vt(4)` resumes drawing correctly.
+
+**Risks**: getting this wrong manifests as either
+(a) `vt(4)` and drawfs both drawing (the current state,
+visible flashing), or (b) neither drawing (black screen,
+no recovery without serial or SSH). The latter is worse.
+Test with serial console available, or with `conscontrol
+mute on` already set as a fallback so the failure mode is
+the milder one.
+
+**Depends on**: nothing structural. Can land anytime.
+Practical ordering: lower priority than AD-2 Phase 2/3
+(libsemainput extraction and semainputd retirement), since
+AD-10 is a cosmetic/operator-experience fix while AD-2
+closes a substrate-level architectural debt.
+
+**Discovered**: bare-metal verification on 2026-05-02.
+Symptom: kernel log messages flashing across the screen
+behind semadraw-term during the first end-to-end Phase 1
+test. Workaround verified on the same session: `conscontrol
+mute on` silenced the console without disturbing the
+already-running compositor.
+
 ### Priority
 
 Rough priority ordering within this section, not strict:
@@ -1562,8 +1634,11 @@ Rough priority ordering within this section, not strict:
 5. **AD-5, AD-7**: small doc tasks; make the discipline honest.
 6. **AD-6**: small-medium; applies the discipline's verification
    rule to existing code.
-7. **AD-3**: large; not scheduled.
-8. **AD-4**: largest; not scheduled.
+7. **AD-10**: medium; cosmetic/operator-experience fix for
+   `vt(4)` console writing through the drawfs surface. Workaround
+   exists (`conscontrol mute on`); structural fix can wait.
+8. **AD-3**: large; not scheduled.
+9. **AD-4**: largest; not scheduled.
 
 "Not scheduled" here means: no commitment to start, no commitment to
 an outcome date, but explicitly tracked so the discipline's forward

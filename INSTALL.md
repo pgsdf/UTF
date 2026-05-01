@@ -308,6 +308,20 @@ skipped the install step.)
 A terminal should appear on the framebuffer. Mouse and keyboard
 should respond. If they don't, see Hazard 2.
 
+If kernel log messages flash across the screen behind the
+terminal — boot output, daemon startup lines, occasional dmesg
+entries — that's the FreeBSD console (vt(4)) writing to the
+same framebuffer drawfs is presenting on. To silence it for
+the current session:
+
+```
+sudo conscontrol mute on
+```
+
+This is a workaround, not a fix. See Hazard 7 for the longer
+explanation, and BACKLOG.md AD-10 for the structural item that
+will eventually make this unnecessary.
+
 ## Hazards
 
 These are mistakes that have actually caused install-time crashes
@@ -427,6 +441,44 @@ explicitly per Step 2.
 If you hit either failure mode mid-install, the fix is in the
 build inputs (write `.config`, install `rsync`); no system
 state needs to be unwound. Re-run `sudo sh install.sh`.
+
+### Hazard 7 — Kernel console writes to the same framebuffer
+
+When semadraw-term (or any drawfs client) draws to the EFI
+framebuffer, the FreeBSD console (vt(4)) is still writing to
+that same physical memory. Boot messages, daemon startup output,
+and any dmesg entries written after semadrawd takes over will
+flash across the screen behind the UTF surface. Typing into
+semadraw-term may also produce visible artifacts as vt(4)
+redraws its scrollback.
+
+This is not a UTF bug per se — drawfs maps the framebuffer for
+its own use but does not negotiate exclusive ownership with
+vt(4). A real UTF session needs that handshake (see BACKLOG.md
+AD-10). Until that lands, the workaround is to mute the console:
+
+```
+sudo conscontrol mute on
+```
+
+Effect is immediate; no semadraw-term restart needed. To
+re-enable kernel console output later:
+
+```
+sudo conscontrol mute off
+```
+
+The mute setting does not persist across reboots. If you want
+it on at every boot, add to `/etc/rc.local`:
+
+```
+conscontrol mute on
+```
+
+Note that muting the console hides legitimate kernel diagnostic
+output — panics, driver warnings, etc. — so do this only on a
+machine where you have SSH access to read dmesg from another
+session.
 
 ## Recovery checklist
 
