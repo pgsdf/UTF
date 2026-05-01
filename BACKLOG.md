@@ -1762,6 +1762,175 @@ discipline grounds for "replace entirely" are real and
 deserve explicit documentation rather than implicit
 acceptance.
 
+### `[~]` AD-12: Service lifecycle: starts, stops, and dependency ordering  *(In progress, Medium)*
+
+**Tracks**: `install.sh` rc.d generation, `start.sh`,
+`inputfs/` (no rc.d service today), and a future ADR
+covering daemon-under-dependency-absence behaviour.
+
+UTF's daemons (`semaaud`, `semainput`, `semadrawd`) and
+kernel modules (`drawfs`, `inputfs`) have real ordering
+relationships — clock publication, surface ownership,
+event ring consumption — that are not declared anywhere
+the operating system can act on. Friday's bare-metal
+verification (2026-05-02) surfaced four distinct symptoms
+that all share the same root cause: services start without
+their preconditions in place, stop without confirming
+death, and accumulate as zombies across debug cycles.
+
+**Symptoms observed** during 2026-05-02 verification:
+
+1. **Zombie semadrawd accumulation across debug sessions.**
+   Multiple foreground `sudo semadrawd -b drawfs` invocations
+   from earlier debug cycles never died on Ctrl+C. Each
+   subsequent service start added another semadrawd to
+   `sockstat -u`, each bound to the same socket path.
+   Bug 1's fix (commit `f7c71af`) prevents the *symptom*
+   (silent displacement) but does not address the orphaning.
+   The orphaning is itself a lifecycle problem: stop happens,
+   the daemon does not actually die, the next start spawns
+   alongside it.
+
+2. **`install.sh` "Text file busy" on running daemons.**
+   `cp` cannot replace a binary that is currently being
+   executed. `install.sh` does not stop services before
+   replacing their binaries, so an upgrade workflow requires
+   the operator to stop services manually, run `install.sh`,
+   then start services manually. The operator-side dance
+   is unnecessary.
+
+3. **rc.d daemon-wrapper edge cases.** `service status` on
+   2026-05-02 claimed `semadrawd is running as pid X` while
+   `sockstat -u` showed no listener and `lsof` showed no
+   process holding the socket fd. The daemon process existed
+   but was hot-spinning with no useful work — possibly a
+   poll race between fork and bind under `daemon -f`'s
+   stdio redirection. We never fully understood this; the
+   workaround was to kill the wrapper and run semadrawd in
+   the foreground.
+
+4. **"Bug 4": input dead and rendering stuck.** End of
+   session 2026-05-02. semadraw-term reaches "session 1
+   started", surface allocates, but no rendering and no
+   input acceptance. Plausibly a service-ordering issue:
+   semadrawd connected before inputfs had attached devices
+   or before keystrokes started flowing through the ring,
+   and the compositor sat in a state where input was
+   nominally enabled but no event delivery happened.
+
+These symptoms are not bugs in the daemons themselves.
+They are bugs in the *lifecycle* — what happens during
+start, what happens during stop, what each daemon does
+when its preconditions are absent.
+
+**The dependency graph that should be declared:**
+
+```
+drawfs.ko        (loaded by /boot/loader.conf at boot)
+   |
+   v
+semadrawd        REQUIRE: FILESYSTEMS
+   ^
+   |
+inputfs.ko       (currently /etc/rc.local; should be rc.d)
+   ^
+   |
+semaaud          REQUIRE: FILESYSTEMS  PROVIDES: utf_clock
+   ^                                   (via /var/run/sema/clock)
+   |
+semadrawd        REQUIRE: utf_clock inputfs_loaded
+   |
+   v
+semainputd       REQUIRE: semadraw    (legacy; retiring under AD-2)
+```
+
+The drawfs.ko load happens at loader time, so all rc.d
+services are guaranteed to start after it. The other
+relationships are all currently undeclared.
+
+**Sub-stages**:
+
+- **AD-12.1**: install.sh hardening for upgrade. Stop
+  services before copying binaries; copy to temp file
+  and rename for atomicity; restart services in the
+  correct order; skip restart if the service was not
+  previously running. Five-minute change, large
+  operator-experience improvement, no design questions.
+
+- **AD-12.2**: rc.d scripts declare REQUIRE/PROVIDE.
+  install.sh's rc.d generators emit `# REQUIRE:` and
+  `# PROVIDE:` lines per FreeBSD rc.d conventions.
+  `semaaud` provides `utf_clock`; `semadrawd` requires
+  `utf_clock` and `FILESYSTEMS`; `semainputd` requires
+  `semadraw`. The dependency graph above gets written
+  as actual rc.d metadata, and `rcorder(8)` orders
+  things deterministically.
+
+- **AD-12.3**: rc.d service for inputfs.
+  `inputfs/rc.d/inputfs` modelled on `drawfs`'s
+  loader.conf entry but as an rc.d service to avoid
+  the AT_FDCWD early-boot panic (Hazard 1).
+  `REQUIRE: FILESYSTEMS`, `BEFORE: semadraw semainput`.
+  install.sh installs it; INSTALL.md drops the manual
+  /etc/rc.local recipe in favour of the service.
+
+- **AD-12.4**: stop-with-confirmation. rc.d stop scripts
+  send SIGTERM, wait with timeout (e.g. 5 seconds),
+  send SIGKILL on timeout, reap. Today's stop scripts
+  send SIGTERM and trust the daemon to die; if it
+  doesn't, the service is reported as stopped while
+  the process keeps running.
+
+- **AD-12.5**: daemon-under-dependency-absence ADR.
+  Decide what each daemon does when a dependency is
+  missing: retry with backoff, exit cleanly so rc.d can
+  restart, or run in clearly-marked degraded mode. This
+  is the question Friday's "Bug 4" surfaces — semadrawd
+  reaching "session 1 started" but doing nothing useful
+  is the worst of the three options. The ADR resolves
+  this for all UTF daemons uniformly.
+
+- **AD-12.6**: bare-metal verification. Boot a clean
+  PGSD system, observe rc.d ordering produces correct
+  starts. Verify install.sh upgrades work without
+  manual stop/start dance. Verify SIGTERM-then-SIGKILL
+  stop behavior. Run the deliberate-misordering case
+  (start semadrawd before inputfs is loaded) and
+  confirm degraded-mode behaviour matches the ADR.
+
+**What this entry does not claim**:
+
+- It does not claim Bugs 2, 3, or 4 from 2026-05-02 are
+  *all* lifecycle issues. Bug 2 (semadraw-term putChar
+  panic) is plausibly a screen.zig off-by-one that
+  reproduces on certain timings; Bug 3 (`/bin/sh`
+  silent exit) is plausibly TIOCSCTTY semantics. Both
+  may be lifecycle-adjacent (they reproduce only when
+  certain timing happens), but they have their own
+  investigation paths separate from AD-12. AD-12
+  addresses the *class* of issues that arise when
+  daemons start without preconditions; some specific
+  bugs may dissolve as a side effect, but that's not
+  AD-12's commitment.
+
+- It does not propose replacing FreeBSD's rc.d
+  framework. rc.d is the platform mechanism for
+  service ordering and UTF accepts it as platform
+  transport. AD-12 makes UTF use rc.d *correctly*
+  rather than working around it.
+
+- It does not commit AD-12 to landing before AD-2
+  Phase 2/3 (libsemainput extraction, semainputd
+  retirement). AD-12.1 is small enough to land
+  immediately; the larger sub-stages can interleave
+  with AD-2 work as scheduling permits.
+
+**Discovered**: bare-metal verification 2026-05-02
+surfaced symptoms 1-4 above. Discussion 2026-05-04
+named the common root cause and filed this entry.
+The naming itself is the first piece of work; the
+sub-stages are the next.
+
 ### Priority
 
 Rough priority ordering within this section, not strict:
@@ -1784,9 +1953,14 @@ Rough priority ordering within this section, not strict:
 7. **AD-10**: medium; cosmetic/operator-experience fix for
    `vt(4)` console writing through the drawfs surface. Workaround
    exists (`conscontrol mute on`); structural fix can wait.
-8. **AD-3**: large; not scheduled.
-9. **AD-4**: largest; not scheduled.
-10. **AD-11**: large; not scheduled. Long-term replacement of
+8. **AD-12**: medium; service lifecycle (rc.d ordering, install.sh
+   stop-before-copy, inputfs as rc.d service, daemon-under-
+   dependency-absence ADR). In progress; AD-12.1 (install.sh
+   hardening) lands first as it removes the most painful
+   recurring operator pain point.
+9. **AD-3**: large; not scheduled.
+10. **AD-4**: largest; not scheduled.
+11. **AD-11**: large; not scheduled. Long-term replacement of
     `vt(4)` for UTF sessions; depends on AD-10 working and on
     AD-4 progress. Filed as documented direction; may stay open
     indefinitely if AD-10's cooperation model proves sufficient.
