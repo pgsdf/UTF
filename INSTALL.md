@@ -247,35 +247,36 @@ The last command is a check, not a setup step: if it produces
 output, something added `inputfs_load` and it must be removed
 before the next reboot.
 
-## Step 7 — Load kernel modules
+## Step 7 — Load drawfs
 
-Load drawfs first, then inputfs. Order matters because of
-attachment timing.
+drawfs loads automatically at next boot via `/boot/loader.conf`
+(install.sh writes this). To load it now without rebooting:
 
 ```
 sudo kldload drawfs
-sudo kldload inputfs
 ```
 
 **Verify:**
 
 ```
-kldstat | grep -E "drawfs|inputfs"
+kldstat | grep drawfs
 ```
 
-Both modules must be listed. If either fails to load, run
-`dmesg | tail -50` and read the error.
+If `kldload drawfs` fails, run `dmesg | tail -50` and read the
+error.
 
-If `kldload inputfs` reports "module already loaded" but `kldstat`
-does not list it, something attempted to load it from
-`loader.conf` — see Hazard 1.
+inputfs is *not* loaded here. inputfs is loaded by its rc.d service,
+which is started in Step 8. inputfs cannot be loaded via
+`/boot/loader.conf` (see Hazard 1) and must wait until `/var/run`
+is mounted.
 
-## Step 8 — Start daemons
+## Step 8 — Start UTF services
 
 ```
+sudo service inputfs start
 sudo service semaaud start
-sudo service semainputd start
-sudo service semadrawd start
+sudo service semainput start
+sudo service semadraw start
 ```
 
 Or use the all-in-one script:
@@ -284,17 +285,26 @@ Or use the all-in-one script:
 sudo sh start.sh
 ```
 
+The order matters: inputfs publishes `/var/run/sema/input/{state,events}`
+that semadrawd opens at startup, and semaaud publishes the audio clock
+that semadrawd reads. Starting in the order above produces a
+correctly-initialised stack. install.sh sets `BEFORE: semadraw semainput`
+on the inputfs rc.d script and `BEFORE:` chains on the others, so
+`rcorder(8)` enforces the same order at boot — the explicit ordering
+above is for the manual case.
+
 **Verify:**
 
 ```
+kldstat | grep -E "drawfs|inputfs"
 service semaaud status
-service semainputd status
-service semadrawd status
+service semainput status
+service semadraw status
 ls /var/run/sema/clock /var/run/sema/input/state /var/run/sema/input/events
 ```
 
-All daemons should report running, and the four shared-memory
-regions should exist.
+Both kernel modules should be listed, all daemons should report
+running, and the shared-memory regions should exist.
 
 ## Step 9 — Run something
 
@@ -341,17 +351,31 @@ not a quick fix.
 `drawfs_load="YES"` is fine and is what `install.sh` adds. Only
 inputfs has the early-boot crash.
 
-If you want inputfs loaded automatically at boot, add to
-`/etc/rc.local` instead:
+inputfs is loaded by its dedicated rc.d service, installed by
+`install.sh` to `/usr/local/etc/rc.d/inputfs`. The script declares
+`REQUIRE: FILESYSTEMS` and `BEFORE: semadraw semainput`, so
+`rcorder(8)` runs `kldload inputfs` after `/var/run` is mounted
+(no early-boot crash) and before the daemons that consume the
+inputfs ring.
+
+The service is enabled in `/etc/rc.conf` as `inputfs_enable="YES"`
+during install. To start it without rebooting:
 
 ```
-kldload inputfs
+sudo service inputfs start
 ```
 
-`rc.local` runs late in boot, after filesystems are mounted.
+Older installs of UTF and an earlier draft of this hazard
+recommended adding `kldload inputfs` to `/etc/rc.local`. That
+recipe is superseded by the rc.d service. If you have an
+`/etc/rc.local` line from a previous install, remove it; the
+rc.d service is the supported path.
 
-A proper rc.d service for inputfs with `REQUIRE: FILESYSTEMS`
-ordering is the right long-term shape but is not yet written.
+The kernel-side fix that would let inputfs load from
+`loader.conf` (defer the publication kthread's first mkdir
+until rootfs is mounted via `mountroothold_register`, or
+refuse to load when the `cold` flag is set) is its own
+backlog item, not landed.
 
 ### Hazard 2 — Input may not work if HID drivers compete with inputfs
 

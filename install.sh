@@ -101,7 +101,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
     done
 
     RCDDIR="$PREFIX/etc/rc.d"
-    for svc in semaaud semainput semadraw; do
+    for svc in inputfs semaaud semainput semadraw; do
         target="$RCDDIR/$svc"
         if [ -f "$target" ]; then
             rm -f "$target"
@@ -113,7 +113,8 @@ if [ "$UNINSTALL" -eq 1 ]; then
 
     echo ""
     echo "=== Disabling daemons in /etc/rc.conf ==="
-    sysrc -x semaaud_enable 2>/dev/null  && echo "  removed  semaaud_enable"  || echo "  skip     semaaud_enable (not set)"
+    sysrc -x inputfs_enable 2>/dev/null   && echo "  removed  inputfs_enable"   || echo "  skip     inputfs_enable (not set)"
+    sysrc -x semaaud_enable 2>/dev/null   && echo "  removed  semaaud_enable"   || echo "  skip     semaaud_enable (not set)"
     sysrc -x semainput_enable 2>/dev/null && echo "  removed  semainput_enable" || echo "  skip     semainput_enable (not set)"
     sysrc -x semadraw_enable 2>/dev/null  && echo "  removed  semadraw_enable"  || echo "  skip     semadraw_enable (not set)"
 
@@ -243,7 +244,20 @@ mkdir -p "$PREFIX/bin"
 # of whether the operator started it via service or via direct
 # invocation: pgrep on the binary name catches both.
 SERVICES_TO_RESTART=""
+INPUTFS_WAS_LOADED=0
 RESTART_TIMEOUT=5
+
+# Note inputfs's load state before we touch anything. inputfs.ko is a
+# kernel module, not a userland daemon: the file on disk can be replaced
+# while it's loaded (the running module keeps using its in-memory image),
+# so we don't need to unload it for the binary install. But if the
+# operator has already started using inputfs and they're running this
+# install.sh to upgrade userland, the post-install restart block should
+# restart inputfs too — bumping it onto the new module file gives them
+# the upgrade they probably wanted.
+if kldstat -q -m inputfs 2>/dev/null; then
+    INPUTFS_WAS_LOADED=1
+fi
 
 stop_service_if_running() {
     svc="$1"   # rc.d service name (semaaud, semainput, semadraw)
@@ -321,6 +335,71 @@ if [ -d /etc/rc.d ] || [ -d "$RCDDIR" ]; then
     echo ""
     echo "=== Installing rc.d service scripts to $RCDDIR/ ==="
     mkdir -p "$RCDDIR"
+
+    cat > "$RCDDIR/inputfs" << RCEOF
+#!/bin/sh
+# PROVIDE: inputfs
+# REQUIRE: FILESYSTEMS
+# BEFORE: semadraw semainput
+# KEYWORD: shutdown
+
+# AD-12.3: rc.d service for inputfs.
+#
+# inputfs cannot be loaded via /boot/loader.conf because the module's
+# kthread starts publishing state files before /var before /var/run is
+# mounted, panicking on AT_FDCWD. INSTALL.md Hazard 1 documents this.
+# This rc.d service deferred load to userland-startup time avoids the
+# bug: REQUIRE: FILESYSTEMS guarantees /var/run is mounted before
+# kldload runs.
+#
+# BEFORE: semadraw semainput ensures the inputfs ring exists in
+# /var/run/sema/input/{state,events} before any daemon that reads it
+# starts. semadrawd's drawfs backend (post-AD-2a Phase 1) opens the
+# events ring during init; without it, the daemon runs in a degraded
+# mode with no input event delivery, which is the failure mode that
+# surfaced 2026-05-02 as 'Bug 4'.
+
+. /etc/rc.subr
+name="inputfs"
+rcvar="inputfs_enable"
+: \${inputfs_enable:="NO"}
+
+start_cmd="inputfs_start"
+stop_cmd="inputfs_stop"
+status_cmd="inputfs_status"
+
+inputfs_start() {
+    if kldstat -q -m inputfs; then
+        echo "\${name} already loaded."
+        return 0
+    fi
+    echo "Loading \${name}."
+    kldload inputfs
+}
+
+inputfs_stop() {
+    if ! kldstat -q -m inputfs; then
+        echo "\${name} not loaded."
+        return 0
+    fi
+    echo "Unloading \${name}."
+    kldunload inputfs
+}
+
+inputfs_status() {
+    if kldstat -q -m inputfs; then
+        echo "\${name} is loaded."
+    else
+        echo "\${name} is not loaded."
+        return 1
+    fi
+}
+
+load_rc_config \$name
+run_rc_command "\$1"
+RCEOF
+    chmod 555 "$RCDDIR/inputfs"
+    echo "  installed  $RCDDIR/inputfs"
 
     cat > "$RCDDIR/semaaud" << RCEOF
 #!/bin/sh
@@ -435,6 +514,7 @@ RCEOF
 
     echo ""
     echo "=== Enabling daemons in /etc/rc.conf ==="
+    sysrc inputfs_enable="YES"
     sysrc semaaud_enable="YES"
     sysrc semainput_enable="YES"
     sysrc semadraw_enable="YES"
@@ -457,18 +537,38 @@ fi
 # ============================================================================
 # Restart services that were running before the install
 # ============================================================================
-# AD-12.1: counterpart to the stop_service_if_running block earlier.
-# Services not previously running are deliberately not started — install.sh
-# is not a "start everything" tool, only an upgrade-while-preserving-state
+# AD-12.1 and AD-12.3 counterpart to the stop_service_if_running block
+# earlier. Services not previously running are deliberately not started:
+# install.sh is an upgrade-preserving-state tool, not a "start everything"
 # tool.
 
-if [ -n "$SERVICES_TO_RESTART" ]; then
+if [ "$INPUTFS_WAS_LOADED" -eq 1 ] || [ -n "$SERVICES_TO_RESTART" ]; then
     echo ""
     echo "=== Restarting previously-running services ==="
-    # Restart in dependency order: semaaud (provides clock) before
-    # semadraw (consumes clock) before semainput (legacy, consumes
-    # semadraw). Order is intentional even though it does not match
-    # SERVICES_TO_RESTART's append order.
+
+    # AD-12.3: restart inputfs first if it was loaded before. inputfs
+    # publishes /var/run/sema/input/{state,events}; semadrawd's drawfs
+    # backend opens those files at init. Restarting inputfs after
+    # semadrawd would leave semadrawd holding a stale ring view.
+    # Bump-the-module-onto-the-new-image is a kldunload-then-kldload,
+    # since we need the userland daemons stopped first (they have the
+    # event ring mmapped) — the AD-12.1 stop block already stopped them
+    # if they were running.
+    if [ "$INPUTFS_WAS_LOADED" -eq 1 ]; then
+        if kldstat -q -m inputfs 2>/dev/null; then
+            kldunload inputfs 2>/dev/null && echo "  unloaded  inputfs (for refresh)" \
+                || echo "  WARNING: kldunload inputfs failed; module may still be in use" >&2
+        fi
+        if kldload inputfs 2>/dev/null; then
+            echo "  loaded    inputfs"
+        else
+            echo "  WARNING: kldload inputfs failed" >&2
+        fi
+    fi
+
+    # AD-12.1: dependency order for userland daemons.
+    # semaaud (provides utf_clock) before semadraw (consumes clock)
+    # before semainput (legacy, consumes semadraw).
     for svc in semaaud semadraw semainput; do
         case " $SERVICES_TO_RESTART " in
             *" $svc "*)
@@ -498,17 +598,13 @@ for bin in $BINARIES; do
 done
 echo ""
 echo "drawfs will load automatically at next boot (loader.conf)."
-echo "inputfs must be loaded manually after boot (see INSTALL.md hazard 1)."
-echo "Daemons will start automatically at next boot (rc.conf)."
+echo "inputfs and the daemons will start automatically at next boot (rc.conf)."
 echo ""
 echo "To start now without rebooting:"
 echo "  kldload drawfs"
-echo "  kldload inputfs"
+echo "  service inputfs start"
 echo "  service semaaud start"
 echo "  service semainput start"
 echo "  service semadraw start"
-echo ""
-echo "To load inputfs at boot, add to /etc/rc.local:"
-echo "  kldload inputfs"
 echo ""
 echo "To remove:  sh install.sh --uninstall --prefix $PREFIX"

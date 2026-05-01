@@ -1880,13 +1880,24 @@ relationships are all currently undeclared.
   as actual rc.d metadata, and `rcorder(8)` orders
   things deterministically.
 
-- **AD-12.3**: rc.d service for inputfs.
-  `inputfs/rc.d/inputfs` modelled on `drawfs`'s
-  loader.conf entry but as an rc.d service to avoid
-  the AT_FDCWD early-boot panic (Hazard 1).
-  `REQUIRE: FILESYSTEMS`, `BEFORE: semadraw semainput`.
-  install.sh installs it; INSTALL.md drops the manual
-  /etc/rc.local recipe in favour of the service.
+- **AD-12.3** *(landed, this commit)*: rc.d service for
+  inputfs. `install.sh` now generates
+  `/usr/local/etc/rc.d/inputfs` with `REQUIRE: FILESYSTEMS`
+  (so `kldload` runs only after `/var/run` is mounted,
+  avoiding Hazard 1's early-boot panic) and
+  `BEFORE: semadraw semainput` (so `rcorder(8)` runs
+  inputfs before the daemons that read its ring). Enables
+  `inputfs_enable="YES"` in `/etc/rc.conf`. install.sh's
+  AD-12.1 stop-and-restart sequence detects whether
+  inputfs was loaded before the install and, if so, does
+  `kldunload` then `kldload` after the userland daemons
+  stop and before they restart, so semadrawd is never left
+  holding a stale ring view. INSTALL.md Step 7 reduced to
+  just drawfs; Step 8 starts inputfs alongside the
+  daemons. Hazard 1 rewritten to point at the rc.d
+  service as the supported path; the
+  `kldload inputfs` in `/etc/rc.local` recipe explicitly
+  superseded.
 
 - **AD-12.4**: stop-with-confirmation. rc.d stop scripts
   send SIGTERM, wait with timeout (e.g. 5 seconds),

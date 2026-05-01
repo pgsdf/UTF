@@ -136,12 +136,17 @@ case "$cmd" in
         echo "OK: deploy (via make install)"
         kldxref /boot/modules
         echo ""
-        echo "To load now (manual, post-boot only): kldload inputfs"
-        echo "WARNING: do NOT add inputfs_load=\"YES\" to /boot/loader.conf;"
-        echo "         see INSTALL.md hazard 1."
-        echo ""
-        echo "To load at boot, add to /etc/rc.local:"
-        echo "    kldload inputfs"
+        if [ -f /usr/local/etc/rc.d/inputfs ]; then
+            echo "To load now:           service inputfs start"
+            echo "Loaded automatically at boot via rc.d (installed by install.sh)."
+        else
+            echo "To load now (manual): kldload inputfs"
+            echo "WARNING: do NOT add inputfs_load=\"YES\" to /boot/loader.conf;"
+            echo "         see INSTALL.md hazard 1."
+            echo ""
+            echo "Run install.sh to set up the rc.d service so inputfs starts"
+            echo "automatically at boot (REQUIRE: FILESYSTEMS, AD-12.3)."
+        fi
         exit 0
     fi
 
@@ -180,12 +185,17 @@ case "$cmd" in
     kldxref /boot/modules
     echo "OK: deploy"
     echo ""
-    echo "To load now (manual, post-boot only): kldload inputfs"
-    echo "WARNING: do NOT add inputfs_load=\"YES\" to /boot/loader.conf;"
-    echo "         see INSTALL.md hazard 1."
-    echo ""
-    echo "To load at boot, add to /etc/rc.local:"
-    echo "    kldload inputfs"
+    if [ -f /usr/local/etc/rc.d/inputfs ]; then
+        echo "To load now:           service inputfs start"
+        echo "Loaded automatically at boot via rc.d (installed by install.sh)."
+    else
+        echo "To load now (manual): kldload inputfs"
+        echo "WARNING: do NOT add inputfs_load=\"YES\" to /boot/loader.conf;"
+        echo "         see INSTALL.md hazard 1."
+        echo ""
+        echo "Run install.sh to set up the rc.d service so inputfs starts"
+        echo "automatically at boot (REQUIRE: FILESYSTEMS, AD-12.3)."
+    fi
     ;;
 
   unload)
