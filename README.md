@@ -211,6 +211,11 @@ UTF targets PGSD-on-FreeBSD 15.0-RELEASE. Beyond a working FreeBSD installation,
 two system-level configuration items are required for the daemons and kernel
 modules to operate correctly.
 
+For an end-to-end walkthrough of installing UTF on a fresh FreeBSD system,
+including hazards that have actually broken installs (in particular: do
+not add `inputfs_load="YES"` to `/boot/loader.conf`), see
+[`INSTALL.md`](INSTALL.md).
+
 ### `/var/run` must be tmpfs
 
 Several UTF components publish state to userland via shared-memory regions
