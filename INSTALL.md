@@ -499,10 +499,48 @@ it on at every boot, add to `/etc/rc.local`:
 conscontrol mute on
 ```
 
+**Boot-time mute has a real operational cost: the vt(4)
+login prompt is also invisible.** With `conscontrol mute on`
+in `/etc/rc.local`, the physical console comes up dark — no
+login prompt, no boot messages, nothing. SSH access becomes
+the only login path. Verified on 2026-05-04: a freshly
+rebooted PGSD machine with the rc.local mute in place could
+not be logged into from the keyboard until SSH'd in to
+remove the rc.local entry.
+
+For single-user dev machines where SSH is reliable, the
+boot-time mute is acceptable. For multi-user systems or
+unattended bare metal, it is a footgun: a network outage
+plus a reboot leaves you with a machine you cannot reach.
+
+Recommendation:
+
+- **Single-user dev box, SSH always available**: rc.local
+  mute is fine.
+- **Multi-user or unattended hardware**: do *not* put
+  `conscontrol mute on` in `/etc/rc.local`. Run it manually
+  per session when starting a UTF surface, accept that
+  early-boot kernel messages will be visible behind the
+  surface during the brief startup window.
+- **Either case**: the structural fix (BACKLOG.md AD-10,
+  drawfs negotiates framebuffer ownership via VT_PROCESS)
+  preserves the login prompt while suppressing vt(4)'s
+  framebuffer writes only when drawfs is the active owner.
+  Cooperation rather than total mute.
+
 Note that muting the console hides legitimate kernel diagnostic
-output — panics, driver warnings, etc. — so do this only on a
-machine where you have SSH access to read dmesg from another
-session.
+output — panics, driver warnings, etc. — so even when the
+mute is the right choice, do this only on a machine where you
+have SSH access to read dmesg from another session.
+
+A separate contributor to console flashing is documented in
+BACKLOG.md AD-13: inputfs's interrupt handler logs every HID
+report to `/dev/console`, so any keypress or mouse motion
+produces a console line regardless of whether anything else
+is logging. Once AD-13 lands (per-report logging behind a
+sysctl, default off), the residual flashing is only
+boot/dmesg traffic, which may make the rc.local mute
+unnecessary altogether.
 
 ## Recovery checklist
 

@@ -1615,6 +1615,36 @@ test. Workaround verified on the same session: `conscontrol
 mute on` silenced the console without disturbing the
 already-running compositor.
 
+**2026-05-04 follow-up**: the operator workaround documented
+in INSTALL.md Hazard 7 — adding `conscontrol mute on` to
+`/etc/rc.local` to make the mute persist across reboots —
+has a real operational cost we did not name in the original
+hazard text. With the console muted from boot, the vt(4)
+login prompt is also invisible. A bare-metal PGSD machine
+configured this way comes up with no working physical
+console: SSH access is the only login path. For
+single-user dev machines this is acceptable; for multi-user
+systems or unattended bare metal it is a footgun. Hazard 7
+should reflect this, and AD-10's structural fix (proper
+VT_PROCESS-mode handshake) becomes more valuable because it
+preserves vt(4)'s login functionality while suppressing
+vt(4)'s draw on the framebuffer only when drawfs is the
+active owner. The cooperation model is correct precisely
+because total mute is operationally too coarse.
+
+There is also a contributing factor that AD-13 names
+separately: inputfs's interrupt handler emits a
+`device_printf` for every HID report received, which means
+typing produces console writes regardless of whether
+anything else is logging. Even on an otherwise silent
+system, the inputfs spam would make the login prompt
+unusable without muting. AD-13 removes that source.
+With AD-13 closed and AD-10 not yet landed, the residual
+flashing is only legitimate boot/dmesg traffic — annoying
+but not constant — and the rc.local mute may not even be
+desirable. AD-13 lands first as a correctness fix; AD-10
+afterward addresses what remains.
+
 ### `[ ]` AD-11: Console output: replace `vt(4)` for UTF sessions  *(Open, Large; not scheduled)*
 
 **Tracks**: a future ADR to be written; depends on AD-10
@@ -1818,6 +1848,51 @@ death, and accumulate as zombies across debug cycles.
    and the compositor sat in a state where input was
    nominally enabled but no event delivery happened.
 
+   **2026-05-04 update**: AD-12.3 (rc.d service for inputfs)
+   landed and was verified across a reboot. inputfs loads
+   automatically before the daemons; semadrawd connects to
+   a populated ring with six HID devices attached and 81
+   events on the ring. Pointer position confirmed moving
+   from default (1920,1080) to (3171,955) under real
+   hardware input — the substrate path works end-to-end.
+   But typed keystrokes still do not reach the
+   semadraw-term prompt. "Bug 4" therefore is **not** a
+   service-ordering issue; AD-12.3 closed the
+   lifecycle-shaped variant of it without resolving the
+   underlying symptom. The remaining "Bug 4" is a real
+   input-routing issue downstream of the inputfs ring,
+   investigated separately. AD-12.5
+   (daemon-under-dependency-absence ADR) is still
+   relevant to "what does semadrawd do when the ring
+   exists but is silent for too long" but that is a
+   different question from "events flow but the prompt
+   does not see them."
+
+5. **"Bug 2": semadraw-term `screen.zig:380` panic.**
+   Discovered 2026-05-02; characterized 2026-05-04 as
+   timing-sensitive. On non-instrumented release builds,
+   semadraw-term panics with `index out of bounds: index
+   N, len M` at the first character of prompt rendering.
+   Three reproductions on 2026-05-02 produced three
+   different N/M pairs (`1,1`; `5,4`; `0,0`); the
+   2026-05-04 reproduction was `0,0` again. Adding
+   `std.debug.print` instrumentation at every array
+   access in `putCharWithWidth` makes the panic stop
+   reproducing — the prompt renders correctly with the
+   instrumented build, no panic on any character.
+   Hypothesis: the bug is timing-sensitive, and the
+   added latency from print statements on the
+   per-character path closes whatever race window
+   exists. The interrupt-side per-report
+   `device_printf` from inputfs (see AD-13) adds
+   similar latency on a different path, and may be a
+   confounding factor in why timing has been hard to
+   pin down. Filed as a known bug; needs a different
+   diagnostic approach (counter-based instrumentation
+   rather than print-based, or post-mortem on a
+   release-build core dump). Not blocking AD-12
+   sub-stages.
+
 These symptoms are not bugs in the daemons themselves.
 They are bugs in the *lifecycle* — what happens during
 start, what happens during stop, what each daemon does
@@ -1956,6 +2031,132 @@ named the common root cause and filed this entry.
 The naming itself is the first piece of work; the
 sub-stages are the next.
 
+### `[ ]` AD-13: inputfs debug logging audit  *(Open, Small)*
+
+**Tracks**: `inputfs/sys/dev/inputfs/inputfs.c`, specifically
+the per-report `device_printf` in `inputfs_intr`
+(line 2237 as of `e680358`).
+
+inputfs's interrupt handler logs every HID report to the
+kernel console:
+
+```
+inputfs5: inputfs: report id=0x00 len=8 data=00 00 0e 00 00 00 00 00
+```
+
+The line above is from a real keystroke during 2026-05-04
+bare-metal verification; the byte at offset 2 (`0x0e`) is the
+HID keycode for the letter 'k'. **inputfs is logging every
+keypress and pointer report to /dev/console.** With `vt(4)`
+active, those console lines flash across the framebuffer in
+real time, including over a vt(4) login prompt. The flashing
+"Bug 4" symptom that surfaced 2026-05-02 is partially this:
+typing produces console writes that displace whatever was
+under the framebuffer, including the legitimate login.
+
+**Impact** has two dimensions:
+
+1. **Operational.** A bare-metal PGSD machine with vt(4)
+   visible at boot shows kernel log spam over its login
+   prompt as soon as the operator starts typing. The
+   workaround (`conscontrol mute on` in `/etc/rc.local`)
+   silences the spam but also silences the legitimate
+   login prompt — a multi-user machine becomes effectively
+   headless. Documented as the AD-10 follow-up below.
+
+2. **Latency.** `device_printf` from interrupt context is
+   technically safe on FreeBSD but takes a non-trivial
+   amount of CPU per call: a sprintf into the message
+   buffer, a console-lock acquire, a memcpy into the
+   ring, a `cnputs` per receiver (vt + serial if
+   present). On every HID report. For a fast scrolling
+   mouse or a typing burst, this adds measurable latency
+   to the interrupt path — which is precisely the kind
+   of latency that may be implicated in Bug 2's
+   timing-sensitive panic, since instrumentation in
+   semadraw-term that adds similar latency masks the
+   panic. The hypothesis is testable: silencing the
+   per-report `device_printf` may be the timing change
+   that closes Bug 2 without any further work in
+   semadraw-term.
+
+**Origin**: this print is a Stage B/C verification
+artifact. During inputfs's bring-up, raw HID report
+visibility was useful for confirming the interrupt path
+worked end-to-end and that descriptor parsing produced
+the expected report shapes. The post-verification
+expectation was that this print would be gated behind a
+sysctl flag, default off. The gating did not happen and
+the print landed in production.
+
+**Sub-stages**:
+
+- **AD-13.1**: gate the per-report print behind a sysctl
+  `hw.inputfs.debug_reports` (or similar; settle the name
+  in the commit). Default off. Five-line code change in
+  `inputfs.c`. Test by toggling the sysctl on a running
+  system and confirming console output starts and stops.
+
+- **AD-13.2**: audit `inputfs.c` for *other* high-frequency
+  `device_printf` calls. The "calling hid_intr_start"
+  logs are once-per-attach, fine. The "report id="
+  log is per-report, not fine. Anything else
+  per-report or per-event needs the same gating
+  treatment. Producing a list and applying the
+  pattern.
+
+- **AD-13.3**: same audit for `drawfs.c`, `chronofs/`,
+  and the userspace daemons. Less likely to find
+  per-event prints to /dev/console (userland writes
+  go to log files, not console), but worth a sweep
+  to keep the discipline.
+
+**Why this matters for AD-2 verification**: AD-2 Phase 1
+verification has consistently shown semadraw-term reaching
+"session 1 started" but input-routing producing strange
+behaviour ("Bug 4"). The inputfs logging makes every
+keystroke a console write that competes with the
+framebuffer surface, *and* adds latency to the interrupt
+path that may or may not be implicated in Bug 2. Closing
+AD-13 removes a confounding variable from the Bug 4
+investigation: with no console spam from inputfs, the
+remaining "input doesn't reach the prompt" symptom is
+unambiguously a semadrawd-or-semadraw-term issue, not a
+substrate issue.
+
+**What this entry does not claim**:
+
+- Does not claim AD-13 closes Bug 2 or Bug 4. The
+  hypothesis that latency reduction will close Bug 2
+  is testable but unproven; the hypothesis that
+  removing the spam makes Bug 4 visible is also
+  testable. Either way, AD-13 is on its own merits a
+  correctness fix (production drivers should not
+  emit per-event console writes), independent of
+  whether it dissolves either bug.
+
+- Does not propose removing the print entirely. The
+  per-report visibility is genuinely useful during
+  development; the fix is a sysctl gate, not a
+  deletion. ADR 0009 (interrupt handler registration)
+  treats per-report logging as a verification feature;
+  AD-13 makes it a verification feature that is opt-in
+  rather than always-on.
+
+- Does not address `dmesg`-archived messages. The
+  console-spam issue is about live writes during
+  operation; what remains in `dmesg` after the fact is
+  fine. The fix is to stop *new* lines from appearing
+  per HID report, not to suppress retrospective viewing.
+
+**Discovered**: bare-metal verification 2026-05-04.
+Symptom: physical-console login on PGSD shows kernel log
+spam interleaved with the login prompt while typing.
+`dmesg | tail` revealed the source. Same line that
+displaces the login prompt also displaces UTF surfaces,
+which is part of the "Bug 4" symptom we have been
+chasing as a semadrawd issue.
+
 ### Priority
 
 Rough priority ordering within this section, not strict:
@@ -1983,9 +2184,16 @@ Rough priority ordering within this section, not strict:
    dependency-absence ADR). In progress; AD-12.1 (install.sh
    hardening) lands first as it removes the most painful
    recurring operator pain point.
-9. **AD-3**: large; not scheduled.
-10. **AD-4**: largest; not scheduled.
-11. **AD-11**: large; not scheduled. Long-term replacement of
+9. **AD-13**: small; inputfs interrupt handler logs every HID
+   report to /dev/console. Discovered 2026-05-04. Five-line
+   sysctl gate. Lands ahead of further Bug 2 and Bug 4
+   investigation because it removes a confounding latency
+   source from the interrupt path and resolves the
+   physical-console-unusable consequence of the rc.local
+   `conscontrol mute on` workaround.
+10. **AD-3**: large; not scheduled.
+11. **AD-4**: largest; not scheduled.
+12. **AD-11**: large; not scheduled. Long-term replacement of
     `vt(4)` for UTF sessions; depends on AD-10 working and on
     AD-4 progress. Filed as documented direction; may stay open
     indefinitely if AD-10's cooperation model proves sufficient.
