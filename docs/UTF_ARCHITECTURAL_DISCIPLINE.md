@@ -168,6 +168,38 @@ in a state where testing is possible and the current set of
 replacements is working. The discipline governs direction, not
 sprints.
 
+## Cross-consumer-consistent input policy
+
+Some input policy must be applied at exactly one point and produce
+the same result for every consumer. Pointer smoothing is the
+canonical example: per-consumer smoothing in clients would let
+different applications disagree about cursor position, and that
+disagreement would break surface-under-cursor routing inside the
+substrate. The substrate's routing decision and the clients' visual
+cursor would target different surfaces.
+
+For policies of this kind, UTF accepts a small impurity in the
+substrate/policy boundary. The policy is applied in the substrate
+(kernel) using parameters published by userland into a
+compositor-to-kernel shared region. The substrate does not choose
+the policy; it applies the policy userland chose. ADR 0015
+(`inputfs/docs/adr/0015-per-user-pointer-smoothing.md`) is the
+worked example.
+
+The alternative is moving the substrate's affected pipeline (in
+this case, routing) into userland alongside the policy. That is a
+larger architectural move and is preferred where the substrate's
+existing pipeline can be relocated without losing other properties
+the substrate provides. Where it cannot, the published-parameter
+pattern is the chosen shape.
+
+The pattern is bounded. A substrate that grows more such regions
+without limit eventually becomes a parameter-application framework
+with policy embedded throughout, which is what the discipline
+exists to prevent. Each new region is an ADR-level decision. The
+running count is two (focus, smoothing); a third should be
+weighed against revisiting the relocation alternative.
+
 ## Operating rules
 
 These are the rules that follow from the discipline. They apply to
@@ -225,3 +257,6 @@ cite this document by path: `docs/UTF_ARCHITECTURAL_DISCIPLINE.md`.
   tracked as work items.
 - `semadraw/docs/adr/0001-zig-and-sdcs.md` — the toolchain and
   canonical-representation decision that this discipline assumes.
+- `inputfs/docs/adr/0015-per-user-pointer-smoothing.md` — the
+  worked example for the cross-consumer-consistent input policy
+  pattern named above.
