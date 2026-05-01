@@ -1276,7 +1276,20 @@ pub fn main() !void {
         }
     }
 
-    var daemon = try Daemon.init(allocator, config);
+    var daemon = Daemon.init(allocator, config) catch |err| switch (err) {
+        // Friendly message for the most common operator-facing case:
+        // another semadrawd is already listening on the socket path.
+        // socket_server.bind detects this via a probe connect; without
+        // that detection a second instance would silently displace the
+        // first, leaving a zombie listener.
+        error.AlreadyRunning => {
+            log.err("another semadrawd is already listening on {s}; refusing to start", .{config.socket_path});
+            log.err("if no semadrawd should be running, check `sockstat -u | grep semadraw`", .{});
+            log.err("or `service semadraw status`; remove stale processes before retrying", .{});
+            return error.AlreadyRunning;
+        },
+        else => return err,
+    };
     defer daemon.deinit();
 
     // Initialise session token for unified event log emission.

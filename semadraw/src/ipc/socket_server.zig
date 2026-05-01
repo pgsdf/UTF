@@ -9,25 +9,70 @@ pub const SocketServer = struct {
 
     pub const AcceptError = posix.AcceptError || error{Unexpected};
 
-    /// Bind and listen on a Unix domain socket
+    /// Bind and listen on a Unix domain socket.
+    ///
+    /// If `path` already exists, this function distinguishes between two
+    /// cases by attempting a connect() to the path:
+    ///   - Connect succeeds: another daemon is already alive and listening.
+    ///     Returns error.AlreadyRunning. The new instance MUST exit; if it
+    ///     proceeded by deleting the existing file and rebinding, the old
+    ///     instance's listening fd would survive in the kernel but its
+    ///     socket name would now resolve to the new instance, leaving the
+    ///     old daemon a zombie listener (clients connect to the new one
+    ///     but the old one still consumes resources and produces logs).
+    ///     This was a real bug observed in pre-fix testing where multiple
+    ///     semadrawds accumulated across debug sessions.
+    ///   - Connect fails (ECONNREFUSED / no such file): the file is stale
+    ///     from a previous instance that exited without unlinking. Safe
+    ///     to delete and rebind.
     pub fn bind(path: []const u8) !SocketServer {
-        // Create socket
+        // Build the sockaddr once; both the probe connect and the real
+        // bind use it.
+        var addr: posix.sockaddr.un = .{ .family = posix.AF.UNIX, .path = undefined };
+        if (path.len >= addr.path.len) return error.NameTooLong;
+        @memcpy(addr.path[0..path.len], path);
+        addr.path[path.len] = 0;
+        const addr_len: posix.socklen_t = @sizeOf(posix.sockaddr.un);
+
+        // Probe: is anything currently listening at this path?
+        const probe = posix.socket(posix.AF.UNIX, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0) catch |err| {
+            return err;
+        };
+        const connect_result = posix.connect(probe, @ptrCast(&addr), addr_len);
+        posix.close(probe);
+
+        // Treat ANY connect failure as "no live listener, safe to proceed."
+        // The most common reasons for a probe connect to fail are:
+        //   - ENOENT: no such path (the file was unlinked or never existed)
+        //   - ECONNREFUSED: file exists but no one is listen()ing
+        //   - EACCES: file exists with wrong permissions (still no listener)
+        // None of these warrant refusing to start. Only a *successful*
+        // connect indicates another daemon is alive.
+        //
+        // The choice to broaden rather than narrow is deliberate: a false
+        // negative (treating an unusual failure as "no listener" when one
+        // exists) is recoverable — bind() will then fail with EADDRINUSE,
+        // which propagates cleanly. A false positive (failing to start
+        // because the probe encountered an unfamiliar error) would be a
+        // nuisance bug. Better to err toward "let bind() decide."
+        if (connect_result) |_| {
+            return error.AlreadyRunning;
+        } else |_| {
+            // No listener. Fall through to delete-and-rebind.
+        }
+
+        // Create the listening socket.
         const fd = try posix.socket(posix.AF.UNIX, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0);
         errdefer posix.close(fd);
 
-        // Remove existing socket file if present
+        // Remove the stale file if it exists (after the probe confirmed
+        // no live listener). FileNotFound is fine; other errors propagate.
         std.fs.cwd().deleteFile(path) catch |err| switch (err) {
             error.FileNotFound => {},
             else => return err,
         };
 
-        // Bind to path
-        var addr: posix.sockaddr.un = .{ .family = posix.AF.UNIX, .path = undefined };
-        if (path.len >= addr.path.len) return error.NameTooLong;
-        @memcpy(addr.path[0..path.len], path);
-        addr.path[path.len] = 0;
-
-        try posix.bind(fd, @ptrCast(&addr), @sizeOf(posix.sockaddr.un));
+        try posix.bind(fd, @ptrCast(&addr), addr_len);
 
         // Set socket permissions (owner+group read/write)
         // Mode 0660 = rw-rw----
