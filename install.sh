@@ -126,6 +126,16 @@ if [ "$UNINSTALL" -eq 1 ]; then
         echo "  skip     drawfs_load (not found)"
     fi
 
+    # Safety net: install.sh never adds inputfs_load to loader.conf
+    # (the kernel module panics when loaded that early; see INSTALL.md
+    # hazard 1). But a user may have added it by hand, hit the panic,
+    # and reinstalled. Strip it on uninstall as a defensive cleanup so
+    # any future install attempt starts from a clean state.
+    if grep -q "inputfs_load" /boot/loader.conf 2>/dev/null; then
+        sed -i '' '/inputfs_load/d' /boot/loader.conf
+        echo "  removed  inputfs_load from /boot/loader.conf (defensive cleanup)"
+    fi
+
     echo "=== Done ==="
     exit 0
 fi
@@ -157,6 +167,22 @@ if [ -f "$SCRIPT_DIR/drawfs/build.sh" ]; then
     sh "$SCRIPT_DIR/drawfs/build.sh" deploy
 else
     echo "WARNING: drawfs/build.sh not found — skipping kernel module"
+fi
+
+# Build inputfs kernel module. Mirrors the drawfs pattern: install
+# sources into /usr/src/sys/, build, deploy to /boot/modules/.
+# Unlike drawfs, inputfs is NOT auto-loaded from /boot/loader.conf:
+# the state kthread panics when loaded before /var/run is mounted.
+# The deploy step explicitly does not add inputfs_load. See
+# INSTALL.md hazard 1.
+echo ""
+echo "--- Building inputfs kernel module ---"
+if [ -f "$SCRIPT_DIR/inputfs/build.sh" ]; then
+    sh "$SCRIPT_DIR/inputfs/build.sh" install
+    sh "$SCRIPT_DIR/inputfs/build.sh" build
+    sh "$SCRIPT_DIR/inputfs/build.sh" deploy
+else
+    echo "WARNING: inputfs/build.sh not found — skipping kernel module"
 fi
 
 # Semadraw backend flags. DRAWFS_DRM was already consumed above for the kernel
@@ -372,12 +398,17 @@ for bin in $BINARIES; do
 done
 echo ""
 echo "drawfs will load automatically at next boot (loader.conf)."
+echo "inputfs must be loaded manually after boot (see INSTALL.md hazard 1)."
 echo "Daemons will start automatically at next boot (rc.conf)."
 echo ""
 echo "To start now without rebooting:"
 echo "  kldload drawfs"
+echo "  kldload inputfs"
 echo "  service semaaud start"
 echo "  service semainput start"
 echo "  service semadraw start"
+echo ""
+echo "To load inputfs at boot, add to /etc/rc.local:"
+echo "  kldload inputfs"
 echo ""
 echo "To remove:  sh install.sh --uninstall --prefix $PREFIX"

@@ -92,74 +92,95 @@ Expect to see `README.md`, `BACKLOG.md`, `install.sh`, `start.sh`,
 
 ## Step 4 — Build UTF userland
 
-The top-level `build.sh` builds every userland component and the
-drawfs kernel module:
+The top-level `build.sh` builds every userland Zig subproject:
+`semaaud`, `semainput`, `chronofs`, and `semadraw`.
 
 ```
 sudo sh build.sh
 ```
 
-This takes a few minutes. The script builds drawfs first (because
-it needs FreeBSD kernel sources for module compilation), then the
-Zig daemons in dependency order.
+This takes a few minutes and produces binaries under each
+subproject's `zig-out/bin/`. Kernel modules are built separately
+in step 5 — `build.sh` does not build kernel modules.
 
 **Verify:**
 
 ```
-ls drawfs/drawfs.ko
 ls semadraw/zig-out/bin/semadrawd
 ls semaaud/zig-out/bin/semaaud
 ls semainput/zig-out/bin/semainputd
 ls chronofs/zig-out/bin/chrono_dump
 ```
 
-All five files must exist. If any are missing, the corresponding
+All four files must exist. If any are missing, the corresponding
 build step failed; re-run `build.sh` and read the error output.
 
-## Step 5 — Build the inputfs kernel module
+## Step 5 — Build the kernel modules
 
-inputfs has its own build at `inputfs/`:
+drawfs and inputfs are FreeBSD kernel modules, built against
+`/usr/src` via per-module helper scripts. The full build sequence
+runs as part of `install.sh` in step 6, so for a normal install
+you can skip this step. To build the modules without installing
+the rest of UTF (for development iteration):
 
 ```
-cd inputfs
-sudo zig build
-cd ..
+sudo sh drawfs/build.sh install
+sudo sh drawfs/build.sh build
+sudo sh drawfs/build.sh deploy
+sudo sh inputfs/build.sh install
+sudo sh inputfs/build.sh build
+sudo sh inputfs/build.sh deploy
 ```
+
+Each helper script copies sources into `/usr/src/sys/`, runs
+`make`, and copies the resulting `.ko` to `/boot/modules/`.
 
 **Verify:**
 
 ```
-ls inputfs/zig-out/inputfs.ko
+ls /boot/modules/drawfs.ko
+ls /boot/modules/inputfs.ko
 ```
 
-Must exist.
+Both must exist after the deploy step.
 
-## Step 6 — Install (optional for testing)
+The standalone Zig build under `inputfs/` (just `zig build` in
+that directory) only builds `inputdump`, the userland diagnostic
+CLI — not the kernel module. The kernel module is built by
+`inputfs/build.sh` exclusively.
 
-The repository can run from the source tree without installing
-to system paths. For a one-off testing session, you can skip
-this step and use `start.sh` directly.
-
-For a system-wide install:
+## Step 6 — Install (system-wide)
 
 ```
 sudo sh install.sh
 ```
 
-This copies binaries to `/usr/local/bin/`, generates rc.d service
-scripts, sets `drawfs_load="YES"` in `/boot/loader.conf`, and
-sets daemon enable flags in `/etc/rc.conf`.
+This is the canonical install path. It:
 
-**Important:** `install.sh` does **not** add `inputfs_load`. Do not
-add it manually. See Hazard 1 below.
+1. Builds and deploys both kernel modules (calling `drawfs/build.sh`
+   and `inputfs/build.sh` for steps 5's work, so step 5 is
+   redundant if you run `install.sh`).
+2. Copies userland binaries to `/usr/local/bin/`.
+3. Generates rc.d service scripts for the daemons.
+4. Sets `drawfs_load="YES"` in `/boot/loader.conf`.
+5. Sets daemon enable flags in `/etc/rc.conf`.
+
+**Important:** `install.sh` does **not** add `inputfs_load` to
+`/boot/loader.conf`. Do not add it manually. See Hazard 1 below.
 
 **Verify:**
 
 ```
 ls /usr/local/bin/semadrawd /usr/local/bin/semaaud /usr/local/bin/semainputd /usr/local/bin/chrono_dump
 ls /usr/local/etc/rc.d/semadrawd /usr/local/etc/rc.d/semaaud /usr/local/etc/rc.d/semainputd
+ls /boot/modules/drawfs.ko /boot/modules/inputfs.ko
 grep drawfs_load /boot/loader.conf
+grep inputfs_load /boot/loader.conf  # should produce no output
 ```
+
+The last command is a check, not a setup step: if it produces
+output, something added `inputfs_load` and it must be removed
+before the next reboot.
 
 ## Step 7 — Load kernel modules
 
