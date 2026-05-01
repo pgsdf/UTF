@@ -1225,7 +1225,7 @@ post Stage D. The chronofs `ts_sync` integration (Stage C
 deferred item) also stays separate from Stage D unless D.6
 verification surfaces a need for it.
 
-### `[ ]` AD-2: Retire semainputd  *(Open, Medium; depends: AD-1; AD-9 hardening complete)*
+### `[~]` AD-2: Retire semainputd  *(In progress, Medium; depends: AD-1; AD-9 hardening complete)*
 
 **Tracks**: `inputfs/docs/inputfs-proposal.md` Stage E (cutover).
 

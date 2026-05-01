@@ -2,6 +2,7 @@ const std = @import("std");
 const posix = std.posix;
 const backend = @import("backend");
 const bsdinput = @import("bsdinput");
+const inputfs_input = @import("inputfs_input.zig");
 
 const log = std.log.scoped(.drawfs_backend);
 
@@ -313,10 +314,15 @@ pub const DrawfsBackend = struct {
     last_button_state: u32 = 0,
 
     // Retained for ABI compatibility with the Backend vtable. Always null
-    // under -b drawfs — input arrives via DRAWFSGIOC_INJECT_INPUT from
-    // semainputd, not via a local evdev/libinput reader. See init() for
-    // the rationale.
+    // under -b drawfs — input arrives via the inputfs event ring (Phase 1
+    // of AD-2a; see inputfs/docs/STAGE_E/PHASE_1.md), not via a local
+    // evdev/libinput reader. See init() for the rationale.
     input: ?*bsdinput.BsdInput,
+
+    /// inputfs ring reader. Populated by init() if /var/run/sema/input/events
+    /// is present and valid; null otherwise (compositor still starts but
+    /// receives no input from inputfs). Drained once per pollEventsImpl.
+    inputfs: ?inputfs_input.InputfsInput,
 
     const Self = @This();
 
@@ -343,6 +349,7 @@ pub const DrawfsBackend = struct {
             .render_state = .{},
             .read_buf = undefined,
             .input = null,
+            .inputfs = null,
             .efifb_width  = 0,
             .efifb_height = 0,
             .efifb_stride = 0,
@@ -372,13 +379,20 @@ pub const DrawfsBackend = struct {
         // Probe EFI framebuffer availability
         self.probeEfifb();
 
-        // Input is delivered via DRAWFSGIOC_INJECT_INPUT from semainputd — the
-        // drawfs backend does not open evdev devices directly. Opening them
-        // here would compete with semainputd for exclusive access (libinput
-        // grabs by default) and starve its event stream. Events arrive as
-        // EVT_KEY / EVT_POINTER / EVT_SCROLL / EVT_TOUCH frames on self.fd
-        // and are drained into self.injected_keys by drainInjectedEvents().
+        // Input is delivered from the inputfs event ring at
+        // /var/run/sema/input/events. inputfs.ko owns HID at the kernel
+        // level (Stages A-D of AD-1) and publishes a shared-memory ring
+        // that this backend drains once per frame. The drawfs backend
+        // does not open evdev devices directly: doing so would
+        // interfere with inputfs's hidbus attachment (ADR 0007) which
+        // claims devices exclusively under UTF Mode.
+        //
+        // If inputfs is not loaded or the ring is not yet valid, the
+        // compositor still starts; input simply does not arrive from
+        // this source. The legacy DRAWFSGIOC_INJECT_INPUT path is
+        // unconsumed in Phase 1 and will be deleted in Phase 3.
         self.input = null;
+        self.inputfs = inputfs_input.InputfsInput.init();
 
         return self;
     }
@@ -539,13 +553,12 @@ pub const DrawfsBackend = struct {
         }
 
         // Read reply. The fd is multiplexed: protocol replies, EVT_SURFACE_PRESENTED
-        // events emitted by our own SURFACE_PRESENT requests, and EVT_KEY /
-        // EVT_POINTER / EVT_SCROLL / EVT_TOUCH events injected by semainputd
-        // via DRAWFSGIOC_INJECT_INPUT all arrive on this channel. We must
-        // handle all three: the reply we're waiting for, the frame events
-        // that are acknowledgements of our own activity, and the injected
-        // input events that are someone else's traffic passing through our
-        // queue.
+        // events emitted by our own SURFACE_PRESENT requests, and (legacy)
+        // EVT_KEY / EVT_POINTER / EVT_SCROLL / EVT_TOUCH events that may
+        // still arrive from semainputd via DRAWFSGIOC_INJECT_INPUT during
+        // the AD-2a transition. We discard the legacy input events here
+        // (the inputfs ring is the authoritative source under Phase 1)
+        // and continue the loop until the expected reply arrives.
         while (true) {
             const n = try readFrame(self.fd, &self.read_buf);
             const reply = parseReply(self.read_buf[0..n]);
@@ -555,23 +568,14 @@ pub const DrawfsBackend = struct {
                 continue;
             }
 
-            // Stash input events in injected_keys so drainInjectedEvents can
-            // return them later. Without this, an EVT_KEY arriving between
-            // our write and the kernel's reply would cause UnexpectedReply
-            // and silently swallow the keystroke — the root cause of the
-            // "sometimes first press is lost" behaviour.
-            if (reply.msg_type == DRAWFS_EVT_KEY) {
-                self.stashEvtKey(self.read_buf[0..n], n);
-                continue;
-            }
-            if (reply.msg_type == DRAWFS_EVT_POINTER) {
-                self.stashEvtPointer(self.read_buf[0..n], n);
-                continue;
-            }
-            if (reply.msg_type == DRAWFS_EVT_SCROLL) {
-                self.stashEvtScroll(self.read_buf[0..n], n);
-                continue;
-            }
+            // Discard legacy injected input events. semainputd may still
+            // be running on systems mid-transition; its events arrive on
+            // this fd interleaved with our protocol traffic. Phase 3
+            // deletes the legacy injection path entirely; Phase 1 just
+            // ignores it.
+            if (reply.msg_type == DRAWFS_EVT_KEY) continue;
+            if (reply.msg_type == DRAWFS_EVT_POINTER) continue;
+            if (reply.msg_type == DRAWFS_EVT_SCROLL) continue;
 
             if (reply.msg_type != expected_reply) {
                 log.err("expected reply 0x{x:04}, got 0x{x:04}", .{ expected_reply, reply.msg_type });
@@ -799,6 +803,11 @@ pub const DrawfsBackend = struct {
         // Cleanup evdev input
         if (self.input) |inp| {
             inp.deinit();
+        }
+
+        // Cleanup inputfs ring reader
+        if (self.inputfs) |*ifs| {
+            ifs.deinit();
         }
 
         self.destroySurface();
@@ -1321,56 +1330,55 @@ pub const DrawfsBackend = struct {
         try self.createSurface(width, height);
     }
 
-    /// Drain any injected input events (EVT_KEY) from the drawfs fd.
-    /// These are enqueued by semainput via DRAWFSGIOC_INJECT_INPUT and
-    /// delivered back to the session as framed protocol messages.
+    /// Drain and discard any legacy input frames (EVT_KEY / EVT_POINTER /
+    /// EVT_SCROLL) still arriving on /dev/draw via DRAWFSGIOC_INJECT_INPUT.
     ///
-    /// Appends to injected_keys; does NOT reset the buffer. The buffer
-    /// is consumed and reset by getKeyEventsImpl. This matters because
-    /// sendAndRecv can also stash EVT_KEY frames into injected_keys
-    /// during protocol transactions — resetting here would wipe keys
-    /// that the compositor's own read path has already captured.
+    /// AD-2a Phase 1: input now arrives from the inputfs event ring, not
+    /// from semainputd's injection. Phase 1 leaves the legacy injection
+    /// path in place but unconsumed; semainputd may still be running on
+    /// systems mid-transition, and its events would otherwise pile up
+    /// in our fd's read buffer. Discarding here keeps the buffer empty
+    /// without consuming events as if they were authoritative.
     ///
-    /// Any EVT_SURFACE_PRESENTED frames we encounter here are leftovers
-    /// from a previous compositor transaction (normally sendAndRecv
-    /// consumes them inline); they are discarded. Any protocol *reply*
-    /// we find here indicates a protocol state bug — replies must never
-    /// outlive the sendAndRecv call that expected them — but we discard
+    /// EVT_SURFACE_PRESENTED leftovers from prior compositor transactions
+    /// continue to be discarded (they were always leftover noise on this
+    /// path). Protocol replies appearing here remain a state bug; we drop
     /// them silently rather than crash the compositor loop.
+    ///
+    /// Phase 3 deletes this function entirely along with the legacy
+    /// injection path.
     fn drainInjectedEvents(self: *Self) void {
         var pfd = [1]posix.pollfd{.{
             .fd = self.fd,
             .events = posix.POLL.IN,
             .revents = 0,
         }};
-        // The loop bound is "either buffer has room." Most frames are key
-        // events; mouse events only occur during pointer activity. We
-        // stop draining when both buffers are full, which is rare.
-        while (self.injected_keys_len < backend.MAX_KEY_EVENTS or
-               self.injected_mice_len < backend.MAX_MOUSE_EVENTS)
-        {
+        while (true) {
             const r = posix.poll(&pfd, 0) catch break;
             if (r == 0) break;
             if (pfd[0].revents & posix.POLL.IN == 0) break;
             var frame_buf: [256]u8 = undefined;
             const n = posix.read(self.fd, &frame_buf) catch break;
-            if (n < 40) continue;
-            const msg_type = std.mem.readInt(u16, frame_buf[16..18], .little);
-            switch (msg_type) {
-                DRAWFS_EVT_KEY     => self.stashEvtKey(frame_buf[0..n], n),
-                DRAWFS_EVT_POINTER => self.stashEvtPointer(frame_buf[0..n], n),
-                DRAWFS_EVT_SCROLL  => self.stashEvtScroll(frame_buf[0..n], n),
-                else => continue,
-            }
+            // Discard whatever arrived. Phase 1 does not stash legacy
+            // injected events; the inputfs ring is the authoritative
+            // source.
+            _ = n;
         }
     }
 
     fn pollEventsImpl(ctx: *anyopaque) bool {
         const self: *Self = @ptrCast(@alignCast(ctx));
-        // Input under -b drawfs comes from the kernel session's read queue
-        // (EVT_KEY/EVT_POINTER/EVT_SCROLL/EVT_TOUCH frames injected by
-        // semainputd via DRAWFSGIOC_INJECT_INPUT). There is no local evdev
-        // polling — that would grab devices away from semainputd.
+        // Input arrives from the inputfs event ring (AD-2a Phase 1). The
+        // /dev/draw fd is also drained for legacy injected frames, which
+        // are discarded — see drainInjectedEvents.
+        if (self.inputfs) |*ifs| {
+            _ = ifs.drain(
+                &self.injected_keys,
+                &self.injected_keys_len,
+                &self.injected_mice,
+                &self.injected_mice_len,
+            );
+        }
         self.drainInjectedEvents();
         return true;
     }

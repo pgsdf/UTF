@@ -561,6 +561,13 @@ pub fn build(b: *std.Build) void {
     backend_mod.addImport("vulkan_console", vulkan_console_backend_mod);
 
     // drawfs backend module (FreeBSD drawfs kernel module)
+    // shared/src/input.zig — inputfs event ring reader for AD-2a Phase 1.
+    const shared_input_mod = b.createModule(.{
+        .root_source_file = b.path("../shared/src/input.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const drawfs_backend_mod = b.createModule(.{
         .root_source_file = b.path("src/backend/drawfs.zig"),
         .target = target,
@@ -568,6 +575,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "backend", .module = backend_mod },
             .{ .name = "bsdinput", .module = bsdinput_mod },
+            .{ .name = "input", .module = shared_input_mod },
         },
     });
     drawfs_backend_mod.link_libc = true;
