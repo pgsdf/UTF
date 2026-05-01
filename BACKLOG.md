@@ -1615,6 +1615,153 @@ test. Workaround verified on the same session: `conscontrol
 mute on` silenced the console without disturbing the
 already-running compositor.
 
+### `[ ]` AD-11: Console output: replace `vt(4)` for UTF sessions  *(Open, Large; not scheduled)*
+
+**Tracks**: a future ADR to be written; depends on AD-10
+landing first and on AD-4 progress.
+
+`vt(4)` is FreeBSD's kernel virtual terminal: it owns the
+framebuffer at boot, displays kernel messages, hosts
+`ttyv0..ttyvN`, accepts keyboard input via the `kbdmux` /
+`kbd` subsystem, and is the path through which an operator
+reaches single-user mode after a failed boot. Today UTF
+treats `vt(4)` as accepted platform transport. AD-10 will
+make UTF and `vt(4)` cooperate over framebuffer ownership;
+AD-11 asks the longer question: should UTF own the console
+itself, on the same discipline grounds that motivated
+inputfs (replaces evdev), drawfs (replaces Xlib), and
+audiofs / semasound (replaces OSS, AD-3)?
+
+**Discipline argument for replacement**: kernel messages
+that race with UTF surface presentation are exactly the
+"external code that does not share UTF's commitments"
+shape the discipline doc warns about. Even with AD-10's
+handshake landed, `vt(4)` remains in the path during boot
+(before drawfs loads), during recovery (after drawfs is
+released), and during any panic that drops UTF off the
+display. A UTF-native console would render kernel messages
+through the same surface protocol semadraw clients use,
+eliminating the competition by construction.
+
+**Discipline argument against replacement, today**: `vt(4)`
+is the recovery path. When `kldload drawfs` panics — and
+2026-05-01's reinstall is proof this can happen — operators
+need a working console to reach single-user mode and undo
+the change. A replacement console would have to provide
+that same recovery affordance, which is a much larger
+commitment than "owns the user's session". Replacing
+`vt(4)` means UTF owns the boot console and the panic
+console — kinds of code with much higher reliability bars
+than session-time userland.
+
+**Asymmetry vs AD-1, AD-3, AD-4**: those replace userspace
+abstractions (evdev, OSS, Xlib, libinput) or extend
+kernel-side ownership (audiofs talks to `snd(4)`-equivalent
+hardware below OSS). `vt(4)` is the boot console itself,
+not a userspace abstraction over hardware. Replacing it
+changes the kind of thing UTF is — from a session-layer
+substrate to a system that owns the console-of-last-resort.
+That is not wrong, but it is a deliberate widening of UTF's
+scope and deserves its own architectural discussion before
+implementation.
+
+**Sub-stages** (sketch, expanded later in the ADR):
+
+- AD-11.1: write the ADR. Position UTF's console-replacement
+  posture explicitly: what UTF takes over, what stays with
+  the FreeBSD kernel as accepted transport, what the
+  recovery path looks like when UTF's console layer is
+  unavailable. Settle whether UTF aims to own boot messages
+  (early kernel printf to the framebuffer before drawfs
+  loads), panic messages (KDB_TRACE output post-fault),
+  single-user mode, or only post-init session console.
+  Each scope choice has different downstream cost.
+- AD-11.2: kernel-side console layer (name TBD, perhaps
+  `consfs` to mirror inputfs / audiofs / drawfs naming).
+  Implements the FreeBSD `cn_*` console interface so it
+  can be selected as the system console at compile or
+  boot time. Renders messages through drawfs's surface
+  protocol or directly to the framebuffer drawfs has
+  released ownership of. Coexists with `vt(4)` during
+  the migration window.
+- AD-11.3: userspace `getty`-equivalent for UTF sessions.
+  Replaces the `ttyvN` model with UTF surfaces hosting
+  shell sessions, with the discipline question of whether
+  to retain TTY semantics at all (line discipline, job
+  control) or replace them with a UTF-native session
+  abstraction.
+- AD-11.4: bare-metal verification across the boot →
+  panic → recovery lifecycle. Includes deliberate panic
+  injection and confirmation that UTF's console renders
+  the panic readable, since recovery without that is
+  worse than `vt(4)` today.
+
+**Risks**: this scope failure-mode is "no console at all,"
+which is dramatically worse than AD-10's "screen flashes"
+or AD-2's "wrong input routing." A bug in the UTF console
+during a panic produces an unreadable system. Mitigation
+strategy: keep `vt(4)` available on a separate VT as a
+fallback console during the entire AD-11 window; only
+remove `vt(4)` from PGSD kernel after multiple cycles of
+real-world recovery testing pass. Same posture AD-2 took
+with semainputd (kept available during AD-1 verification,
+removed only after Stage E cutover proved out).
+
+**Depends on**:
+
+- **AD-10** (framebuffer ownership handshake) — must
+  land first. AD-11 is the question that arises after
+  AD-10's "cooperate" answer turns into "replace
+  entirely". Without AD-10, AD-11 has nothing to build
+  on; with AD-10 working well, AD-11 may turn out to
+  be unnecessary if the handshake suffices.
+- **AD-4** (graphics output: replace efifb/DRM) —
+  partial dependency. AD-11 needs a path to render
+  console messages without going through the FreeBSD
+  display layer, which is precisely AD-4's scope. If
+  AD-4 lands first, AD-11 inherits its display
+  mechanism. If AD-11 attempts before AD-4, it relies
+  on `efifb` for its own rendering, which is the same
+  accepted-dependency posture UTF currently has — so
+  ordering matters but isn't strict.
+- **AD-3** (audiofs) — independent. Listed only because
+  it represents the same discipline pattern (UTF
+  replaces a kernel-adjacent abstraction) and the
+  experience of building AD-3 informs AD-11's design
+  choices around hardware-level kernel programming.
+
+**Why this is filed as a long-term plan, not scheduled**:
+AD-11 is the largest "console-and-display" reframing UTF
+could undertake. AD-10's handshake may be sufficient for
+all practical purposes, in which case AD-11 stays open
+as a documented direction without ever being implemented.
+Treating AD-11 as "scheduled" would imply a commitment to
+take on the recovery-console reliability bar, and that
+commitment should follow real evidence that AD-10's
+cooperation model is insufficient — not anticipation.
+
+**What this entry does not claim**:
+
+- It does not claim `vt(4)` is broken. `vt(4)` works
+  correctly within its design; the flashing surfaced
+  in 2026-05-02 testing is a UTF-side coordination
+  failure, not a `vt(4)` bug.
+- It does not claim `efifb` should be deprecated as a
+  separate item. AD-4 already covers the display-output
+  replacement question; adding a separate "deprecate
+  efifb" item would duplicate that scope.
+- It does not commit UTF to owning the boot console,
+  panic console, or single-user console. AD-11.1
+  (ADR) decides that scope. The implementation
+  sub-stages assume the maximal reading; the ADR
+  may settle on a smaller scope.
+
+**Discovered**: discussion 2026-05-04, prompted by the
+AD-10 framing — AD-10 settles "cooperate" but the
+discipline grounds for "replace entirely" are real and
+deserve explicit documentation rather than implicit
+acceptance.
+
 ### Priority
 
 Rough priority ordering within this section, not strict:
@@ -1639,6 +1786,10 @@ Rough priority ordering within this section, not strict:
    exists (`conscontrol mute on`); structural fix can wait.
 8. **AD-3**: large; not scheduled.
 9. **AD-4**: largest; not scheduled.
+10. **AD-11**: large; not scheduled. Long-term replacement of
+    `vt(4)` for UTF sessions; depends on AD-10 working and on
+    AD-4 progress. Filed as documented direction; may stay open
+    indefinitely if AD-10's cooperation model proves sufficient.
 
 "Not scheduled" here means: no commitment to start, no commitment to
 an outcome date, but explicitly tracked so the discipline's forward
