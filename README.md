@@ -128,13 +128,23 @@ See `semaaud/docs/` for the policy specification and roadmap.
 
 ### semainput
 
-An input classification and gesture daemon. Reads evdev devices, classifies
-them by capability fingerprint, aggregates physical devices into stable logical
-identities, applies pointer smoothing, and emits structured JSON-lines events
-for semantic input (mouse, keyboard, touch) and gestures (two-finger scroll,
-pinch, three-finger swipe, drag, tap).
+The legacy userspace input daemon. Reads evdev devices, classifies them by
+capability fingerprint, aggregates physical devices into stable logical
+identities, applies pointer smoothing, and emits structured JSON-lines
+events for semantic input (mouse, keyboard, touch) and gestures
+(two-finger scroll, pinch, three-finger swipe, drag, tap).
 
-See `semainput/docs/` for architecture and system interface documentation.
+semainput is being retired. inputfs (below) is the kernel-side substrate
+that replaces it. The substrate landed (Stages A through D); the cutover
+that removes the evdev reader, the `drawfs_inject` adapter, and the
+standalone `semainputd` daemon is the work tracked as AD-2a in
+`BACKLOG.md`. semainput remains in the tree until that work lands so
+UTF stays operational during the transition; once AD-2a completes,
+the daemon binary is gone and `gesture.zig` lives on as `libsemainput`,
+a userland library consumed by clients and by semadrawd.
+
+See `semainput/docs/` for architecture and system interface documentation
+of the legacy daemon.
 
 ### shared/
 
@@ -176,11 +186,19 @@ classification. Stage C delivered userspace publication of the state
 region and event ring, along with the `inputdump` diagnostic CLI and a
 verification protocol at `inputfs/docs/C_VERIFICATION.md` that runs 26
 automated checks plus a manual mouse-and-button checklist. Stage D
-(focus routing and coordinate transform) is next.
+(focus routing and coordinate transform) landed across eight sub-stages
+(D.0a through D.6); the parser was hardened by AD-9's fuzzing work
+before the cutover proceeds.
 
-inputfs supersedes `semainput` (the userspace evdev daemon) on the
-PGSD target. semainput remains the production input path until Stage D
-lands a focus-routed event consumer; see BACKLOG AD-1 and AD-2.
+inputfs replaces `semainput` (the userspace evdev daemon) on the
+PGSD target. The substrate is built; the cutover that retires the
+evdev reader, the `drawfs_inject` adapter, and the `semainputd`
+daemon is **Stage E, tracked as AD-2a in `BACKLOG.md` and the next
+intentional act for the input stack**. Until AD-2a lands, both
+paths coexist (`hw.inputfs.enable` tunable from Stage D); after
+AD-2a, evdev is no longer present in any UTF code path. UTF runs
+on inputfs only, with no fallback, by deliberate commitment to
+the discipline at `docs/UTF_ARCHITECTURAL_DISCIPLINE.md`.
 
 See `inputfs/docs/` for the proposal, foundations, ADRs, byte-level specs,
 and verification protocols.
@@ -370,10 +388,21 @@ drm-kmod port.
 | drawfs | Phase 1 complete. Phase 2 (EFI framebuffer) complete. DRM/KMS skeleton, opt-in only. |
 | semadraw | drawfs backend operational. semadraw-term functional on bare metal and X11. |
 | semaaud | Phase 12 (durable policy) complete. |
-| semainput | Stable for pointer and touch hardware. To be retired by inputfs (AD-2). |
-| inputfs | Stages A, B, C, D complete on PGSD-bare-metal (all eight Stage D sub-stages landed: D.0a, D.0b, D.1, D.2, D.3, D.4, D.5, D.6). Ready for Stage E (semainputd retirement, AD-2). |
+| semainput | Legacy userspace daemon. Functional, retiring in AD-2a. |
+| inputfs | Substrate complete (Stages A, B, C, D landed on PGSD-bare-metal; eight Stage D sub-stages D.0a through D.6; parser hardened by AD-9). Stage E cutover (AD-2a) is the next intentional act and removes evdev from the UTF tree. |
 | shared/ | Protocol constants, generator, event schema, session identity, clock interface: all complete. |
 | chronofs | Complete. Audio-driven frame scheduler operational. |
+
+**The next intentional act for the input stack is Stage E.** inputfs has
+owned HID at the kernel level since Stage D landed; semainput, the
+userspace evdev daemon it replaces, is still in the tree because the
+cutover hasn't been executed yet. AD-2a executes that cutover: switch
+semadrawd's default backend to inputfs, delete the evdev adapter and
+the `drawfs_inject` adapter, retire `semainputd`, promote `gesture.zig`
+into a userland library `libsemainput`, and remove evdev-loading
+instructions from user-facing setup docs. After AD-2a, no UTF code
+path uses evdev. AD-2b (per-user pointer smoothing, design landed in
+ADR 0015) is independent of AD-2a and may proceed in either order.
 
 ---
 

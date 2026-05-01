@@ -1,6 +1,8 @@
 # inputfs — Native Input Substrate Proposal
 
-Status: Proposed, 2026-04-23
+Status: Accepted, 2026-04-23. Stages A, B, C, D landed
+on PGSD-bare-metal. Stage E (cutover, evdev removal) is the
+next intentional act and is tracked as AD-2a in `BACKLOG.md`.
 
 ## Summary
 
