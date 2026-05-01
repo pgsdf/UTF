@@ -214,6 +214,7 @@ build_sub "semaaud"   "semaaud"
 build_sub "semainput" "semainput"
 build_sub "semadraw"  "semadraw"  $SEMADRAW_FLAGS
 build_sub "chronofs"  "chronofs"
+build_sub "inputfs (userland)" "inputfs"
 
 # ============================================================================
 # Install
