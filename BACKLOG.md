@@ -1244,6 +1244,37 @@ parser produces). The button-bitmap truncation bug found by
 AD-9.4 was fixed in commit `3887091`. Stage E cutover may now
 proceed without inheriting known-unsafe parser behaviour.
 
+**AD-2 sub-structure** (2026-05-01): the original "gesture
+recognition moves into the compositor or per-client libraries"
+sentence above is resolved into two concrete sub-items:
+
+- **AD-2a: libsemainput reshape and semainputd retirement.**
+  Strip evdev reader, classification, aggregation, identity,
+  and event-queue code from semainput (all owned by inputfs
+  after Stage D). Promote `gesture.zig` (1,044 lines) into
+  `libsemainput`, a userland library consumed by clients and
+  by semadrawd. Retire the standalone `semainputd` daemon
+  binary. semadrawd hosts system-level gesture recognition
+  (three-finger swipe etc.) using the same library. Open;
+  no design ADR required (no new shared-memory contract).
+
+- **AD-2b: Per-user pointer smoothing via published region.**
+  Design landed (2026-05-01) in
+  `inputfs/docs/adr/0015-per-user-pointer-smoothing.md` and
+  `shared/INPUT_SMOOTHING.md` (commit `329197b`). Discipline-
+  doc addendum landed (2026-05-01) in
+  `docs/UTF_ARCHITECTURAL_DISCIPLINE.md` (commit `1285753`).
+  Implementation pending: `shared/src/input.zig` writer/reader
+  types, `inputfs_smooth.c` (Q16.16 algorithms), semadrawd
+  config reader and publisher, `smoothing-inspect` diagnostic
+  CLI, verification protocol. Deletes
+  `semainput/src/smoother.zig` as part of the kernel-side
+  implementation commit.
+
+AD-2a and AD-2b are independent and may proceed in either
+order. AD-2a has no design dependency on AD-2b; AD-2b's
+implementation does not depend on the daemon retirement.
+
 ### `[ ]` AD-3: Audio output: replace OSS dependency  *(Open, Large; not scheduled)*
 
 **Tracks**: `audiofs/docs/audiofs-proposal.md` (Stage F).
