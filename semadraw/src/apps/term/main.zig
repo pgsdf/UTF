@@ -36,8 +36,28 @@ const Session = struct {
     fn init(allocator: std.mem.Allocator, shell_path: ?[]const u8, cols: u32, rows: u32) !Session {
         var scr = try screen.Screen.init(allocator, cols, rows);
         errdefer scr.deinit();
-        const p = vt100.Parser.init(&scr);
         const sh = try pty.Pty.spawn(shell_path, @intCast(cols), @intCast(rows));
+        // AD-14 root cause fix: parser is initialized with a placeholder scr
+        // pointer that the caller MUST rebind via bindParser() after this
+        // Session is in its final memory location. Previously, this function
+        // initialized the parser with `&scr` (the local), which captured the
+        // address of the stack-local screen. The returned Session contains a
+        // fresh copy of `scr` (Zig copy-by-value), but `parser.scr` still
+        // pointed at the dead local. Subsequent stack reuse overwrote the
+        // dangling target's `cells.len` with arbitrary values, producing the
+        // ReleaseSafe-only `index 0, len 0` panic in putCharWithWidth at
+        // various points after the first putChar (timing-sensitive because
+        // the dangling target's contents depend on what other locals the
+        // optimizer placed in the same slot).
+        //
+        // The placeholder `&scr` here is harmless because the caller is
+        // contractually obligated to rebind before parser.feed* is called.
+        // bindParser() exists to make this rebinding visible at call sites
+        // rather than implicit. A future refactor could split the type so
+        // that a Session-without-parser is a distinct type from a complete
+        // Session, but for now the contract is documented and enforced
+        // by the call site.
+        const p = vt100.Parser.init(&scr);
         return .{
             .scr    = scr,
             .parser = p,
@@ -45,6 +65,15 @@ const Session = struct {
             .alive  = true,
             .bell   = false,
         };
+    }
+
+    /// Rebind the parser's screen pointer to point at this Session's own
+    /// scr field. MUST be called after the Session is in its final memory
+    /// location (e.g. inside an array or on the heap), and BEFORE any call
+    /// to parser.feed* on this session. See Session.init's comment for the
+    /// AD-14 root cause this addresses.
+    fn bindParser(self: *Session) void {
+        self.parser.scr = &self.scr;
     }
 
     fn deinit(self: *Session) void {
@@ -279,6 +308,10 @@ const TermState = struct {
                 self.sessions[i] = try Session.init(
                     self.allocator, self.config.shell,
                     self.config.cols, self.config.rows);
+                // AD-14 fix: rebind parser to point at the Session's actual
+                // scr field, now that the Session is in its final array
+                // location. See Session.init for the rationale.
+                self.sessions[i].?.bindParser();
                 self.session_count += 1;
                 log.info("created session {}", .{i + 1});
                 return i;
@@ -506,6 +539,13 @@ fn run(allocator: std.mem.Allocator, config: Config) !void {
     state.sessions[0] = initial;
     // Point renderer at the initial session's screen
     rend.scr = &state.sessions[0].?.scr;
+    // AD-14 fix: rebind parser to point at the Session's actual scr field,
+    // now that the Session is in its final array location. See Session.init
+    // for the rationale. The renderer rebinding above (rend.scr) was already
+    // present pre-AD-14; the parser rebinding was missing, producing the
+    // ReleaseSafe-only `index 0, len 0` panic class diagnosed via lldb on
+    // 2026-05-05 (AD-14.1 second-attempt repro).
+    state.sessions[0].?.bindParser();
 
     log.info("session 1 started", .{});
     try renderFrame(allocator, &state, &rend, surface, conn, true);

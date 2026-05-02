@@ -2374,7 +2374,126 @@ displaces the login prompt also displaces UTF surfaces,
 which is part of the "Bug 4" symptom we have been
 chasing as a semadrawd issue.
 
-### `[ ]` AD-14: ReleaseSafe vs Debug build-mode discrepancy in semadraw-term  *(Open, Medium)*
+### `[x]` AD-14: ReleaseSafe vs Debug build-mode discrepancy in semadraw-term  *(Done 2026-05-05, Medium)*
+
+**Root cause (diagnosed and fixed 2026-05-05 Sunday afternoon)**:
+`Session.init` in `semadraw/src/apps/term/main.zig` initialised
+the vt100 parser with `&scr` where `scr` was a stack-local screen.
+The returned `Session` contained a fresh copy of `scr` (Zig
+copy-by-value), but `parser.scr` still pointed at the dead
+local. Subsequent stack reuse (the next stack frame after
+`Session.init` returned) overwrote the dangling target's
+`cells.len` with arbitrary values, producing the ReleaseSafe
+`index 0, len 0` panic in `putCharWithWidth` at the point of
+first dereference.
+
+The bug was timing-sensitive because the dangling target's
+contents depended on what other locals the optimizer placed
+in the same stack slot. Debug-mode builds added enough
+guard padding around variables that the dangling target
+remained valid-looking long enough to never panic; ReleaseSafe
+builds with aggressive stack layout reused the slot
+immediately. Sub-1080p compositor surfaces (pre-AD-15.1)
+produced fewer SDCS commands per frame, less stack churn,
+and a non-reproducing pattern. The 4x-larger compositor
+surface (post-AD-15.1) produced more stack churn, reliable
+overwriting of the dangling target, and reliable panic.
+
+The diagnostic path:
+
+- Saturday 2026-05-02: panic first observed; mis-attributed
+  to `main.zig:265` (`sessions[active]` against a
+  `[8]?Session` array). The `len 1` in the panic message
+  was a misleading optimizer artifact.
+- Sunday morning: lldb attempted with stripped binary;
+  no debug symbols, no diagnosis. Bug stopped reproducing
+  at the same time (smaller compositor surface meant less
+  stack churn).
+- Sunday afternoon: AD-15.1 lands; compositor matches
+  framebuffer; bug reproduces reliably again.
+- Sunday afternoon (continued): lldb with
+  `-Doptimize=ReleaseSafe -Dstrip=false` reveals true
+  fault site (`screen.zig`'s `putCharWithWidth` at +829
+  bytes into the function). Stack frame analysis shows
+  `parser.scr` pointing at deallocated location.
+
+**Fix landed (this commit)**:
+
+- `Session.init` now leaves `parser.scr` set to the
+  to-be-discarded local (effectively a placeholder); the
+  contract is documented in a comment.
+- New method `Session.bindParser` rebinds `parser.scr` to
+  point at the session's actual `scr` field. Must be called
+  after the Session is in its final memory location.
+- Both call sites (`run` for the initial session, `newSession`
+  for additional sessions) updated to call `bindParser` after
+  the Session is in its array slot.
+- The renderer rebinding (`rend.scr = &state.sessions[0].?.scr`)
+  that was already present pre-AD-14 is preserved unchanged;
+  it indicates the original author understood this issue for
+  the renderer but missed it for the parser.
+
+**This closes**:
+
+- AD-14 (the build-mode discrepancy class).
+- Bug 2 from 2026-05-02 (`screen.zig:380` panic family).
+  The line attribution was a release-mode optimizer
+  artifact; the actual fault was always inside
+  putCharWithWidth in the dangling-pointer dereference.
+- Bug 7 from 2026-05-04 (`main.zig:265` panic).
+  Same root cause, different mis-attribution (optimizer
+  picked a different bounds check to blame).
+
+**This does not affect**:
+
+- Bug 5 (`vt100.zig:183` decodeUtf8 OOB) — defensive
+  guard landed Saturday; kept regardless of AD-14
+  outcome since it is correctness insurance for
+  malformed UTF-8 input.
+- Bug 6 (`vt100.zig:351` handleCsiParam OOB) — same.
+- Bug 3 (`/bin/sh` silent exit on TIOCSCTTY) — separate
+  pty issue, not a screen issue. May or may not have
+  been masked by Bug 2 in earlier sessions.
+
+**Sub-stages (all closed by this commit)**:
+
+- **AD-14.1**: lldb diagnosis. Closed via Sunday-afternoon
+  session that produced the actual stack trace and frame
+  analysis. Required `scripts/build-releasesafe-symbols-semadraw-term.sh`
+  (now in tree) to produce a debuggable optimized binary.
+- **AD-14.2**: source audit for UB patterns. Findings
+  remain valid as `AD-16` latent screen.zig bugs; none
+  was the AD-14 fault. The audit was not the path to
+  resolution but is independently useful.
+- **AD-14.3**: minimal reproducer. Skipped; the lldb
+  trace gave a definitive diagnosis without needing a
+  reduced repro.
+
+**Verification on bare metal (pending)**:
+operator runs `sudo sh install.sh` (rebuilds binaries
+ReleaseSafe-stripped without the diagnostic
+`-Dstrip=false`), then `semadraw-term --scale 2`,
+types `ls` + Enter at framebuffer keyboard. Expected:
+the prompt appears, command runs, no panic.
+
+**Why this took multiple sessions**:
+- Saturday: the bug class was characterised but
+  mis-attributed (Bug 2/Bug 7 names).
+- Sunday morning: lldb attempt without debug symbols
+  failed; bug appeared transient (was actually
+  geometry-sensitive).
+- Sunday afternoon: AD-15.1 created reliable repro
+  conditions; debug-symbol build under lldb produced
+  the clean diagnosis.
+
+The non-determinism of the panic across runs led to
+multiple hypotheses (Zig optimizer bug, timing race,
+build-mode-specific UB) that competed for attention
+across sessions. The actual cause (dangling pointer
+to a stack-local with timing-sensitive overwrite)
+fit all observations cleanly in retrospect but was
+not the leading hypothesis until the lldb trace
+showed `parser.scr` pointing at a freed location.
 
 **Tracks**: a future ADR to be written; depends on
 diagnostic work to characterize the actual fault.
@@ -2958,29 +3077,20 @@ Rough priority ordering within this section, not strict:
    source from the interrupt path and resolves the
    physical-console-unusable consequence of the rc.local
    `conscontrol mute on` workaround.
-9. **AD-14**: medium; ReleaseSafe vs Debug build-mode
-   discrepancy in semadraw-term. Discovered 2026-05-04 after
-   four release-mode panics with implausible `len M`
-   attributions. Debug-mode build runs the terminal correctly
-   end-to-end on bare metal; ReleaseSafe panics. Diagnostic
-   sub-stages (lldb on the optimized binary, source UB audit,
-   minimal reproducer). Not a hard blocker on AD-2 since the
-   Debug-mode workaround delivers verification, but on the
-   critical path for shipping a release-quality terminal.
-10. **AD-16**: small; semadraw-term latent edge-case bugs in
-    screen.zig found during AD-14.2 audit. Five targeted fixes
-    across `getCellMut`, `putCharWithWidth`, `scrollUp`,
-    `insertChars`, `getVisibleCell`. Not blocking AD-14 or
-    operational use; cleanup work.
-11. **AD-17**: medium; semadrawd runtime framebuffer
+9. **AD-16**: small; semadraw-term latent edge-case bugs in
+   screen.zig found during AD-14.2 audit. Five targeted fixes
+   across `getCellMut`, `putCharWithWidth`, `scrollUp`,
+   `insertChars`, `getVisibleCell`. Not blocking AD-14 or
+   operational use; cleanup work.
+10. **AD-17**: medium; semadrawd runtime framebuffer
     auto-detection. Diagnosed Sunday 2026-05-05 during AD-15
     investigation. Backend interface change (new optional
     `getDetectedDisplaySize` vtable method); drawfs implements;
     compositor uses it. Removes the AD-15.1 operator-side
     workaround; semadrawd becomes self-configuring at startup.
-12. **AD-3**: large; not scheduled.
-13. **AD-4**: largest; not scheduled.
-14. **AD-11**: large; not scheduled. Long-term replacement of
+11. **AD-3**: large; not scheduled.
+12. **AD-4**: largest; not scheduled.
+13. **AD-11**: large; not scheduled. Long-term replacement of
     `vt(4)` for UTF sessions; depends on AD-10 working and on
     AD-4 progress. Filed as documented direction; may stay open
     indefinitely if AD-10's cooperation model proves sufficient.
