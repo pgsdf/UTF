@@ -338,9 +338,8 @@ if [ -d /etc/rc.d ] || [ -d "$RCDDIR" ]; then
 
     cat > "$RCDDIR/inputfs" << RCEOF
 #!/bin/sh
-# PROVIDE: inputfs
+# PROVIDE: inputfs inputfs_loaded
 # REQUIRE: FILESYSTEMS
-# BEFORE: semadraw semainput
 # KEYWORD: shutdown
 
 # AD-12.3: rc.d service for inputfs.
@@ -352,12 +351,14 @@ if [ -d /etc/rc.d ] || [ -d "$RCDDIR" ]; then
 # bug: REQUIRE: FILESYSTEMS guarantees /var/run is mounted before
 # kldload runs.
 #
-# BEFORE: semadraw semainput ensures the inputfs ring exists in
-# /var/run/sema/input/{state,events} before any daemon that reads it
-# starts. semadrawd's drawfs backend (post-AD-2a Phase 1) opens the
-# events ring during init; without it, the daemon runs in a degraded
-# mode with no input event delivery, which is the failure mode that
-# surfaced 2026-05-02 as 'Bug 4'.
+# AD-12.2: PROVIDE: 'inputfs_loaded' is the abstract capability name
+# that consumer daemons express dependency on (REQUIRE: inputfs_loaded).
+# 'inputfs' is the service name; 'inputfs_loaded' future-proofs the
+# rcorder graph so a future implementation could provide the same
+# capability without consumer rc.d edits. Replaces the previous
+# 'BEFORE: semadraw semainput' line, which expressed the inverse
+# relationship (provider declaring consumer dependency); consumers
+# now express their own dependency via REQUIRE:.
 
 . /etc/rc.subr
 name="inputfs"
@@ -403,9 +404,22 @@ RCEOF
 
     cat > "$RCDDIR/semaaud" << RCEOF
 #!/bin/sh
-# PROVIDE: semaaud
-# REQUIRE: LOGIN
+# PROVIDE: semaaud utf_clock
+# REQUIRE: FILESYSTEMS
 # KEYWORD: shutdown
+
+# AD-12.2: 'utf_clock' is the abstract capability name for the UTF
+# audio-driven monotonic clock published at /var/run/sema/clock.
+# semaaud is currently the only provider; future audio replacements
+# (AD-3) would provide the same capability without consumer rc.d
+# edits. semadraw and any future UTF daemon that consumes the clock
+# expresses its dependency via REQUIRE: utf_clock rather than
+# REQUIRE: semaaud.
+#
+# REQUIRE: FILESYSTEMS replaces the previous REQUIRE: LOGIN. semaaud
+# does not depend on user-login state; it needs /var/run mounted (so
+# /var/run/sema/clock can be created) and /dev/dsp available (which
+# /etc/rc.d/devd handles before FILESYSTEMS completes).
 
 . /etc/rc.subr
 name="semaaud"
@@ -475,8 +489,20 @@ RCEOF
     cat > "$RCDDIR/semainput" << RCEOF
 #!/bin/sh
 # PROVIDE: semainput
-# REQUIRE: LOGIN semaaud
+# REQUIRE: FILESYSTEMS semadraw
 # KEYWORD: shutdown
+
+# AD-12.2: semainputd is the legacy evdev-to-semadrawd injection
+# bridge (retiring under AD-2 Phase 3). It connects to semadrawd's
+# socket and injects events synthesised from evdev. The dependency
+# direction is therefore semainput -> semadraw, not the reverse.
+# Pre-AD-12.2, the rc.d ordering had semadraw require semainput,
+# which was backwards: it made semadraw wait for the bridge that
+# wants to talk to it. The current ordering matches the actual
+# socket-direction: semadrawd is a server, semainputd is a client.
+# semainputd's existing in-process retry loop kept the old ordering
+# from causing visible failures, but the BACKLOG dependency graph
+# has had this direction documented correctly since AD-12 was filed.
 
 . /etc/rc.subr
 name="semainput"
@@ -539,8 +565,17 @@ RCEOF
     cat > "$RCDDIR/semadraw" << RCEOF
 #!/bin/sh
 # PROVIDE: semadraw
-# REQUIRE: LOGIN semaaud semainput
+# REQUIRE: FILESYSTEMS utf_clock inputfs_loaded
 # KEYWORD: shutdown
+
+# AD-12.2: semadrawd's dependencies expressed as abstract
+# capabilities rather than service names. utf_clock is provided by
+# semaaud (or any future replacement). inputfs_loaded is provided
+# by inputfs (the kernel module's rc.d service). Pre-AD-12.2:
+# REQUIRE: LOGIN semaaud semainput, which had two problems: LOGIN
+# is not a real dependency for a daemon that runs as root; semainput
+# was a reverse dependency (semainputd is a client of semadrawd,
+# not a precondition).
 
 . /etc/rc.subr
 name="semadraw"

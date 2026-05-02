@@ -2049,7 +2049,7 @@ sense. The terminal works; only the optimization mode
 is degraded.
 
 What this means for AD-12's framing: the lifecycle
-work (12.1, 12.3, 12.4, 12.5 landed, 12.2/12.6 open)
+work (12.1, 12.2, 12.3, 12.4, 12.5 landed, 12.6 open)
 remains correct as scoped, and AD-12.3 in particular
 delivered exactly what it promised — inputfs is
 loaded by rc.d in correct dependency order with the
@@ -2059,9 +2059,8 @@ service-lifecycle after all; it dissolved naturally
 once Bug 5 / Bug 6 / Bug 7 were addressed (or
 masked, in the Debug-mode case). AD-12 closes its
 named substrate-side scope; the remaining work is
-the PROVIDES tag (AD-12.2) and bare-metal
-verification (AD-12.6), neither gated on the
-release-mode pattern.
+bare-metal verification (AD-12.6), which is a
+sign-off pass rather than new behaviour.
 
 The new findings spawn AD-14 (ReleaseSafe vs Debug
 build mode investigation) and AD-15 (semadraw-term
@@ -2123,14 +2122,21 @@ relationships are all currently undeclared.
   was being installed despite documentation referencing
   them.
 
-- **AD-12.2**: rc.d scripts declare REQUIRE/PROVIDE.
-  install.sh's rc.d generators emit `# REQUIRE:` and
-  `# PROVIDE:` lines per FreeBSD rc.d conventions.
-  `semaaud` provides `utf_clock`; `semadrawd` requires
-  `utf_clock` and `FILESYSTEMS`; `semainputd` requires
-  `semadraw`. The dependency graph above gets written
-  as actual rc.d metadata, and `rcorder(8)` orders
-  things deterministically.
+- **AD-12.2** *(landed, this commit)*: rc.d scripts
+  declare REQUIRE/PROVIDE per the BACKLOG dependency
+  graph. `inputfs` provides `inputfs_loaded`; `semaaud`
+  provides `utf_clock`; `semadraw` requires
+  `FILESYSTEMS utf_clock inputfs_loaded`; `semainput`
+  requires `FILESYSTEMS semadraw` (the dependency
+  direction was previously inverted: pre-AD-12.2,
+  semadraw required semainput, which made the server
+  wait for its client). All four daemons now require
+  `FILESYSTEMS` rather than `LOGIN`, since UTF daemons
+  run as root via `daemon(8)` and do not depend on
+  user-login state. The `BEFORE: semadraw semainput`
+  line on inputfs (which expressed the inverse of
+  consumer dependency on the provider side) was
+  removed in favour of consumer-side `REQUIRE:` lines.
 
 - **AD-12.3** *(landed, this commit)*: rc.d service for
   inputfs. `install.sh` now generates
