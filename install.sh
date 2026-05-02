@@ -416,6 +416,16 @@ pidfile="/var/run/semaaud.pid"
 : \${semaaud_enable:="NO"}
 : \${semaaud_flags:=""}
 
+# AD-12.4: stop with confirmation. The default rc.d stop sends a
+# SIGTERM via \`kill\` and returns immediately, leaving \`service stop\`
+# claiming success while the daemon may still be alive. The custom
+# stop below waits up to STOP_TIMEOUT seconds for the process to
+# actually exit, escalates to SIGKILL on timeout, and preserves the
+# pidfile if SIGKILL also fails so a subsequent operator action can
+# find the still-alive process. Polling cost is one \`kill -0\` per
+# second; the daemon exits within milliseconds in the typical case.
+STOP_TIMEOUT=5
+
 start_cmd="semaaud_start"
 stop_cmd="semaaud_stop"
 
@@ -425,11 +435,35 @@ semaaud_start() {
 }
 
 semaaud_stop() {
-    if [ -f "\${pidfile}" ]; then
-        kill \$(cat "\${pidfile}") 2>/dev/null || true
-        rm -f "\${pidfile}"
-        echo "Stopped \${name}."
+    if [ ! -f "\${pidfile}" ]; then
+        echo "\${name} not running."
+        return 0
     fi
+    pid=\$(cat "\${pidfile}" 2>/dev/null)
+    if [ -z "\${pid}" ] || ! kill -0 "\${pid}" 2>/dev/null; then
+        echo "\${name} pidfile present but process not running; cleaning up."
+        rm -f "\${pidfile}"
+        return 0
+    fi
+    echo "Stopping \${name}."
+    kill "\${pid}" 2>/dev/null || true
+    waited=0
+    while kill -0 "\${pid}" 2>/dev/null; do
+        if [ "\${waited}" -ge "\${STOP_TIMEOUT}" ]; then
+            echo "\${name} did not exit within \${STOP_TIMEOUT}s, sending SIGKILL." >&2
+            kill -9 "\${pid}" 2>/dev/null || true
+            sleep 1
+            break
+        fi
+        sleep 1
+        waited=\$((waited + 1))
+    done
+    if kill -0 "\${pid}" 2>/dev/null; then
+        echo "\${name} STILL RUNNING after SIGKILL (pid=\${pid}); pidfile preserved." >&2
+        return 1
+    fi
+    rm -f "\${pidfile}"
+    echo "Stopped \${name}."
 }
 
 load_rc_config \$name
@@ -453,6 +487,9 @@ pidfile="/var/run/semainput.pid"
 : \${semainput_enable:="NO"}
 : \${semainput_flags:=""}
 
+# AD-12.4: stop with confirmation; see semaaud rc.d for the rationale.
+STOP_TIMEOUT=5
+
 start_cmd="semainput_start"
 stop_cmd="semainput_stop"
 
@@ -462,11 +499,35 @@ semainput_start() {
 }
 
 semainput_stop() {
-    if [ -f "\${pidfile}" ]; then
-        kill \$(cat "\${pidfile}") 2>/dev/null || true
-        rm -f "\${pidfile}"
-        echo "Stopped \${name}."
+    if [ ! -f "\${pidfile}" ]; then
+        echo "\${name} not running."
+        return 0
     fi
+    pid=\$(cat "\${pidfile}" 2>/dev/null)
+    if [ -z "\${pid}" ] || ! kill -0 "\${pid}" 2>/dev/null; then
+        echo "\${name} pidfile present but process not running; cleaning up."
+        rm -f "\${pidfile}"
+        return 0
+    fi
+    echo "Stopping \${name}."
+    kill "\${pid}" 2>/dev/null || true
+    waited=0
+    while kill -0 "\${pid}" 2>/dev/null; do
+        if [ "\${waited}" -ge "\${STOP_TIMEOUT}" ]; then
+            echo "\${name} did not exit within \${STOP_TIMEOUT}s, sending SIGKILL." >&2
+            kill -9 "\${pid}" 2>/dev/null || true
+            sleep 1
+            break
+        fi
+        sleep 1
+        waited=\$((waited + 1))
+    done
+    if kill -0 "\${pid}" 2>/dev/null; then
+        echo "\${name} STILL RUNNING after SIGKILL (pid=\${pid}); pidfile preserved." >&2
+        return 1
+    fi
+    rm -f "\${pidfile}"
+    echo "Stopped \${name}."
 }
 
 load_rc_config \$name
@@ -490,6 +551,9 @@ pidfile="/var/run/semadraw.pid"
 : \${semadraw_enable:="NO"}
 : \${semadraw_flags:="-b drawfs"}
 
+# AD-12.4: stop with confirmation; see semaaud rc.d for the rationale.
+STOP_TIMEOUT=5
+
 start_cmd="semadraw_start"
 stop_cmd="semadraw_stop"
 
@@ -499,11 +563,35 @@ semadraw_start() {
 }
 
 semadraw_stop() {
-    if [ -f "\${pidfile}" ]; then
-        kill \$(cat "\${pidfile}") 2>/dev/null || true
-        rm -f "\${pidfile}"
-        echo "Stopped \${name}."
+    if [ ! -f "\${pidfile}" ]; then
+        echo "\${name} not running."
+        return 0
     fi
+    pid=\$(cat "\${pidfile}" 2>/dev/null)
+    if [ -z "\${pid}" ] || ! kill -0 "\${pid}" 2>/dev/null; then
+        echo "\${name} pidfile present but process not running; cleaning up."
+        rm -f "\${pidfile}"
+        return 0
+    fi
+    echo "Stopping \${name}."
+    kill "\${pid}" 2>/dev/null || true
+    waited=0
+    while kill -0 "\${pid}" 2>/dev/null; do
+        if [ "\${waited}" -ge "\${STOP_TIMEOUT}" ]; then
+            echo "\${name} did not exit within \${STOP_TIMEOUT}s, sending SIGKILL." >&2
+            kill -9 "\${pid}" 2>/dev/null || true
+            sleep 1
+            break
+        fi
+        sleep 1
+        waited=\$((waited + 1))
+    done
+    if kill -0 "\${pid}" 2>/dev/null; then
+        echo "\${name} STILL RUNNING after SIGKILL (pid=\${pid}); pidfile preserved." >&2
+        return 1
+    fi
+    rm -f "\${pidfile}"
+    echo "Stopped \${name}."
 }
 
 load_rc_config \$name
