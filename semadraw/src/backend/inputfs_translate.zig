@@ -189,6 +189,49 @@ pub fn hidUsageToEvdev(hid_usage: u32) u32 {
     };
 }
 
+/// Translate a HID modifier byte (USB HID Boot Keyboard layout) to the
+/// backend KeyEvent modifier byte format.
+///
+/// HID modifier byte layout (from USB HID Usage Tables 1.4 §10):
+///   bit 0: Left Ctrl
+///   bit 1: Left Shift
+///   bit 2: Left Alt
+///   bit 3: Left GUI / Meta
+///   bit 4: Right Ctrl
+///   bit 5: Right Shift
+///   bit 6: Right Alt
+///   bit 7: Right GUI / Meta
+///
+/// Backend KeyEvent.modifiers layout (from backend/backend.zig):
+///   bit 0: Shift  (Modifiers.SHIFT in semadraw-term)
+///   bit 1: Alt    (Modifiers.ALT)
+///   bit 2: Ctrl   (Modifiers.CTRL)
+///   bit 3: Meta
+///
+/// Pre-AD-14 follow-up (this commit): inputfs_input.zig forwarded the
+/// raw HID modifier byte directly to KeyEvent.modifiers, which made
+/// every modifier register as the wrong key. Alt+N (new session)
+/// arrived at the client as Ctrl+N (HID bit 2 = LAlt; client bit 2 =
+/// Ctrl), and the session-switch handler's `if (modifiers & ALT == 0)
+/// return false` was always true. Symptom: framebuffer keyboard
+/// could not open or close virtual consoles (Alt+N, Alt+W silently
+/// dropped); could not switch sessions (Alt+F1..F8 also routed
+/// through the same broken modifier byte). Diagnosed bare-metal
+/// 2026-05-05 Sunday afternoon after AD-14 closure unblocked
+/// release-build verification of multi-session features.
+pub fn hidModifiersToBackend(hid_modifiers: u8) u8 {
+    var out: u8 = 0;
+    // Shift: bit 1 (left) or bit 5 (right) → out bit 0
+    if ((hid_modifiers & 0x22) != 0) out |= 0x01;
+    // Alt: bit 2 (left) or bit 6 (right) → out bit 1
+    if ((hid_modifiers & 0x44) != 0) out |= 0x02;
+    // Ctrl: bit 0 (left) or bit 4 (right) → out bit 2
+    if ((hid_modifiers & 0x11) != 0) out |= 0x04;
+    // Meta: bit 3 (left) or bit 7 (right) → out bit 3
+    if ((hid_modifiers & 0x88) != 0) out |= 0x08;
+    return out;
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -240,4 +283,27 @@ test "page-prefixed usage masks to ID" {
     // If kernel ever publishes (page << 16) | id, defensive masking
     // recovers the ID. Today inputfs publishes the ID alone.
     try testing.expectEqual(@as(u32, 30), hidUsageToEvdev(0x00070004)); // a
+}
+
+test "modifier translation maps left and right HID modifiers" {
+    const testing = std.testing;
+    // No modifiers
+    try testing.expectEqual(@as(u8, 0x00), hidModifiersToBackend(0x00));
+    // Single left modifiers
+    try testing.expectEqual(@as(u8, 0x04), hidModifiersToBackend(0x01)); // LCtrl  → CTRL
+    try testing.expectEqual(@as(u8, 0x01), hidModifiersToBackend(0x02)); // LShift → SHIFT
+    try testing.expectEqual(@as(u8, 0x02), hidModifiersToBackend(0x04)); // LAlt   → ALT
+    try testing.expectEqual(@as(u8, 0x08), hidModifiersToBackend(0x08)); // LMeta  → META
+    // Single right modifiers (must produce same backend bits as left)
+    try testing.expectEqual(@as(u8, 0x04), hidModifiersToBackend(0x10)); // RCtrl  → CTRL
+    try testing.expectEqual(@as(u8, 0x01), hidModifiersToBackend(0x20)); // RShift → SHIFT
+    try testing.expectEqual(@as(u8, 0x02), hidModifiersToBackend(0x40)); // RAlt   → ALT
+    try testing.expectEqual(@as(u8, 0x08), hidModifiersToBackend(0x80)); // RMeta  → META
+    // Combined left and right of the same modifier collapse to one bit
+    try testing.expectEqual(@as(u8, 0x04), hidModifiersToBackend(0x11)); // LCtrl|RCtrl
+    try testing.expectEqual(@as(u8, 0x02), hidModifiersToBackend(0x44)); // LAlt|RAlt
+    // Multiple distinct modifiers produce multiple bits
+    try testing.expectEqual(@as(u8, 0x06), hidModifiersToBackend(0x05)); // LCtrl+LAlt → CTRL+ALT
+    try testing.expectEqual(@as(u8, 0x07), hidModifiersToBackend(0x07)); // LCtrl+LShift+LAlt → CTRL+SHIFT+ALT
+    try testing.expectEqual(@as(u8, 0x0F), hidModifiersToBackend(0xFF)); // all modifiers
 }

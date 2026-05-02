@@ -2495,6 +2495,52 @@ fit all observations cleanly in retrospect but was
 not the leading hypothesis until the lldb trace
 showed `parser.scr` pointing at a freed location.
 
+**Same-day follow-up (HID modifier byte translation)**:
+operator verified the AD-14 fix worked (no panic;
+prompt visible; can run commands), and immediately
+discovered Alt+N (new session) and Alt+W (close
+session) had no effect on the framebuffer keyboard.
+Diagnosed as a separate latent bug in
+`semadraw/src/backend/inputfs_input.zig`: the raw
+HID Boot Keyboard modifier byte was forwarded
+directly to the backend KeyEvent.modifiers field,
+but the two layouts differ. HID modifier byte:
+bit 0 = LCtrl, bit 1 = LShift, bit 2 = LAlt,
+bit 3 = LMeta (and bits 4-7 the right-side equivalents).
+Backend KeyEvent.modifiers byte (per backend.zig
+documentation): bit 0 = Shift, bit 1 = Alt,
+bit 2 = Ctrl, bit 3 = Meta. The bit positions for
+Alt and Ctrl are swapped, and the layout collapses
+left/right pairs that HID keeps distinct. Pre-fix:
+Alt+N arrived at semadraw-term as Ctrl+N;
+session-switch handler's `if (modifiers & ALT == 0)
+return false` was always true on Alt presses; the
+new-session and close-session paths could never
+fire from the framebuffer keyboard.
+
+Fix added a `hidModifiersToBackend` translation
+function in `inputfs_translate.zig` (alongside the
+existing `hidUsageToEvdev`) and called it in
+`inputfs_input.zig` at the point where the
+modifier byte is read from the inputfs payload.
+The translation folds left/right pairs together
+and reorders bit positions. Tests cover the
+left-only, right-only, combined, and all-modifiers
+cases.
+
+This bug was latent before AD-14 closed. The
+single-session terminal worked because typing,
+Enter, and arrow keys do not depend on modifier
+bits. Multi-session features (Alt+N, Alt+W,
+Alt+F1..F8) were not exercised under release-mode
+verification until AD-14 was closed; the bug
+surfaced immediately when verification continued
+past the AD-14 fix. Filed as the same-day
+follow-up rather than a separate AD because it
+is a single-call-site fix discovered during
+AD-14 verification rather than a new
+investigation thread.
+
 **Tracks**: a future ADR to be written; depends on
 diagnostic work to characterize the actual fault.
 

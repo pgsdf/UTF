@@ -173,8 +173,21 @@ pub const InputfsInput = struct {
         // Payload (per INPUT_EVENTS.md §Keyboard, source_role=2):
         //   hid_usage(u32 0-3), positional(u32 4-7),
         //   modifiers(u32 8-11), session_id(u32 12-15)
+        //
+        // The modifier byte at offset 8 is the raw HID Boot Keyboard
+        // modifier byte (USB HID spec §10): bit 0 = LCtrl, bit 1 = LShift,
+        // bit 2 = LAlt, bit 3 = LMeta, bits 4-7 are the corresponding
+        // right-side modifiers. The backend KeyEvent.modifiers field uses
+        // a different layout: bit 0 = Shift, bit 1 = Alt, bit 2 = Ctrl,
+        // bit 3 = Meta. translate.hidModifiersToBackend handles the
+        // bit reordering and folds left/right pairs together. Pre-fix
+        // (this commit) the raw HID byte was forwarded directly,
+        // making every modifier register as the wrong key (Alt+N
+        // arrived as Ctrl+N at the client; semadraw-term's
+        // session-switch handler never saw an actual ALT bit).
         const hid_usage = std.mem.readInt(u32, ev.payload[0..4], .little);
-        const modifiers = @as(u8, @truncate(std.mem.readInt(u32, ev.payload[8..12], .little)));
+        const hid_modifiers = @as(u8, @truncate(std.mem.readInt(u32, ev.payload[8..12], .little)));
+        const modifiers = translate.hidModifiersToBackend(hid_modifiers);
         // session_id at offset 12 dropped on the floor in Phase 1
         // (single-session model; whatever inputfs routes to is "us").
 
