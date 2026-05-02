@@ -259,8 +259,9 @@ is that `WITHOUT_MODULES` was not passed on the command line to
 only one of them). Recover without rebuilding the kernel:
 
 ```
-sudo rm -f /boot/kernel/{hkbd,ukbd,hms,hgame,hcons,hsctrl,utouch,hpen,hmt,hconf,hidmap}.ko
-sudo rm -f /boot/kernel/{hkbd,ukbd,hms,hgame,hcons,hsctrl,utouch,hpen,hmt,hconf,hidmap}.ko.debug
+for m in hkbd ukbd hms hgame hcons hsctrl utouch hpen hmt hconf hidmap; do
+    sudo rm -f /boot/kernel/${m}.ko /boot/kernel/${m}.ko.debug
+done
 sudo kldxref /boot/kernel
 ```
 
