@@ -1,13 +1,16 @@
 # PGSD kernel
 
 This directory holds the FreeBSD kernel configuration for PGSD, the
-distribution this project ships. The current build is minimal: it
-includes FreeBSD's GENERIC kernel and removes the HID class drivers
-that compete with `inputfs` for ownership of HID devices.
+distribution this project ships. PGSD's kernel is a self-contained
+config (a derivative of FreeBSD GENERIC at the time of PGSD's
+creation, kept in sync by re-merging when tracking new FreeBSD
+releases) that removes the HID class drivers competing with
+`inputfs` for ownership of HID devices and suppresses their
+modules from the build.
 
 ## Files
 
-- `PGSD`: kernel configuration. Single file; small. Read it.
+- `PGSD`: kernel configuration. Self-contained; read it.
 
 ## Why this kernel exists
 
@@ -17,27 +20,50 @@ HID reports directly. FreeBSD's stock GENERIC kernel statically
 compiles two keyboard drivers that prevent `inputfs` from owning
 USB keyboards: `hkbd` (the modern HID keyboard driver, claiming
 hidbus children) and `ukbd` (the legacy USB keyboard driver,
-claiming USB devices directly before `hidbus` sees them). Because
-both are statically linked, runtime `kldunload` cannot displace
-them. See B.5 verification history in
-`inputfs/docs/B5_VERIFICATION.md` and BACKLOG AD-1.
+claiming USB devices directly before `hidbus` sees them). The
+PGSD config simply omits these device lines.
 
-The PGSD kernel removes both via `nodevice` lines, plus the wider
-set of HID class drivers that ADR 0007 enumerates as competitors
-(`hms`, `hgame`, `hcons`, `hsctrl`, `utouch`, `hpen`, `hmt`,
-`hconf`, and the `hidmap` HID-to-evdev framework). Most of those
-are not in stock GENERIC at the time of writing; the `nodevice`
-lines are anticipatory, documenting that PGSD excludes them
-regardless of whether they appear in a future GENERIC.
+Removing the device line from the kernel image is necessary but
+not sufficient. The FreeBSD build still produces `.ko` files for
+these drivers under `/boot/kernel/` from the modules tree, and
+the kernel registers their PNP signatures in `linker.hints`. At
+boot, when the kernel sees a USB keyboard or mouse, it
+auto-loads the matching `.ko` and the system returns to the
+contested state. The `makeoptions WITHOUT_MODULES=...` line in
+the PGSD config closes that path by suppressing the modules at
+build time. Nothing for those drivers appears under
+`/boot/kernel/`, `linker.hints` has no PNP entries to match, and
+auto-load is impossible.
+
+The `WITHOUT_MODULES` list also covers the wider set of HID class
+drivers ADR 0007 enumerates as competitors (`hms`, `hgame`,
+`hcons`, `hsctrl`, `utouch`, `hpen`, `hmt`, `hconf`, and the
+`hidmap` HID-to-evdev framework). Most of those are not in stock
+GENERIC at the time of writing; their inclusion in the list is
+anticipatory, documenting that PGSD excludes them regardless of
+whether they appear in a future GENERIC or arrive as a loadable
+module.
 
 `hidbus`, `usbhid`, and the generic `hid` layer remain. `inputfs`
 needs all three.
 
 `evdev`, `uinput`, and `EVDEV_SUPPORT` are out of scope for this
-config and remain enabled. Removing them is a separate
-architectural decision with broader userland-compatibility
-consequences during the PGSD transition; tracked separately, not
-folded into AD-8.
+config and remain enabled. Removing the evdev userland contract
+is a separate architectural decision with broader consequences
+during the PGSD transition; tracked separately, not folded into
+AD-8.
+
+## Relationship to upstream GENERIC
+
+PGSD copies GENERIC's body verbatim aside from the AD-8 changes
+(ident, removed device lines, WITHOUT_MODULES makeoption). The
+file header notes this. When tracking a new FreeBSD release,
+re-merge PGSD against the new GENERIC: diff the two configs,
+apply non-AD-8 upstream changes to PGSD, leave the AD-8 changes
+in place. This is a small enough surface that the cost of manual
+re-merge is acceptable; the alternative (`include GENERIC` plus
+`nodevice` overrides) was insufficient because `nodevice` does
+not affect the modules build.
 
 ## Build
 
@@ -133,25 +159,42 @@ sysctl kern.conftxt | head -3
 
 The `ident` line should read `ident PGSD` (not `ident GENERIC`).
 
-Confirm the drivers we observed in stock GENERIC are now absent:
+Confirm the static kernel does not include the competing drivers:
 
 ```
 config -x /boot/kernel/kernel | grep -E "^device[[:space:]]+(hkbd|ukbd)"
 ```
 
-This should return no lines. `hkbd` and `ukbd` were the keyboard
+This should return no lines. `hkbd` and `ukbd` are the keyboard
 drivers in stock GENERIC at the time of this config; their absence
-is what unblocks `inputfs` from owning USB keyboards.
+from the static kernel is the first half of unblocking inputfs.
 
-Optionally, confirm the anticipatory removals are also absent. Most
-of these were not in stock GENERIC, so they should already be
-absent regardless:
+Confirm the modules also do not exist on disk (the second half;
+`WITHOUT_MODULES` should have suppressed these from the build):
 
 ```
-config -x /boot/kernel/kernel | grep -E "^device[[:space:]]+(hms|hgame|hcons|hsctrl|utouch|hpen|hmt|hconf|hidmap)"
+ls /boot/kernel/ | grep -E "^(hkbd|ukbd|hms|hgame|hcons|hsctrl|utouch|hpen|hmt|hconf|hidmap)\.ko"
 ```
 
-Should return no lines.
+This should return no lines. If any of these `.ko` files exist,
+`WITHOUT_MODULES` did not take effect during the kernel build
+and the runtime auto-load contention path is still open.
+Investigate the build log; if the build was a `make installkernel`
+without a fresh `make buildkernel`, the install may have copied
+old modules from a prior build. A clean `make buildkernel
+KERNCONF=PGSD` followed by `make installkernel KERNCONF=PGSD`
+should produce the expected result.
+
+Cross-check that `linker.hints` does not advertise PNP signatures
+for the suppressed drivers:
+
+```
+strings /boot/kernel/linker.hints | grep -E "(hkbd|ukbd|hms|hgame|hcons|hsctrl|utouch|hpen|hmt|hconf|hidmap)"
+```
+
+Should return no lines. `linker.hints` is rebuilt from the .ko
+files present at install time; with the modules absent, no PNP
+entries exist.
 
 Confirm `hidbus`, `usbhid`, and `hid` are still present:
 
@@ -193,8 +236,9 @@ unload). Expected behavior on the PGSD kernel:
 
 - Precondition step "Unloading drivers that compete with inputfs"
   finds none of the competing drivers loaded (because they are
-  not in the kernel). The step passes immediately with
-  "No competing drivers loaded."
+  not in the kernel and their modules are not on disk to
+  auto-load). The step passes immediately with "No competing
+  drivers loaded."
 - Signal 2.1 produces an `inputfs0: ... attached HID mouse` line
   and a `roles=pointer` line.
 - Signal 2.2 produces a stream of `report id=` lines as the mouse
@@ -209,15 +253,26 @@ closeout commit message.
 
 ## Future PGSD kernel work
 
-This config is the minimal change needed for B.5 verification. As
-PGSD takes shape, additional kernel deviations belong here:
+This config is the minimal change needed for B.5 verification and
+its follow-up to close the auto-load contention path. As PGSD
+takes shape, additional kernel deviations belong here:
 
-- `nodevice` for legacy input drivers if they appear in some
-  future GENERIC (`ukbd`, `ums`, `psm` are not currently relevant)
-- `nodevice` for graphics drivers superseded by `drawfs` (AD-4)
-- `nodevice` for audio drivers superseded by `semaaud` (AD-3)
+- Additional entries in `WITHOUT_MODULES` for legacy input
+  drivers if they appear in some future GENERIC (`ums`, `psm` are
+  not currently relevant)
+- `nodevice` and `WITHOUT_MODULES` for graphics drivers
+  superseded by `drawfs` (AD-4)
+- `nodevice` and `WITHOUT_MODULES` for audio drivers superseded
+  by `semaaud` (AD-3)
 - Additional `device` and `options` lines as PGSD's substrate
   matures
 
 Each addition belongs in its own commit with reference to the
 backlog item that drove it.
+
+When tracking new FreeBSD releases, re-merge upstream GENERIC
+into PGSD: diff `/usr/src/sys/amd64/conf/GENERIC` against
+`pgsd-kernel/PGSD`, port any non-AD-8 upstream additions across,
+keep the AD-8 deltas (header, ident, removed device lines,
+WITHOUT_MODULES line) intact. Commit with the FreeBSD release
+identifier in the message.

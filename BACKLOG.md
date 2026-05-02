@@ -1382,39 +1382,68 @@ boundary heavily.
 
 Doc task, not code work. Can happen in parallel with AD-1 Stage B.
 
-### `[~]` AD-8: PGSD kernel: omit drivers superseded by inputfs  *(In progress, Small)*
+### `[x]` AD-8: PGSD kernel: omit drivers superseded by inputfs  *(Done 2026-05-05, Small)*
 
 **Tracks**: `pgsd-kernel/PGSD` and `pgsd-kernel/README.md`.
 
 PGSD ships its own FreeBSD-derived kernel that omits drivers
-inputfs supersedes. The current config at `pgsd-kernel/PGSD`
-includes GENERIC and `nodevice`s the eight HID class drivers ADR
-0007 enumerates plus `hidmap` (the HID-to-evdev framework, which
-PGSD excludes as a structural commitment per ADR 0001). `hidbus`,
-`usbhid`, and the generic `hid` layer remain.
+inputfs supersedes. The config at `pgsd-kernel/PGSD` is a
+self-contained derivative of FreeBSD GENERIC (re-merged on
+upstream-release-tracking) that omits the `hkbd` and `ukbd`
+device lines and adds `makeoptions WITHOUT_MODULES=...` listing
+all eleven HID class drivers ADR 0007 enumerates plus `hidmap`.
+`hidbus`, `usbhid`, and the generic `hid` layer remain.
 
-**Status:** kernel config landed and built. Bare-metal verification
-of B.5 ran successfully on the PGSD kernel (see AD-1 Stage B
-status).
+**Status:** Done 2026-05-05. Self-contained PGSD config landed.
+WITHOUT_MODULES suppresses the .ko files at build time, so the
+modules are not on disk under `/boot/kernel/` and `linker.hints`
+has no PNP entries to match — the runtime auto-load contention
+path is closed.
 
-**Open work:**
+The pre-AD-8 path that this commit replaced:
 
-- The `nodevice` directives remove drivers from the static kernel
-  image but the FreeBSD build still produces `.ko` files for them
-  under `/boot/kernel/`. `linker.hints` registers their PNP
-  signatures and the kernel auto-loads them at boot when matching
-  USB devices appear, putting the system back in the contested
-  state. The verification workflow currently moves the `.ko` files
-  aside as a stopgap. The durable answer is `WITHOUT_MODULES` in
-  `/etc/src.conf` before `make buildkernel`, which omits the
-  modules from the build entirely. To land.
+- Pre-2026-05-05: the config was an `include GENERIC` plus
+  `nodevice` overrides. `nodevice` removed the driver from the
+  static kernel image but did not affect the modules build, so
+  `.ko` files appeared under `/boot/kernel/`, `linker.hints`
+  registered their PNP signatures, and the kernel auto-loaded
+  them at boot when matching USB devices appeared. The
+  verification workflow worked around this by moving the `.ko`
+  files aside between builds.
+
+The post-AD-8 path landing in this commit:
+
+- `pgsd-kernel/PGSD` is a self-contained config: a full copy of
+  GENERIC with the AD-8 deltas (file header, ident, removed
+  `hkbd`/`ukbd` device lines, `WITHOUT_MODULES` makeoption).
+  Trade-off: PGSD must be re-merged with upstream GENERIC on
+  each FreeBSD release, but the config is fully self-describing
+  and the runtime contention path is closed without per-host
+  `.ko` workarounds.
+- README updated to document the new shape and the re-merge
+  procedure for upstream tracking. Verification recipe extended
+  to include disk-side checks (`ls /boot/kernel/`,
+  `strings /boot/kernel/linker.hints`) confirming the modules
+  are absent — not just that the static kernel has no device
+  line.
+
+**Out of scope (deliberately):**
+
 - A future `pkg upgrade` of `FreeBSD-kernel-generic` will
   reinstall the omitted modules. PGSD eventually needs its own
   pkg repository (or a `pkg-lock(8)` discipline). Out of scope
-  for the immediate work but tracked here.
+  for AD-8; relevant once PGSD has its own pkg infrastructure.
 - Removing `evdev`, `uinput`, and `EVDEV_SUPPORT` from the kernel
-  is a separate decision deserving its own track. Not folded into
-  AD-8.
+  is a separate decision deserving its own track. Not folded
+  into AD-8.
+
+**Verification on bare metal pending:** rebuild kernel via the
+README procedure (`make buildkernel KERNCONF=PGSD`,
+`make installkernel KERNCONF=PGSD`, reboot), confirm running
+ident is PGSD, confirm no `.ko` files exist for the suppressed
+drivers, run B.5 verification — expected to pass with the
+"No competing drivers loaded." path now reflecting genuine
+absence rather than a stopgap unload.
 
 ### `[x]` AD-9: HID descriptor and report fuzzing  *(Done, Medium)*
 
@@ -2244,7 +2273,7 @@ named the common root cause and filed this entry.
 The naming itself is the first piece of work; the
 sub-stages are the next.
 
-### `[ ]` AD-13: inputfs debug logging audit  *(Open, Small)*
+### `[x]` AD-13: inputfs debug logging audit  *(Done 2026-05-05, Small)*
 
 **Tracks**: `inputfs/sys/dev/inputfs/inputfs.c`, specifically
 the per-report `device_printf` in `inputfs_intr`
