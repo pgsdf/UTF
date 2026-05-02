@@ -497,6 +497,17 @@ struct inputfs_softc {
 	 * scope per ADR 0014.
 	 */
 	struct inputfs_parser_state	 sc_parser;
+
+	/*
+	 * AD-13.2: per-softc log suppression for the report-truncated
+	 * path. A persistently-misbehaving device that emits oversized
+	 * HID reports would otherwise produce one printf per report
+	 * (per-input-event), filling the kernel log. Set on first
+	 * truncation, cleared on first non-truncated report. See the
+	 * file-static *_logged_failure flags for the kthread error
+	 * paths that use the same pattern at module scope.
+	 */
+	int		 sc_logged_truncated;
 };
 
 /*
@@ -568,6 +579,32 @@ static int			 inputfs_kthread_done;
  * found" log lines: log once per attach cycle, not once per
  * refresh tick.
  */
+/*
+ * AD-13.2: error-state suppression flags. The kthread's per-tick
+ * sync paths (state, events) and the focus refresh path can each
+ * fail repeatedly under conditions like disk full, filesystem
+ * read-only, vnode revoked. Without suppression, a persistent
+ * error condition produces one printf per kthread tick (~100 Hz),
+ * filling the kernel log within seconds and competing with the
+ * very framebuffer surface this work was supposed to keep clear.
+ *
+ * Pattern: log once on entry into the error state; clear the
+ * flag on first success after the error. This produces exactly
+ * one log per failure-and-recovery cycle, regardless of how long
+ * the failure persists. Mirrors inputfs_focus_logged_absent
+ * (Stage D.1) which uses the same pattern for a different error
+ * surface.
+ *
+ * Each flag is set when its error path runs, cleared when the
+ * corresponding success path runs (or when the related resource
+ * is closed/reopened, whichever is appropriate for that error
+ * surface).
+ */
+static int			 inputfs_state_sync_logged_failure;
+static int			 inputfs_events_slot_logged_failure;
+static int			 inputfs_events_header_logged_failure;
+static int			 inputfs_focus_refresh_logged_failure;
+
 static uint8_t			*inputfs_focus_buf;
 static struct mtx		 inputfs_focus_mtx;
 static struct vnode		*inputfs_focus_vp;
@@ -1116,7 +1153,18 @@ inputfs_state_sync_to_file(struct thread *td)
 	    (off_t)0, UIO_SYSSPACE,
 	    IO_UNIT | IO_SYNC, NOCRED, NULL, NULL, td);
 	if (error != 0) {
-		printf("inputfs: vn_rdwr write failed: %d\n", error);
+		/* AD-13.2: log once per failure-and-recovery cycle.
+		 * The kthread retries every tick; without suppression,
+		 * persistent failure (disk full, read-only fs) would
+		 * print at ~100 Hz, dwarfing any signal. */
+		if (!inputfs_state_sync_logged_failure) {
+			printf("inputfs: state vn_rdwr write failed: %d "
+			    "(further failures suppressed until success)\n",
+			    error);
+			inputfs_state_sync_logged_failure = 1;
+		}
+	} else {
+		inputfs_state_sync_logged_failure = 0;
 	}
 }
 
@@ -1355,11 +1403,18 @@ inputfs_events_sync_to_file(struct thread *td)
 		    off, UIO_SYSSPACE,
 		    IO_UNIT | IO_SYNC, NOCRED, NULL, NULL, td);
 		if (error != 0) {
-			printf("inputfs: events slot vn_rdwr failed at seq=%lu: %d\n",
-			    (unsigned long)seq, error);
+			/* AD-13.2: suppress repeats. See state sync. */
+			if (!inputfs_events_slot_logged_failure) {
+				printf("inputfs: events slot vn_rdwr "
+				    "failed at seq=%lu: %d (further "
+				    "failures suppressed until success)\n",
+				    (unsigned long)seq, error);
+				inputfs_events_slot_logged_failure = 1;
+			}
 			return;
 		}
 	}
+	inputfs_events_slot_logged_failure = 0;
 
 	/* Header last: writer_seq and earliest_seq updates become
 	 * visible on disk after the slots they advertise. */
@@ -1368,9 +1423,16 @@ inputfs_events_sync_to_file(struct thread *td)
 	    (off_t)0, UIO_SYSSPACE,
 	    IO_UNIT | IO_SYNC, NOCRED, NULL, NULL, td);
 	if (error != 0) {
-		printf("inputfs: events header vn_rdwr failed: %d\n", error);
+		/* AD-13.2: suppress repeats. See state sync. */
+		if (!inputfs_events_header_logged_failure) {
+			printf("inputfs: events header vn_rdwr failed: %d "
+			    "(further failures suppressed until success)\n",
+			    error);
+			inputfs_events_header_logged_failure = 1;
+		}
 		return;
 	}
+	inputfs_events_header_logged_failure = 0;
 
 	inputfs_events_synced = synced + to_write;
 }
@@ -1462,12 +1524,22 @@ inputfs_focus_refresh(struct thread *td)
 	    IO_UNIT, NOCRED, NULL, NULL, td);
 	if (error != 0) {
 		/* File may have been deleted or filesystem in trouble.
-		 * Close and let the next tick retry the open. */
-		printf("inputfs: focus vn_rdwr read failed: %d "
-		    "(closing, will retry)\n", error);
+		 * Close and let the next tick retry the open.
+		 *
+		 * AD-13.2: log once per failure-and-recovery cycle.
+		 * Without suppression, a persistent fs error produces
+		 * one printf per ~100 ms (focus refresh tick), filling
+		 * the kernel log with the same line. */
+		if (!inputfs_focus_refresh_logged_failure) {
+			printf("inputfs: focus vn_rdwr read failed: %d "
+			    "(closing, will retry; further failures "
+			    "suppressed until success)\n", error);
+			inputfs_focus_refresh_logged_failure = 1;
+		}
 		inputfs_focus_close_file(td);
 		return;
 	}
+	inputfs_focus_refresh_logged_failure = 0;
 
 	/* Validate magic and version before populating cache. */
 	magic = inputfs_get_u32le(scratch, FC_OFF_MAGIC);
@@ -2250,12 +2322,23 @@ inputfs_intr(void *context, void *data, hid_size_t len)
 		return;
 
 	if (len > sc->sc_ibuf_size) {
-		device_printf(sc->sc_dev,
-		    "inputfs: report truncated (%u > %u bytes)\n",
-		    (unsigned int)len, (unsigned int)sc->sc_ibuf_size);
+		/* AD-13.2: log once per truncation-and-recovery cycle.
+		 * A misbehaving device emitting oversized reports
+		 * would otherwise produce one device_printf per
+		 * report at HID interrupt rate, dwarfing the actual
+		 * device misbehaviour with log spam. */
+		if (!sc->sc_logged_truncated) {
+			device_printf(sc->sc_dev,
+			    "inputfs: report truncated (%u > %u bytes; "
+			    "further truncations suppressed until a "
+			    "non-truncated report arrives)\n",
+			    (unsigned int)len, (unsigned int)sc->sc_ibuf_size);
+			sc->sc_logged_truncated = 1;
+		}
 		copy_len = sc->sc_ibuf_size;
 	} else {
 		copy_len = len;
+		sc->sc_logged_truncated = 0;
 	}
 
 	memcpy(sc->sc_ibuf, data, copy_len);
@@ -2587,6 +2670,7 @@ inputfs_attach(device_t dev)
 
 	sc->sc_dev = dev;
 	sc->sc_state_slot = INPUTFS_NO_STATE_SLOT;
+	sc->sc_logged_truncated = 0;
 	mtx_init(&sc->sc_mtx, "inputfs softc", NULL, MTX_DEF);
 
 	switch (HID_GET_USAGE(usage)) {
@@ -2869,6 +2953,16 @@ inputfs_modevent(module_t mod, int what, void *arg)
 		inputfs_focus_vp = NULL;
 		inputfs_focus_cache_valid = 0;
 		inputfs_focus_logged_absent = 0;
+
+		/* AD-13.2: error-state log suppression flags. Static
+		 * BSS gives zero-init at first load; explicit reset
+		 * here documents the invariant and survives any future
+		 * refactor that initializes module state from non-zero
+		 * defaults. */
+		inputfs_state_sync_logged_failure = 0;
+		inputfs_events_slot_logged_failure = 0;
+		inputfs_events_header_logged_failure = 0;
+		inputfs_focus_refresh_logged_failure = 0;
 
 		/* Stage D.4: pointer routing state. Reset to 0 (no
 		 * session) so the first pointer event after load

@@ -2314,13 +2314,61 @@ the print landed in production.
   (`sysctl hw.inputfs.debug_reports=1`) and disable
   again with no module reload.
 
-- **AD-13.2**: audit `inputfs.c` for *other* high-frequency
-  `device_printf` calls. The "calling hid_intr_start"
-  logs are once-per-attach, fine. The "report id="
-  log is per-report, not fine. Anything else
-  per-report or per-event needs the same gating
-  treatment. Producing a list and applying the
-  pattern.
+- **AD-13.2** *(landed, this commit)*: audit `inputfs.c`
+  for *other* high-frequency `device_printf` /
+  `printf` calls. Five hot-path sites identified
+  and fixed:
+
+  - `inputfs_intr` (line 2253): report-truncation log
+    fires per-report under a malformed device that
+    persistently emits oversized reports. Per-softc
+    flag `sc_logged_truncated` suppresses repeats
+    until a non-truncated report arrives.
+
+  - `inputfs_state_sync_to_file` (line 1119): state
+    file write failure fires per kthread tick (~100 Hz)
+    under disk full / read-only fs. File-static flag
+    `inputfs_state_sync_logged_failure` suppresses
+    repeats until a successful write.
+
+  - `inputfs_events_sync_to_file` (line 1358 slot
+    write, line 1371 header write): same pattern,
+    same per-tick frequency. Flags
+    `inputfs_events_slot_logged_failure` and
+    `inputfs_events_header_logged_failure`.
+
+  - `inputfs_focus_refresh` (line 1466): focus file
+    read failure fires per refresh tick (~100 ms)
+    under fs error. Flag
+    `inputfs_focus_refresh_logged_failure`.
+
+  Applied the project's existing once-per-error-state
+  suppression pattern (mirror of
+  `inputfs_focus_logged_absent` from Stage D.1):
+  log on entry to error state; clear flag on first
+  success after error. Produces exactly one log per
+  failure-and-recovery cycle, regardless of how
+  long the failure persists. Better suited to error
+  paths than ppsratecheck (which logs N per second
+  even during a stable error condition); equivalent
+  for diagnostic value.
+
+  Sites left as-is because they are not hot:
+
+  - lines 1834, 1846: D.5 valid-byte writes are
+    once per `hw.inputfs.enable` edge, operator
+    driven.
+  - lines 1938, 1949: D.5 publication-gate logs,
+    once per `hw.inputfs.enable` edge.
+  - lines 1020, 1058, 1073, 1259, 1274, 1418, 1775,
+    1784, 963, 968: file-open failures, geometry
+    discovery, transform setup — once per attach
+    or once per configuration change. Operator
+    diagnostic value with no spam risk.
+  - line 2278: per-report hex dump already gated
+    by AD-13.1's `hw.inputfs.debug_reports` sysctl.
+  - lines 2607-2780: attach/detach logs, once per
+    device lifecycle.
 
 - **AD-13.3**: same audit for `drawfs.c`, `chronofs/`,
   and the userspace daemons. Less likely to find
