@@ -156,7 +156,20 @@ pub const Parser = struct {
     }
 
     fn decodeUtf8(self: *Self) ?u21 {
-        const buf = self.utf8_buf[0..self.utf8_len];
+        // Defensive: caller (handleUtf8) only invokes us when
+        // utf8_len == utf8_expected, but a state-machine bug or future
+        // refactor could violate that. Guard explicitly so the bounds
+        // check never panics: if the lengths disagree or expected is
+        // out of the 2..4 range this decoder handles, return null and
+        // let the caller treat the partial sequence as invalid input.
+        // Bug 5 (2026-05-04) surfaced as 'index N, len M' in this
+        // function under release-mode optimization; the root cause was
+        // the original `buf = utf8_buf[0..utf8_len]` slice combined
+        // with a switch on utf8_expected, allowing an inconsistent
+        // state to dispatch into a switch arm that read past buf.len.
+        if (self.utf8_expected < 2 or self.utf8_expected > 4) return null;
+        if (self.utf8_len != self.utf8_expected) return null;
+        const buf = self.utf8_buf[0..self.utf8_expected];
         return switch (self.utf8_expected) {
             2 => blk: {
                 // 110xxxxx 10xxxxxx

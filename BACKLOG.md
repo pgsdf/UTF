@@ -1893,6 +1893,56 @@ death, and accumulate as zombies across debug cycles.
    release-build core dump). Not blocking AD-12
    sub-stages.
 
+   **2026-05-04 update**: AD-13.1 (per-report
+   `device_printf` gated behind sysctl, default off)
+   landed and was verified on bare metal. Re-running
+   release-mode semadraw-term against the new inputfs
+   produced **a different panic, in a different file**:
+   `vt100.zig:183` rather than `screen.zig:380`. The
+   screen.zig panic family (`index 0,0`; `1,1`; `5,4`)
+   no longer reproduces; the latency hypothesis is
+   confirmed for that bug. What surfaced instead is
+   Bug 5 below — the inputfs interrupt-path latency
+   was masking a different bug downstream in the
+   UTF-8 decoder. With Bug 5 fixed and Bug 2's
+   screen.zig family also no longer reproducing,
+   "Bug 2" as a separate entry is effectively
+   subsumed: the panics on screen.zig were always
+   the same Bug 5 path, with release-mode optimization
+   pointing at the wrong line. Verification of this
+   claim is on the next reproduction attempt with
+   AD-13.1 + the Bug 5 fix in place.
+
+6. **"Bug 5": semadraw-term `vt100.zig:183` UTF-8
+   decoder out-of-bounds.** Discovered 2026-05-04 after
+   AD-13.1 unmasked it. semadraw-term reaches "session 1
+   started", prompt renders fully, typing reaches the
+   shell — and then the shell's response (typing `ls`
+   plus Enter) triggers `panic: index out of bounds:
+   index 4, len 4` at `vt100.zig:183` in `decodeUtf8`.
+   Root cause: `decodeUtf8` sliced `utf8_buf` by
+   `utf8_len` (the number of continuation bytes
+   collected) but switched on `utf8_expected` (the
+   total bytes the lead byte declared). When the two
+   disagreed — through any state-machine path or
+   release-mode optimization quirk — the switch arm
+   read past `buf.len`. Fix slices by `utf8_expected`
+   (so `buf.len` always matches the switch arm) and
+   adds a guard that returns null when the lengths
+   disagree (so a partial sequence is treated as
+   invalid input rather than decoded with stale
+   bytes). Two-line guard plus one-line slice change.
+
+   **What this entry does not claim**: the fix
+   prevents the panic, but the underlying state-machine
+   path that lets `utf8_len` and `utf8_expected`
+   disagree (if such a path exists) is not
+   identified. The defensive guard makes the
+   disagreement impossible to observe; the path may
+   still need investigation if Bug 5 turns out to be
+   reachable via legitimate input rather than only
+   via release-mode optimization quirks.
+
 These symptoms are not bugs in the daemons themselves.
 They are bugs in the *lifecycle* — what happens during
 start, what happens during stop, what each daemon does
