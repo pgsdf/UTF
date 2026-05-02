@@ -2422,6 +2422,59 @@ determine which:
   Concentrate on `vt100.zig`'s state machine and the
   inlined call chain `feed -> handleX -> ...`.
 
+  **First-pass audit findings (2026-05-04, completed
+  on Sunday)**: read-through of `screen.zig` (1600 lines),
+  `vt100.zig` (1358 lines), `main.zig` (1068 lines), and
+  partial `renderer.zig`. Found several latent bugs
+  reachable only from specific input sequences not
+  exercised by the test that triggered the panics:
+
+  - `screen.zig:386-403` (`putCharWithWidth`): width=0
+    combining characters can land on cursor_col == cols
+    after a prior put advanced the cursor to the right
+    edge, then call `getCellMut(cols, row)` which
+    silently returns a pointer one cell into the next
+    row (or past `cells.len` at last row, panic).
+    Reachable only with combining diacriticals in the
+    output stream; not produced by `ls` or basic prompt.
+
+  - `screen.zig:478` (`scrollUp`): `end_row -
+    lines_to_scroll` underflows on u32 when
+    `lines_to_scroll == end_row + 1`. Reachable from
+    CSI `M` (delete lines) with n equal to scroll
+    region height. Not produced by basic shell input.
+
+  - `screen.zig:699-703` (`insertChars`): backward
+    loop `while (col >= cursor_col + chars_to_insert)`
+    runs forever when `cursor_col + chars_to_insert
+    == 0`. Reachable from CSI `0@`. Not produced by
+    basic shell input.
+
+  - `screen.zig:253` (`getCellMut`): no bounds check.
+    Silently corrupts adjacent rows when called with
+    `col == cols`. Multiple call sites depend on
+    callers honoring the implicit precondition.
+
+  - `screen.zig:1043` (`getVisibleCell`): `rows -
+    scrollback_lines_visible` underflows when scroll
+    view exceeds screen size. Reachable only with
+    active scrollback view, not first-render path.
+
+  None of these fires on the boot-time input
+  sequence (init -> render empty -> shell prompt ->
+  `ls`). The actual Bug 2/5/6/7 panic vector is
+  elsewhere. Filed as separate latent-bug items for
+  later cleanup; not the AD-14 root cause.
+
+  **Conclusion of first-pass audit**: hypothesis 1
+  (real source UB that ReleaseSafe exposes) became
+  less likely. Weight shifted to hypothesis 2 (Zig
+  optimizer producing incorrect bounds-check code)
+  or hypothesis 3 (timing-sensitive race).
+  Discriminating between 2 and 3 needs AD-14.1
+  (lldb on the optimized binary, authoritative fault
+  address).
+
 - **AD-14.3**: minimal reproducer. Strip
   semadraw-term down to a unit test that panics
   under ReleaseSafe and works under Debug, with the
@@ -2553,6 +2606,69 @@ output. Surface does not fill screen; no status
 bar visible. Both observations against the same
 single-session run.
 
+### `[ ]` AD-16: semadraw-term latent edge-case bugs in screen.zig  *(Open, Small)*
+
+**Tracks**: `semadraw/src/apps/term/screen.zig`; no
+ADR required.
+
+The AD-14.2 source audit (Sunday session) found
+several latent bugs reachable only via specific
+input sequences not exercised by the panic-vector
+test. Filed here so they don't get lost; none
+blocks AD-14, AD-15, or current operational use.
+
+**Sub-stages**:
+
+- **AD-16.1**: `getCellMut` (line 253) does not
+  bounds-check. Should panic explicitly with a
+  clear message when called with `col >= cols` or
+  `row >= rows`, not silently corrupt adjacent
+  rows. Add an explicit precondition
+  (`std.debug.assert` plus a meaningful panic
+  message). Same for `getCell` (line 248).
+
+- **AD-16.2**: `putCharWithWidth` (line 384)
+  advances cursor unconditionally on width=0
+  combining characters. Combining marks should not
+  consume a cell, but they currently do (and can
+  land cursor at `cols`, breaking
+  `getCellMut`). Either reject width=0 chars
+  explicitly (do nothing) or merge them into the
+  preceding cell as an attribute, not a separate
+  glyph. The Unicode-correct behavior is the
+  latter; the practical-and-safe behavior is the
+  former.
+
+- **AD-16.3**: `scrollUp` (line 478) end_row -
+  lines_to_scroll wraps under `u32`. Add explicit
+  guard: if `lines_to_scroll > end_row -
+  start_row`, scroll the entire region (clear all
+  lines, no copy needed).
+
+- **AD-16.4**: `insertChars` (line 699-703)
+  backward loop runs forever when `cursor_col +
+  chars_to_insert == 0`. Add explicit guard: skip
+  the shift entirely when `chars_to_insert == 0`.
+
+- **AD-16.5**: `getVisibleCell` (line 1043) `rows
+  - scrollback_lines_visible` wraps when
+  scroll_view exceeds screen size. Add explicit
+  cap: `screen_lines_visible = if
+  (scrollback_lines_visible >= rows) 0 else rows -
+  scrollback_lines_visible`.
+
+Each is a small targeted fix. Total estimated
+work: a few hours including writing tests for the
+specific input sequences that trigger them. Worth
+doing in a single batch since the tests share
+infrastructure (build a Screen, exercise the
+path, assert no panic, assert state is correct).
+
+**Discovered**: AD-14.2 source audit 2026-05-04 /
+Sunday continuation. None of these is the AD-14
+bug; the panics there fire on input sequences
+that don't trigger any of these paths.
+
 ### Priority
 
 Rough priority ordering within this section, not strict:
@@ -2600,9 +2716,14 @@ Rough priority ordering within this section, not strict:
     rendering, missing status bar). Discovered 2026-05-04 on the
     working Debug-mode terminal. Polish work; does not block
     usage.
-12. **AD-3**: large; not scheduled.
-13. **AD-4**: largest; not scheduled.
-14. **AD-11**: large; not scheduled. Long-term replacement of
+12. **AD-16**: small; semadraw-term latent edge-case bugs in
+    screen.zig found during AD-14.2 audit. Five targeted fixes
+    across `getCellMut`, `putCharWithWidth`, `scrollUp`,
+    `insertChars`, `getVisibleCell`. Not blocking AD-14 or
+    operational use; cleanup work.
+13. **AD-3**: large; not scheduled.
+14. **AD-4**: largest; not scheduled.
+15. **AD-11**: large; not scheduled. Long-term replacement of
     `vt(4)` for UTF sessions; depends on AD-10 working and on
     AD-4 progress. Filed as documented direction; may stay open
     indefinitely if AD-10's cooperation model proves sufficient.
