@@ -2413,6 +2413,66 @@ determine which:
   ReleaseSafe inlined the call chain. This is the
   authoritative diagnostic.
 
+  **First attempt (2026-05-05, Sunday)**: built
+  semadraw-term with ReleaseSafe + `-Dstrip=false`,
+  installed over the install.sh-built binary, ran
+  under lldb on bare metal. Result: **the panic did
+  not reproduce**, neither under lldb nor when run
+  directly without lldb on the same binary. Tested
+  with both `--scale 1` (the lldb-default that
+  produced 480x134 cells) and `--scale 2` (yesterday's
+  240x66 repro path). Neither configuration panicked
+  on `ls` + Enter under any condition tried.
+
+  This is itself a result: the AD-14 bug is
+  **non-deterministic and state-dependent**, not a
+  reliable function of binary contents and input.
+  Yesterday's four panics were against the same
+  binary class (ReleaseSafe, install.sh-built) with
+  the same input (`ls` + Enter); today the same
+  configuration is operational. Something in the
+  system state — probably daemon ordering, inputfs
+  load history, drawfs surface state, or accumulated
+  uptime — affects whether the bug fires.
+
+  Implications:
+
+  - The Bug 5 / Bug 6 defensive guards landed
+    yesterday may have actually fixed some real bugs;
+    we can't tell because the surrounding bug class
+    is now intermittent.
+
+  - lldb diagnosis is blocked while the bug doesn't
+    reproduce. AD-14.1 cannot make progress without
+    a reliable repro.
+
+  - Hypothesis 3 (timing-sensitive race) gains
+    weight against hypothesis 1 (deterministic source
+    UB), since deterministic source UB would
+    reproduce on the same binary with the same input.
+    Hypothesis 2 (Zig optimizer bug) remains
+    possible if the optimizer's output exhibits
+    timing sensitivity.
+
+  - The Debug-mode workaround documented in AD-14
+    main entry may be unnecessary as permanent
+    operational guidance, since ReleaseSafe is
+    sometimes operational. Keep the workaround
+    available but stop describing it as the only
+    working build.
+
+  Next moves for AD-14.1 when bug next fires:
+
+  - Capture exact system state at the moment of
+    successful repro (uptime, daemon start times,
+    `kldstat -m inputfs`, `sockstat -l | grep
+    semadraw`, recent dmesg).
+  - Re-run lldb attempt. If the bug is truly
+    transient even within a session, may need
+    a panic-pause approach (override
+    `std.builtin.Panic` to capture fault info and
+    sleep so lldb can attach post-panic).
+
 - **AD-14.2**: source audit for common UB patterns
   in the panic-path code: integer wraparound on
   unsigned types (`u8 - 1` when the value is 0,
