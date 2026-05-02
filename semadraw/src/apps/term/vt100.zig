@@ -347,7 +347,20 @@ pub const Parser = struct {
     fn handleCsiParam(self: *Self, c: u8) void {
         if (c >= '0' and c <= '9') {
             if (self.param_count == 0) self.param_count = 1;
-            const idx = self.param_count - 1;
+            // Bug 6 (2026-05-04): idx must be a valid index into
+            // self.params. Cap at params.len-1 so a runaway
+            // param_count cannot index out of bounds. The cap is a
+            // safety net; the ';' handler below already caps growth
+            // at 16, but release-mode optimization in 2026-05-04
+            // testing produced a panic 'index 3, len 3' attributed
+            // to this line, suggesting either a state-machine path
+            // grew param_count past the cap or the panic site
+            // attribution itself was wrong. Either way, clamping idx
+            // here is cheap (one min op) and makes the access safe
+            // by construction.
+            const cap = self.params.len - 1;
+            const raw_idx: usize = self.param_count - 1;
+            const idx = if (raw_idx > cap) cap else raw_idx;
             self.params[idx] = self.params[idx] * 10 + (c - '0');
         } else if (c == ';') {
             if (self.param_count < 16) {

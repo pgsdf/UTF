@@ -1943,6 +1943,43 @@ death, and accumulate as zombies across debug cycles.
    reachable via legitimate input rather than only
    via release-mode optimization quirks.
 
+7. **"Bug 6": semadraw-term `vt100.zig:351` CSI param
+   index out-of-bounds.** Discovered 2026-05-04 after
+   the Bug 5 fix landed. Re-running release-mode
+   semadraw-term with both AD-13.1 and the Bug 5 fix
+   in place produced a new panic: `index 3, len 3` at
+   `vt100.zig:351:24`, line `self.params[idx] = ...`
+   in `handleCsiParam`. Triggered by pressing Enter at
+   the prompt — the shell's prompt redraw emits CSI
+   sequences, parsing them touches this code path.
+
+   The reported `len 3` is suspicious: `self.params`
+   is declared as `[16]u32` and `param_count` is
+   bounded at 16 by all writes, so `idx = param_count
+   - 1` is in 0..15 and `params[idx]` cannot panic
+   with "len 3". Two possibilities: the panic is
+   actually in a different array of length 3 that
+   release-mode optimization mis-attributed to this
+   line, or there is a state-machine path that grows
+   `param_count` past 16 that the read didn't find.
+
+   Fix is a defensive cap at the access site:
+   `idx = min(param_count - 1, params.len - 1)`. The
+   cap costs one min op per CSI digit and makes the
+   `params[idx]` access safe by construction
+   regardless of whether `param_count` ran away or
+   not. If the panic moves to a new file:line on the
+   next reproduction, that is a different bug
+   downstream and the cap was a useful safety net
+   regardless.
+
+   **What this entry does not claim**: the cap
+   prevents the panic at this line but does not
+   identify the actual source of `len 3` if it is
+   elsewhere. Like Bug 5, the fix may be a safety net
+   over a deeper state-machine bug. Verification on
+   next bare-metal test.
+
 These symptoms are not bugs in the daemons themselves.
 They are bugs in the *lifecycle* — what happens during
 start, what happens during stop, what each daemon does
