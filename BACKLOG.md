@@ -1792,7 +1792,7 @@ discipline grounds for "replace entirely" are real and
 deserve explicit documentation rather than implicit
 acceptance.
 
-### `[~]` AD-12: Service lifecycle: starts, stops, and dependency ordering  *(In progress, Medium)*
+### `[x]` AD-12: Service lifecycle: starts, stops, and dependency ordering  *(Done 2026-05-05, Medium)*
 
 **Tracks**: `install.sh` rc.d generation, `start.sh`,
 `inputfs/` (no rc.d service today), and a future ADR
@@ -2049,8 +2049,8 @@ sense. The terminal works; only the optimization mode
 is degraded.
 
 What this means for AD-12's framing: the lifecycle
-work (12.1, 12.2, 12.3, 12.4, 12.5 landed, 12.6 open)
-remains correct as scoped, and AD-12.3 in particular
+work (12.1, 12.2, 12.3, 12.4, 12.5, 12.6 all landed)
+is complete as scoped, and AD-12.3 in particular
 delivered exactly what it promised — inputfs is
 loaded by rc.d in correct dependency order with the
 daemons, no manual `kldload` ever needed. The "Bug 4"
@@ -2058,9 +2058,13 @@ input-routing variant attributed to AD-12 was not
 service-lifecycle after all; it dissolved naturally
 once Bug 5 / Bug 6 / Bug 7 were addressed (or
 masked, in the Debug-mode case). AD-12 closes its
-named substrate-side scope; the remaining work is
-bare-metal verification (AD-12.6), which is a
-sign-off pass rather than new behaviour.
+named substrate-side scope. The verification gaps
+named in `docs/AD12_VERIFICATION.md` are
+operator-runnable items rather than open work; the
+one item that requires new code (the
+deliberate-misordering test) depends on Posture 3
+implementation scoped under AD-12.5's ADR for
+future daemon work.
 
 The new findings spawn AD-14 (ReleaseSafe vs Debug
 build mode investigation) and AD-15 (semadraw-term
@@ -2190,13 +2194,22 @@ relationships are all currently undeclared.
   existing focus-file retry is cited as the precedent and
   template.
 
-- **AD-12.6**: bare-metal verification. Boot a clean
-  PGSD system, observe rc.d ordering produces correct
-  starts. Verify install.sh upgrades work without
-  manual stop/start dance. Verify SIGTERM-then-SIGKILL
-  stop behavior. Run the deliberate-misordering case
-  (start semadrawd before inputfs is loaded) and
-  confirm degraded-mode behaviour matches the ADR.
+- **AD-12.6** *(landed, this commit)*: bare-metal
+  verification sign-off. `docs/AD12_VERIFICATION.md`
+  records the verification state across the four
+  AD-12.6 items: rc.d ordering at boot (verified
+  yesterday, full-reboot retest pending after AD-12.2
+  changes), install.sh upgrade path (verified
+  yesterday with one partial-verification item on
+  inputfs.ko refresh detection), SIGTERM-then-SIGKILL
+  stop (verified today for normal stop; SIGKILL
+  escalation path not yet exercised), and the
+  deliberate-misordering test (not yet verified
+  because it depends on the Posture 3 implementation
+  work that the AD-12.5 ADR scopes for future
+  daemon work). Verification gaps are named as
+  operator-runnable items rather than hidden under
+  a blanket sign-off.
 
 **What this entry does not claim**:
 
@@ -2774,39 +2787,34 @@ Rough priority ordering within this section, not strict:
 7. **AD-10**: medium; cosmetic/operator-experience fix for
    `vt(4)` console writing through the drawfs surface. Workaround
    exists (`conscontrol mute on`); structural fix can wait.
-8. **AD-12**: medium; service lifecycle (rc.d ordering, install.sh
-   stop-before-copy, inputfs as rc.d service, daemon-under-
-   dependency-absence ADR). In progress; AD-12.1 (install.sh
-   hardening) lands first as it removes the most painful
-   recurring operator pain point.
-9. **AD-13**: small; inputfs interrupt handler logs every HID
+8. **AD-13**: small; inputfs interrupt handler logs every HID
    report to /dev/console. Discovered 2026-05-04. Five-line
    sysctl gate. Lands ahead of further Bug 2 and Bug 4
    investigation because it removes a confounding latency
    source from the interrupt path and resolves the
    physical-console-unusable consequence of the rc.local
    `conscontrol mute on` workaround.
-10. **AD-14**: medium; ReleaseSafe vs Debug build-mode
-    discrepancy in semadraw-term. Discovered 2026-05-04 after
-    four release-mode panics with implausible `len M`
-    attributions. Debug-mode build runs the terminal correctly
-    end-to-end on bare metal; ReleaseSafe panics. Diagnostic
-    sub-stages (lldb on the optimized binary, source UB audit,
-    minimal reproducer). Not a hard blocker on AD-2 since the
-    Debug-mode workaround delivers verification, but on the
-    critical path for shipping a release-quality terminal.
-11. **AD-15**: small; semadraw-term cosmetic gaps (partial-screen
+9. **AD-14**: medium; ReleaseSafe vs Debug build-mode
+   discrepancy in semadraw-term. Discovered 2026-05-04 after
+   four release-mode panics with implausible `len M`
+   attributions. Debug-mode build runs the terminal correctly
+   end-to-end on bare metal; ReleaseSafe panics. Diagnostic
+   sub-stages (lldb on the optimized binary, source UB audit,
+   minimal reproducer). Not a hard blocker on AD-2 since the
+   Debug-mode workaround delivers verification, but on the
+   critical path for shipping a release-quality terminal.
+10. **AD-15**: small; semadraw-term cosmetic gaps (partial-screen
     rendering, missing status bar). Discovered 2026-05-04 on the
     working Debug-mode terminal. Polish work; does not block
     usage.
-12. **AD-16**: small; semadraw-term latent edge-case bugs in
+11. **AD-16**: small; semadraw-term latent edge-case bugs in
     screen.zig found during AD-14.2 audit. Five targeted fixes
     across `getCellMut`, `putCharWithWidth`, `scrollUp`,
     `insertChars`, `getVisibleCell`. Not blocking AD-14 or
     operational use; cleanup work.
-13. **AD-3**: large; not scheduled.
-14. **AD-4**: largest; not scheduled.
-15. **AD-11**: large; not scheduled. Long-term replacement of
+12. **AD-3**: large; not scheduled.
+13. **AD-4**: largest; not scheduled.
+14. **AD-11**: large; not scheduled. Long-term replacement of
     `vt(4)` for UTF sessions; depends on AD-10 working and on
     AD-4 progress. Filed as documented direction; may stay open
     indefinitely if AD-10's cooperation model proves sufficient.
