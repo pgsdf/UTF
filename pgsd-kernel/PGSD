@@ -11,13 +11,20 @@
 # inputfs/docs/adr/). To give inputfs uncontested ownership of HID
 # devices, drivers that would otherwise claim USB HID children at
 # boot are removed from the kernel image AND from the modules
-# build. nodevice alone is insufficient: a removed device line
-# keeps the driver out of the static kernel, but the FreeBSD
-# build still produces .ko files for it under /boot/kernel/, the
-# kernel registers their PNP signatures in linker.hints, and the
-# kernel auto-loads them at boot when matching USB devices appear.
-# The makeoptions WITHOUT_MODULES line below closes that path by
-# suppressing the modules at build time.
+# build. Removing the device line from this config keeps the
+# driver out of the static kernel image; that is the kernel-side
+# half. The other half is suppressing the .ko files at modules
+# build time, which is done by passing WITHOUT_MODULES on the
+# command line to make buildkernel and make installkernel.
+# pgsd-kernel/README.md documents the procedure.
+#
+# A makeoptions WITHOUT_MODULES=... directive in this config
+# would NOT reliably suppress the modules. The kernel-config
+# makeoptions reach the kernel-link step but the modules tree is
+# invoked from /usr/src/Makefile.inc1 via a separate make that
+# does not always inherit them. The supported and reliable path
+# is the command-line argument; the README is the single source
+# of truth for that procedure.
 #
 # Removed devices (compete with inputfs for HID ownership):
 #   - hkbd    HID keyboard driver, claims hidbus children
@@ -31,7 +38,8 @@
 #
 # Anticipatory module suppressions (drivers named in ADR 0007 that
 # may appear in a future GENERIC or be loaded on demand even when
-# absent from the static kernel):
+# absent from the static kernel; the README's WITHOUT_MODULES list
+# excludes them at build time):
 #   hms hgame hcons hsctrl utouch hpen hmt hconf
 #     HID class drivers superseded by inputfs
 #   hidmap
@@ -54,13 +62,6 @@ ident		PGSD
 
 makeoptions	DEBUG=-g		# Build kernel with gdb(1) debug symbols
 makeoptions	WITH_CTF=1		# Run ctfconvert(1) for DTrace support
-
-# AD-8: suppress modules for HID drivers that would otherwise claim
-# inputfs's devices via PNP-driven auto-load at boot. WITHOUT_MODULES
-# omits these from the modules build entirely; nothing appears under
-# /boot/kernel/ for them, linker.hints does not register their PNP
-# IDs, and the runtime contention path is closed.
-makeoptions	WITHOUT_MODULES="hkbd ukbd hms hgame hcons hsctrl utouch hpen hmt hconf hidmap"
 
 options 	SCHED_ULE		# ULE scheduler
 options 	NUMA			# Non-Uniform Memory Architecture support
@@ -372,8 +373,10 @@ device		usb			# USB Bus (required)
 device		usbhid			# USB HID Transport
 # AD-8: hkbd and ukbd removed. Both compete with inputfs for HID
 # ownership; see the file header for the rationale and ADR 0007
-# for the full set. WITHOUT_MODULES above suppresses the .ko
-# files; these device lines are absent from the static kernel.
+# for the full set. The .ko files are suppressed at build time
+# by passing WITHOUT_MODULES on the make buildkernel command line
+# (per pgsd-kernel/README.md); these device lines are absent
+# from the static kernel.
 device		umass			# Disks/Mass storage - Requires scbus and da
 
 # Sound support
