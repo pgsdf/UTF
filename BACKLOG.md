@@ -2509,6 +2509,53 @@ determine which:
     `std.builtin.Panic` to capture fault info and
     sleep so lldb can attach post-panic).
 
+  **Second observation (2026-05-05, Sunday continuation,
+  after AD-15.1 landed)**: bug reproduces reliably
+  again. Same machine, same session, same input
+  sequence (`ls` + Enter). The change between
+  Sunday-morning's non-reproduction and now is
+  AD-15.1: semadrawd was restarted with
+  `-r 3840x2160` instead of the default 1920x1080.
+  The compositor surface is now 4x larger (3840x2160
+  vs 1920x1080), and semadraw-term's 3840x2144
+  surface fits entirely inside rather than being
+  clipped at the 1080-pixel ceiling.
+
+  The correlation suggests the bug is sensitive to
+  compositor-surface geometry. Two interpretations:
+
+  - **More rendering work per frame** changes timing
+    in semadraw-term's run loop. Compositing 4x more
+    pixels takes longer; present() returns later;
+    the next iteration starts later. A race between
+    PTY drain and frame events would manifest at the
+    new timing.
+
+  - **Less SDCS clipping** means more commands
+    actually execute against the compositor surface.
+    Pre-AD-15.1, most of semadraw-term's SDCS
+    commands targeted coordinates outside 1920x1080
+    and were silently clipped. Post-AD-15.1, all
+    commands execute. A bug exposed only when the
+    full render path runs would now manifest.
+
+  Either reading is consistent with hypothesis 2
+  (Zig optimizer) or 3 (timing race). Discriminating
+  between them remains the AD-14.1 diagnostic
+  question.
+
+  Workflow for next lldb attempt (now that the bug
+  reproduces reliably): run
+  `scripts/build-releasesafe-symbols-semadraw-term.sh`
+  (lands in this commit, alongside the AD-14.1
+  workflow), then `sudo lldb /usr/local/bin/semadraw-term`,
+  set run-args, run, trigger panic on framebuffer
+  keyboard. If lldb's presence does not hide the
+  bug today (Sunday morning's attempt produced
+  non-reproduction under lldb), the `bt`,
+  `frame select 0`, and `frame variable` commands
+  will name the actual fault site.
+
 - **AD-14.2**: source audit for common UB patterns
   in the panic-path code: integer wraparound on
   unsigned types (`u8 - 1` when the value is 0,
@@ -2622,7 +2669,7 @@ of defensive guards at reported sites (Bug 5 fix,
 Bug 6 fix) was abandoned in favour of correct
 build-mode diagnosis.
 
-### `[~]` AD-15: semadraw-term cosmetic gaps  *(In progress, Small)*
+### `[x]` AD-15: semadraw-term cosmetic gaps  *(Done 2026-05-05, Small)*
 
 **Tracks**: `semadraw/src/apps/term/` rendering and
 layout code, plus `install.sh` rc.d generation; no
@@ -2920,28 +2967,20 @@ Rough priority ordering within this section, not strict:
    minimal reproducer). Not a hard blocker on AD-2 since the
    Debug-mode workaround delivers verification, but on the
    critical path for shipping a release-quality terminal.
-10. **AD-15**: small; semadraw-term cosmetic gaps (partial-screen
-    rendering, missing status bar). Discovered 2026-05-04 on the
-    working Debug-mode terminal. Diagnosed Sunday 2026-05-05:
-    both gaps share root cause in semadrawd's hardcoded
-    1920x1080 default. AD-15.1 landed as install.sh-side
-    workaround (rc.d start_cmd reads drawfs sysctls and passes
-    -r WxH); AD-15.2 is closed by side effect. AD-17 captures
-    the principled runtime fix.
-11. **AD-16**: small; semadraw-term latent edge-case bugs in
+10. **AD-16**: small; semadraw-term latent edge-case bugs in
     screen.zig found during AD-14.2 audit. Five targeted fixes
     across `getCellMut`, `putCharWithWidth`, `scrollUp`,
     `insertChars`, `getVisibleCell`. Not blocking AD-14 or
     operational use; cleanup work.
-12. **AD-17**: medium; semadrawd runtime framebuffer
+11. **AD-17**: medium; semadrawd runtime framebuffer
     auto-detection. Diagnosed Sunday 2026-05-05 during AD-15
     investigation. Backend interface change (new optional
     `getDetectedDisplaySize` vtable method); drawfs implements;
     compositor uses it. Removes the AD-15.1 operator-side
     workaround; semadrawd becomes self-configuring at startup.
-13. **AD-3**: large; not scheduled.
-14. **AD-4**: largest; not scheduled.
-15. **AD-11**: large; not scheduled. Long-term replacement of
+12. **AD-3**: large; not scheduled.
+13. **AD-4**: largest; not scheduled.
+14. **AD-11**: large; not scheduled. Long-term replacement of
     `vt(4)` for UTF sessions; depends on AD-10 working and on
     AD-4 progress. Filed as documented direction; may stay open
     indefinitely if AD-10's cooperation model proves sufficient.
