@@ -592,9 +592,57 @@ STOP_TIMEOUT=5
 start_cmd="semadraw_start"
 stop_cmd="semadraw_stop"
 
+# AD-15.1: query the EFI framebuffer geometry from drawfs sysctls at
+# start time and pass it as -r WIDTHxHEIGHT to semadrawd. semadrawd
+# defaults to 1920x1080 when no -r flag is given (its compile-time
+# default), but the actual EFI framebuffer on PGSD bare metal is
+# typically larger (3840x2160 on the development machine). Without
+# this, semadrawd's compositor surface is sized at the default and
+# only the top-left corner of the framebuffer gets rendered to,
+# producing the partial-screen rendering that AD-15 documents.
+#
+# The sysctls hw.drawfs.efifb.width and hw.drawfs.efifb.height are
+# published by drawfs (D.2 in inputfs's Stage D scope ADR; the
+# sysctls predate AD-15 and were already exposed for inputfs's
+# coordinate-transform setup). They become available as soon as
+# drawfs is loaded, which happens via /boot/loader.conf at boot,
+# so they are reliably present by the time this rc.d script runs.
+#
+# If the sysctls are not present (drawfs not loaded, or older
+# version without the publish) the start function falls through
+# to semadrawd's default. The result is the pre-AD-15.1
+# partial-rendering symptom, but semadrawd still starts and is
+# operational. Filed as a fallback rather than a hard error
+# because semadrawd is usable at any geometry; AD-15 is polish.
+#
+# AD-17 (filed) captures the principled fix: semadrawd should
+# auto-detect the framebuffer size from its drawfs backend at
+# runtime via a backend-interface query, removing the need for
+# rc.d-side resolution detection. This rc.d-side fix is the
+# operator-side workaround until AD-17 lands.
+semadraw_detect_resolution() {
+    # Read drawfs efifb sysctls. -n gets value-only (no key= prefix).
+    # 2>/dev/null swallows the error if the sysctl is absent.
+    fb_w=\$(sysctl -n hw.drawfs.efifb.width 2>/dev/null)
+    fb_h=\$(sysctl -n hw.drawfs.efifb.height 2>/dev/null)
+    # Both must be present and non-zero. drawfs publishes both atomically
+    # at module load; partial publication is treated as unreliable
+    # (drawfs version mismatch) and we fall through to semadrawd's
+    # default rather than guess.
+    if [ -n "\${fb_w}" ] && [ -n "\${fb_h}" ] && [ "\${fb_w}" -gt 0 ] && [ "\${fb_h}" -gt 0 ]; then
+        echo "-r \${fb_w}x\${fb_h}"
+    fi
+}
+
 semadraw_start() {
     echo "Starting \${name}."
-    /usr/sbin/daemon -p "\${pidfile}" -f \${command} \${semadraw_flags}
+    res_flag=\$(semadraw_detect_resolution)
+    if [ -n "\${res_flag}" ]; then
+        echo "  detected framebuffer: \${res_flag}"
+    else
+        echo "  framebuffer geometry sysctls absent; using semadrawd default 1920x1080"
+    fi
+    /usr/sbin/daemon -p "\${pidfile}" -f \${command} \${semadraw_flags} \${res_flag}
 }
 
 semadraw_stop() {

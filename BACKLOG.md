@@ -2622,76 +2622,101 @@ of defensive guards at reported sites (Bug 5 fix,
 Bug 6 fix) was abandoned in favour of correct
 build-mode diagnosis.
 
-### `[ ]` AD-15: semadraw-term cosmetic gaps  *(Open, Small)*
+### `[~]` AD-15: semadraw-term cosmetic gaps  *(In progress, Small)*
 
 **Tracks**: `semadraw/src/apps/term/` rendering and
-layout code; no design ADR required.
+layout code, plus `install.sh` rc.d generation; no
+design ADR required.
 
 After Phase 1 verification on 2026-05-04 produced a
 working UTF-native terminal on PGSD bare metal, two
-cosmetic-or-feature gaps remain:
+cosmetic-or-feature gaps were observed: the surface
+did not fill the entire framebuffer, and the virtual
+terminal status bar was not visible.
 
-1. **Surface does not fill the entire framebuffer.**
-   semadraw-term auto-detects the EFI framebuffer
-   geometry (3840x2160 -> 240x66 cells) and creates
-   a surface of size 3840x2144. The detected and
-   created sizes are correct, but the rendered
-   content occupies only a sub-region of the
-   physical screen rather than filling it. Possible
-   causes: drawfs surface is being painted to a
-   smaller area than it claims, semadraw-term's
-   render loop is targeting a sub-rectangle, or
-   pixel scaling is producing different effective
-   sizes than expected. Diagnostic is to inspect
-   the actual surface->framebuffer blit path in
-   drawfs and confirm whether the full surface
-   contents are being copied.
+**AD-15 root cause (diagnosed 2026-05-05 Sunday)**:
+both gaps share a single root cause — semadrawd's
+compositor surface defaults to 1920x1080 (the
+hardcoded default in semadrawd's Config struct) but
+the actual EFI framebuffer on the development
+machine is 3840x2160. The compositor renders
+client SDCS commands onto its 1920x1080 surface,
+and the drawfs backend's `blitToEfifb` then blits
+that 1920x1080 region to the framebuffer at
+(0, 0). Result: only the top-left 1920x1080
+quarter of the framebuffer is touched.
 
-2. **No virtual terminal status bar.** README's
-   semadraw-term description mentions "a session
-   status bar" — the bottom row showing session
-   1..8 indicators when multi-session mode is
-   active. On the verification run, the status bar
-   was not visible. May be (a) not rendered at all
-   in the current codebase, (b) rendered but
-   off-screen due to gap 1's partial-rendering
-   issue, or (c) rendered but invisible because
-   only one session is active. Diagnostic is to
-   read `main.zig`'s render path and confirm
-   whether the status-bar rendering branch
-   actually runs.
+semadraw-term itself queries drawfs for the
+framebuffer geometry via `queryDisplaySize` and
+correctly sizes its surface to 3840x2144 (66 rows
+of cells plus one row of status bar). The status
+bar is rendered at y=2112 within the terminal's
+3840x2144 surface — but the compositor's 1080-pixel
+ceiling clips everything below y=1080, so the
+status bar is invisible. The terminal's "fills
+the screen" behaviour fails for the same reason:
+the compositor only paints to 1920x1080.
 
-Both are post-substrate polish items. Phase 1 is
-operationally complete without them; the terminal
-is usable for typing commands and reading output.
-Filed as a single entry because they are likely
-to be investigated together in the same render-path
-audit.
+Both gaps therefore have one fix.
 
 **Sub-stages**:
 
-- **AD-15.1**: inspect drawfs surface->framebuffer
-  blit code for sub-region rendering. Confirm
-  whether the full 3840x2144 surface is being
-  copied to the full 3840x2160 framebuffer. If the
-  blit is correct but rendering still shows
-  partial, the gap is in semadraw-term's render
-  loop targeting fewer cells than auto-detected.
+- **AD-15.1** *(landed, this commit)*: install.sh's
+  semadraw rc.d script's `start_cmd` queries
+  `hw.drawfs.efifb.width` and `hw.drawfs.efifb.height`
+  sysctls (already published by drawfs since Stage D)
+  and passes `-r WIDTHxHEIGHT` to semadrawd. semadrawd
+  now starts with the actual framebuffer geometry
+  rather than the 1920x1080 default. The compositor's
+  surface matches the framebuffer; the entire
+  framebuffer gets painted; semadraw-term's full
+  3840x2144 area renders including the status bar.
+  Operator workaround until AD-17 lands a principled
+  runtime auto-detection in semadrawd itself. Falls
+  through to the default if the sysctls are absent
+  (drawfs not loaded, or older version).
 
-- **AD-15.2**: inspect main.zig's render path for
-  status-bar rendering. Confirm whether the bottom
-  row is being painted with session indicators
-  when sessions exist. May need a multi-session
-  reproduction test (open two semadraw-term
-  sessions, observe whether the status bar
-  appears).
+- **AD-15.2** *(landed by side effect of AD-15.1)*:
+  status bar visibility. Was not actually broken in
+  the rendering code — the status bar is rendered
+  at `bar_y = height_px` within semadraw-term's
+  surface, but the compositor clipped it because of
+  the AD-15.1 issue. Once the compositor's surface
+  matches the framebuffer, the status bar appears
+  automatically. No code change in main.zig or
+  renderer.zig needed.
 
-**Why filed as a backlog item rather than a bug**:
-neither gap blocks usage. The terminal renders
-text, accepts input, runs commands. Fixing these
-is polish work that improves operator experience
-but does not change the substrate verification
-status.
+**Verification on bare metal**:
+
+  sudo sh install.sh
+  sudo service semadraw restart
+  service semadraw status
+  # expect: "Starting semadraw."
+  # expect: "  detected framebuffer: -r 3840x2160" (or whatever
+  #         the test machine's framebuffer reports)
+  sudo conscontrol mute on
+  sudo /usr/local/bin/semadraw-term --scale 2
+  # expect: terminal fills the entire screen
+  # expect: status bar visible at the bottom (dark gray strip
+  #         with " 1 " highlighted in blue for the active session)
+
+**Why AD-17 is filed for the principled fix**:
+operator-side resolution detection in install.sh's
+rc.d script works for the typical case but bakes
+the framebuffer geometry into the start path. If
+the framebuffer changes (monitor swap, BIOS
+reconfiguration, multi-output setup) without a
+restart of the rc.d script, the compositor stays at
+the old size. AD-17 captures the runtime fix:
+semadrawd queries the drawfs backend at startup
+(and on resize) for the detected framebuffer size
+and resizes its compositor surface accordingly. The
+backend interface gets a new optional method
+`getDetectedDisplaySize`; the compositor uses it if
+present, falls back to OutputConfig if not. AD-17
+is medium-sized (interface change + drawfs backend
++ compositor + semadrawd init); AD-15.1's
+operator-side fix is the small immediate fix.
 
 **Discovered**: bare-metal verification 2026-05-04
 running the working Debug-mode semadraw-term.
@@ -2701,6 +2726,15 @@ prompt visible, typing produces visible output,
 output. Surface does not fill screen; no status
 bar visible. Both observations against the same
 single-session run.
+
+**Diagnosis recorded**: Sunday session 2026-05-05.
+The compositor-vs-framebuffer geometry mismatch was
+found by tracing the SDCS rendering path from
+semadraw-term through semadrawd's compositor through
+drawfs's blitToEfifb. Both reported gaps were
+explained by the same hardcoded default in
+semadrawd's Config struct, with semadraw-term's own
+auto-detection working correctly in isolation.
 
 ### `[ ]` AD-16: semadraw-term latent edge-case bugs in screen.zig  *(Open, Small)*
 
@@ -2765,6 +2799,89 @@ Sunday continuation. None of these is the AD-14
 bug; the panics there fire on input sequences
 that don't trigger any of these paths.
 
+### `[ ]` AD-17: semadrawd runtime framebuffer auto-detection  *(Open, Medium)*
+
+**Tracks**: `semadraw/src/backend/`,
+`semadraw/src/compositor/`,
+`semadraw/src/daemon/semadrawd.zig`; depends on
+backend interface change.
+
+semadrawd defaults its compositor surface to
+1920x1080 (Config struct hardcoded default in
+semadrawd.zig line 35-36). Operators on machines
+with larger framebuffers must pass `-r WIDTHxHEIGHT`
+explicitly, or the compositor only renders to the
+top-left 1920x1080 region of the screen and the
+rest of the framebuffer remains untouched (whatever
+content was there before semadrawd started, which
+under PGSD is typically vt(4) console output, stays
+visible).
+
+AD-15.1 closes this for the typical case via an
+operator-side workaround in install.sh's rc.d
+generator: the start_cmd reads
+`hw.drawfs.efifb.{width,height}` sysctls (already
+published by drawfs since Stage D) and passes
+`-r WxH` dynamically. AD-17 is the principled fix:
+semadrawd queries the drawfs backend at startup
+(and on resize) for the detected framebuffer size
+and resizes its compositor surface accordingly,
+removing the need for rc.d-side detection.
+
+**Sub-stages**:
+
+- **AD-17.1**: backend interface adds an optional
+  vtable method `getDetectedDisplaySize: ?*const
+  fn (ctx: *anyopaque) ?DisplaySize`. Backends
+  that have a native size to report (drawfs:
+  efifb_width x efifb_height; vulkan/x11: window
+  manager geometry) implement it. Backends that
+  don't (software, headless) leave it null.
+
+- **AD-17.2**: drawfs backend implements
+  `getDetectedDisplaySize`, returning
+  `{efifb_width, efifb_height}` when `efifb_avail`
+  is true, null otherwise.
+
+- **AD-17.3**: compositor's `initOutput` calls the
+  backend's `getDetectedDisplaySize` after init;
+  if non-null and different from `config.width/height`,
+  resizes the framebuffer config and re-creates the
+  surface. semadrawd config becomes "preferred"
+  rather than "actual" — the actual is what the
+  backend reports.
+
+- **AD-17.4**: install.sh's rc.d-side detection
+  becomes redundant. Either remove it (keeping
+  semadrawd as the single source of truth) or
+  retain it as a belt-and-suspenders fallback
+  with the AD-15.1 comment block updated to
+  acknowledge AD-17 is now the primary mechanism.
+
+**Why this is medium rather than small**: backend
+interface changes touch all four backends (software,
+vulkan, drawfs, x11/wayland) plus the compositor.
+Each backend needs the new method or an explicit
+null implementation. Compositor's initOutput needs
+the new resize-after-detect path. Several test
+points to confirm.
+
+**Why not done as part of AD-15**: AD-15 was scoped
+"Small" and AD-17's scope crosses the backend
+interface boundary, which is a different
+engineering size category. The operator-side
+workaround in AD-15.1 closes the user-visible
+issue immediately; AD-17 closes it structurally.
+
+**Discovered**: AD-15 diagnosis on Sunday
+2026-05-05. While tracing the SDCS rendering path,
+the hardcoded 1920x1080 default in semadrawd's
+Config struct was identified as the root cause for
+both AD-15 reported symptoms (partial rendering
+and missing status bar). The principled fix
+involves runtime detection rather than operator
+configuration.
+
 ### Priority
 
 Rough priority ordering within this section, not strict:
@@ -2805,16 +2922,26 @@ Rough priority ordering within this section, not strict:
    critical path for shipping a release-quality terminal.
 10. **AD-15**: small; semadraw-term cosmetic gaps (partial-screen
     rendering, missing status bar). Discovered 2026-05-04 on the
-    working Debug-mode terminal. Polish work; does not block
-    usage.
+    working Debug-mode terminal. Diagnosed Sunday 2026-05-05:
+    both gaps share root cause in semadrawd's hardcoded
+    1920x1080 default. AD-15.1 landed as install.sh-side
+    workaround (rc.d start_cmd reads drawfs sysctls and passes
+    -r WxH); AD-15.2 is closed by side effect. AD-17 captures
+    the principled runtime fix.
 11. **AD-16**: small; semadraw-term latent edge-case bugs in
     screen.zig found during AD-14.2 audit. Five targeted fixes
     across `getCellMut`, `putCharWithWidth`, `scrollUp`,
     `insertChars`, `getVisibleCell`. Not blocking AD-14 or
     operational use; cleanup work.
-12. **AD-3**: large; not scheduled.
-13. **AD-4**: largest; not scheduled.
-14. **AD-11**: large; not scheduled. Long-term replacement of
+12. **AD-17**: medium; semadrawd runtime framebuffer
+    auto-detection. Diagnosed Sunday 2026-05-05 during AD-15
+    investigation. Backend interface change (new optional
+    `getDetectedDisplaySize` vtable method); drawfs implements;
+    compositor uses it. Removes the AD-15.1 operator-side
+    workaround; semadrawd becomes self-configuring at startup.
+13. **AD-3**: large; not scheduled.
+14. **AD-4**: largest; not scheduled.
+15. **AD-11**: large; not scheduled. Long-term replacement of
     `vt(4)` for UTF sessions; depends on AD-10 working and on
     AD-4 progress. Filed as documented direction; may stay open
     indefinitely if AD-10's cooperation model proves sufficient.
