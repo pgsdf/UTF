@@ -2091,11 +2091,15 @@ the print landed in production.
 
 **Sub-stages**:
 
-- **AD-13.1**: gate the per-report print behind a sysctl
-  `hw.inputfs.debug_reports` (or similar; settle the name
-  in the commit). Default off. Five-line code change in
-  `inputfs.c`. Test by toggling the sysctl on a running
-  system and confirming console output starts and stops.
+- **AD-13.1** *(landed, this commit)*: per-report
+  device_printf gated behind `hw.inputfs.debug_reports`
+  sysctl, default 0 (silent). The hexbuf formatting and
+  the device_printf call are both inside the gate, so
+  the per-event interrupt-path cost when the sysctl is
+  0 is a single int read. Operators reproducing a
+  report-decode issue can enable at runtime
+  (`sysctl hw.inputfs.debug_reports=1`) and disable
+  again with no module reload.
 
 - **AD-13.2**: audit `inputfs.c` for *other* high-frequency
   `device_printf` calls. The "calling hid_intr_start"

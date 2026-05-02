@@ -185,6 +185,40 @@ SYSCTL_INT(_hw_inputfs, OID_AUTO, enable, CTLFLAG_RWTUN,
     &inputfs_enable, 0,
     "Publication enable: 1 = active (default), 0 = gated off");
 
+/*
+ * Per-report debug logging gate (AD-13.1).
+ *
+ * Default 0 (silent). When set to 1, inputfs_intr emits a
+ * device_printf for every HID report received, formatted as:
+ *
+ *     inputfsN: inputfs: report id=0xRR len=L data=B0 B1 ... BN
+ *
+ * Useful during Stage B/C bring-up to confirm the interrupt
+ * path produces the expected report shapes; harmful in
+ * production because it emits to /dev/console for every
+ * keystroke and pointer report. With vt(4) active the spam
+ * displaces the login prompt and any UTF surface; with
+ * vt(4) muted the spam is silent but the per-call CPU cost
+ * (sprintf, console-lock, cnputs) still runs on the
+ * interrupt path and adds latency.
+ *
+ * Pre-AD-13.1 the print was unconditional; AD-13.1 makes it
+ * opt-in. Operators reproducing a report-decode issue can
+ * still enable it at runtime:
+ *
+ *     sysctl hw.inputfs.debug_reports=1
+ *
+ * and disable it again after the diagnostic:
+ *
+ *     sysctl hw.inputfs.debug_reports=0
+ *
+ * No restart, no module reload.
+ */
+static int inputfs_debug_reports = 0;
+SYSCTL_INT(_hw_inputfs, OID_AUTO, debug_reports, CTLFLAG_RWTUN,
+    &inputfs_debug_reports, 0,
+    "Per-report device_printf in interrupt handler: 0 = silent (default), 1 = verbose");
+
 
 /*
  * Role bitmask (Stage B.5, per ADR 0010 Decision section 1).
@@ -2226,19 +2260,27 @@ inputfs_intr(void *context, void *data, hid_size_t len)
 
 	memcpy(sc->sc_ibuf, data, copy_len);
 
-	pos = 0;
-	for (i = 0; i < (int)copy_len && pos < (int)sizeof(hexbuf) - 3; i++) {
-		pos += snprintf(hexbuf + pos, sizeof(hexbuf) - pos,
-		    "%02x ", bytes[i]);
-	}
-	if (pos > 0 && hexbuf[pos - 1] == ' ')
-		hexbuf[pos - 1] = '\0';
+	/*
+	 * AD-13.1: per-report logging gated on hw.inputfs.debug_reports.
+	 * Default off; the formatting plus device_printf is skipped
+	 * entirely when the sysctl is 0, removing the per-event console
+	 * write and the per-call CPU cost from the interrupt path.
+	 */
+	if (inputfs_debug_reports) {
+		pos = 0;
+		for (i = 0; i < (int)copy_len && pos < (int)sizeof(hexbuf) - 3; i++) {
+			pos += snprintf(hexbuf + pos, sizeof(hexbuf) - pos,
+			    "%02x ", bytes[i]);
+		}
+		if (pos > 0 && hexbuf[pos - 1] == ' ')
+			hexbuf[pos - 1] = '\0';
 
-	device_printf(sc->sc_dev,
-	    "inputfs: report id=0x%02x len=%u data=%s\n",
-	    (unsigned int)(copy_len > 0 ? sc->sc_ibuf[0] : 0),
-	    (unsigned int)copy_len,
-	    hexbuf);
+		device_printf(sc->sc_dev,
+		    "inputfs: report id=0x%02x len=%u data=%s\n",
+		    (unsigned int)(copy_len > 0 ? sc->sc_ibuf[0] : 0),
+		    (unsigned int)copy_len,
+		    hexbuf);
+	}
 
 	/*
 	 * Stage D.0a: descriptor-driven pointer extraction.
