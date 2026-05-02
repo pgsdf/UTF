@@ -2158,14 +2158,19 @@ relationships are all currently undeclared.
   doesn't, the service is reported as stopped while
   the process keeps running.
 
-- **AD-12.5**: daemon-under-dependency-absence ADR.
-  Decide what each daemon does when a dependency is
-  missing: retry with backoff, exit cleanly so rc.d can
-  restart, or run in clearly-marked degraded mode. This
-  is the question Friday's "Bug 4" surfaces — semadrawd
-  reaching "session 1 started" but doing nothing useful
-  is the worst of the three options. The ADR resolves
-  this for all UTF daemons uniformly.
+- **AD-12.5** *(landed, this commit)*:
+  daemon-under-dependency-absence ADR.
+  `docs/UTF_DAEMON_DEPENDENCY_ABSENCE.md` states the policy:
+  Posture 3 (degraded mode with rigorous advertising) for soft
+  substrate dependencies, Posture 2 (exit and let rc.d retry)
+  for hard platform dependencies. The ADR explicitly forbids
+  Posture 1 (silent retry without advertising) which is the
+  Bug 4 shape. Per-daemon application sketched (semaaud,
+  semadrawd, semainputd-during-retirement, future daemons).
+  Implementation lands as part of AD-12.6, AD-2 Phase 3, and
+  future daemon work; the ADR is policy not code. inputfs's
+  existing focus-file retry is cited as the precedent and
+  template.
 
 - **AD-12.6**: bare-metal verification. Boot a clean
   PGSD system, observe rc.d ordering produces correct
