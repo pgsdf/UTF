@@ -332,6 +332,23 @@ This is a workaround, not a fix. See Hazard 7 for the longer
 explanation, and BACKLOG.md AD-10 for the structural item that
 will eventually make this unnecessary.
 
+If semadraw-term panics on the first character output — typically
+before you have a chance to type — with an `index out of bounds:
+index N, len M` message that does not visibly match the source
+line in the trace, you are hitting **AD-14** (release-mode
+optimization discrepancy in semadraw-term). The workaround is to
+rebuild semadraw-term in Debug mode:
+
+```
+sudo sh scripts/build-debug-semadraw-term.sh
+```
+
+The Debug build runs the terminal correctly end-to-end. The
+daemons stay ReleaseSafe (no known issues there). Re-running
+`install.sh` later will restore the ReleaseSafe semadraw-term
+and bring the panic back; until AD-14 closes, the Debug build
+is the operational mode for the terminal client.
+
 ## Hazards
 
 These are mistakes that have actually caused install-time crashes

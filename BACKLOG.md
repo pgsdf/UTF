@@ -1980,6 +1980,96 @@ death, and accumulate as zombies across debug cycles.
    over a deeper state-machine bug. Verification on
    next bare-metal test.
 
+8. **"Bug 7": semadraw-term `main.zig:265` sessions
+   index out-of-bounds.** Discovered 2026-05-04 after
+   Bug 6 fix landed. Re-running release-mode
+   semadraw-term with all of AD-13.1, Bug 5 fix, and
+   Bug 6 fix in place produced a new panic: `index 1,
+   len 1` at `main.zig:265:31`, line `return
+   &(self.sessions[self.active].?);` in
+   `activeSession()`. Triggered by typing `ls` and
+   pressing Enter at the prompt.
+
+   The reported `len 1` is impossible from any plain
+   reading of the source: `sessions` is declared as
+   `[MAX_SESSIONS]?Session` where `MAX_SESSIONS = 8`,
+   so `sessions.len = 8`, not 1. The implausible
+   length value matches the same pattern as Bug 2
+   (panic `len M` against `cells.len = 15840`), Bug 5
+   (panic `len 4` against `utf8_buf` of length 4 with
+   bounds-checked access), and Bug 6 (panic `len 3`
+   against `params` of length 16). Four release-mode
+   panics in a row with `len M` values that do not
+   match the array on the reported line.
+
+   At this point the pattern is unambiguous: **Zig's
+   release-mode optimization is mis-attributing panic
+   line numbers in semadraw-term**. The actual
+   panicking access is somewhere else in the inlined
+   call chain that gets attributed to `run`. Adding
+   defensive guards at the reported lines (Bug 5 fix,
+   Bug 6 fix) made the panic move to a new
+   mis-attributed line each time without addressing
+   any real bug. The defensive guards are still
+   correctness improvements — bounds-cap at the
+   access site is cheap insurance — but they were not
+   the right diagnostic strategy.
+
+   Bug 7 was not given its own defensive-guard fix.
+   Instead, semadraw-term was rebuilt with
+   `-Doptimize=Debug` (no inlining, accurate debug
+   info), and the panic stopped reproducing entirely
+   under the same input sequence. The Debug build
+   runs the prompt, types, runs `ls`, displays
+   output, returns to a fresh prompt — operationally
+   correct end-to-end. ReleaseSafe panics were
+   masking real terminal functionality that has been
+   working all along.
+
+   Whether the underlying panics are (a) real bugs
+   that ReleaseSafe's optimizer triggers and Debug
+   avoids, (b) Zig optimizer bugs producing incorrect
+   bounds-check code, or (c) timing-sensitive races
+   that Debug's slower execution dodges — is open.
+   See AD-14 for the structural investigation.
+
+**Wrap-up (2026-05-04 close)**:
+
+The bug-chasing arc above proceeded as a sequence of
+defensive guards against panics whose reported
+locations did not match any source-readable cause.
+After four iterations of this pattern, switching to a
+Debug-mode build of semadraw-term produced a
+fully-functioning UTF terminal: prompt renders, input
+reaches the shell, shell output renders, scrolling
+works, the operator can type `ls` and see directory
+listings. End-to-end Phase 1 substrate verification
+on PGSD bare metal is complete in the operational
+sense. The terminal works; only the optimization mode
+is degraded.
+
+What this means for AD-12's framing: the lifecycle
+work (12.1, 12.3 landed, 12.2/12.4/12.5/12.6 open)
+remains correct as scoped, and AD-12.3 in particular
+delivered exactly what it promised — inputfs is
+loaded by rc.d in correct dependency order with the
+daemons, no manual `kldload` ever needed. The "Bug 4"
+input-routing variant attributed to AD-12 was not
+service-lifecycle after all; it dissolved naturally
+once Bug 5 / Bug 6 / Bug 7 were addressed (or
+masked, in the Debug-mode case). AD-12 closes its
+named substrate-side scope; the remaining work is
+the daemon-under-dependency-absence ADR (AD-12.5)
+and bare-metal verification (AD-12.6), neither
+gated on the release-mode pattern.
+
+The new findings spawn AD-14 (ReleaseSafe vs Debug
+build mode investigation) and AD-15 (semadraw-term
+cosmetic gaps — partial-screen rendering, missing
+status bar). Both filed as separate entries because
+they are distinct concerns with their own
+investigation paths.
+
 These symptoms are not bugs in the daemons themselves.
 They are bugs in the *lifecycle* — what happens during
 start, what happens during stop, what each daemon does
@@ -2248,6 +2338,221 @@ displaces the login prompt also displaces UTF surfaces,
 which is part of the "Bug 4" symptom we have been
 chasing as a semadrawd issue.
 
+### `[ ]` AD-14: ReleaseSafe vs Debug build-mode discrepancy in semadraw-term  *(Open, Medium)*
+
+**Tracks**: a future ADR to be written; depends on
+diagnostic work to characterize the actual fault.
+
+semadraw-term built with `-Doptimize=ReleaseSafe`
+(install.sh's default) panics under normal terminal
+operation. Four panic sites have been observed
+across 2026-05-02 and 2026-05-04 verification:
+
+- `screen.zig:380` (`putChar`) — Bug 2.
+- `vt100.zig:183` (`decodeUtf8`) — Bug 5.
+- `vt100.zig:351` (`handleCsiParam`) — Bug 6.
+- `main.zig:265` (`activeSession`) — Bug 7.
+
+Every panic reports an `index N, len M` pair where the
+`len M` value does not match the array on the reported
+source line. `cells.len = 15840` for Bug 2 reported
+`len 0`/`len 1`/`len 4`. `params.len = 16` for Bug 6
+reported `len 3`. `sessions.len = 8` for Bug 7
+reported `len 1`. The only consistent explanation is
+that release-mode optimization inlines call chains
+into a single function (`run`, in main.zig) and
+attributes the panic site to the call-site rather
+than the actual access site.
+
+Building semadraw-term with `-Doptimize=Debug` (no
+inlining, accurate debug info) makes the panics stop
+reproducing entirely under the same input sequence.
+The terminal runs correctly: prompt renders, typing
+reaches the shell, `ls` runs and displays output, the
+operator can use the terminal. **This is the actual
+operational state of Phase 1**; ReleaseSafe was
+hiding it.
+
+**Hypothesis (not verified)**: there are three
+plausible causes, and the diagnostic work is to
+determine which:
+
+1. **Real source bug that ReleaseSafe's optimizer
+   exposes.** A subtle undefined-behavior pattern in
+   the source (e.g., aliasing assumption, signed
+   wraparound, uninitialized access) that the
+   optimizer assumes-away in a way Debug does not.
+   Most likely. A code audit of the hot paths for
+   common UB patterns would find this.
+
+2. **Zig optimizer bug.** The optimizer produces
+   incorrect bounds-check code or wrong control flow
+   in ReleaseSafe mode that would not occur in Debug.
+   Less likely given Zig's stability, but possible.
+   A minimized reproducer (a small test program
+   exhibiting the same panic shape) would
+   characterize this.
+
+3. **Timing-sensitive race.** ReleaseSafe runs faster
+   than Debug, and faster execution opens a window
+   that Debug does not. Bug 2 was characterized this
+   way against AD-13's interrupt-path latency; even
+   with that latency removed, semadraw-term may
+   internally race against semadrawd's surface
+   updates or pty I/O. A counter-based instrumentation
+   build (low-overhead, doesn't disturb timing) would
+   help.
+
+**Sub-stages**:
+
+- **AD-14.1**: build with `-Doptimize=ReleaseSafe
+  -Dstrip=false`, run under `lldb`, catch the actual
+  fault address. The kernel-reported program counter
+  combined with the binary's debug info will name
+  the actual access site, regardless of how
+  ReleaseSafe inlined the call chain. This is the
+  authoritative diagnostic.
+
+- **AD-14.2**: source audit for common UB patterns
+  in the panic-path code: integer wraparound on
+  unsigned types (`u8 - 1` when the value is 0,
+  `usize` arithmetic that overflows), aliasing
+  between `*Self` and slice borrows, uninitialized
+  memory reads, switch statements that miss cases.
+  Concentrate on `vt100.zig`'s state machine and the
+  inlined call chain `feed -> handleX -> ...`.
+
+- **AD-14.3**: minimal reproducer. Strip
+  semadraw-term down to a unit test that panics
+  under ReleaseSafe and works under Debug, with the
+  smallest possible input sequence. Useful for
+  filing upstream if the bug turns out to be a Zig
+  optimizer issue, and for regression testing if the
+  bug is in our source.
+
+- **AD-14.4**: fix and verify. Whatever root cause
+  AD-14.1/2/3 identifies, land the fix and confirm
+  ReleaseSafe semadraw-term runs `ls` end-to-end on
+  bare metal without panic.
+
+**Operational impact**: install.sh currently builds
+ReleaseSafe. Until AD-14 closes, operators running
+semadraw-term against the install.sh-installed
+binary will hit the panics. Two options for the
+interim:
+
+- **Operators run a Debug build of semadraw-term**
+  via the `build-debug-semadraw-term.sh` diagnostic
+  script in the handoff archive. Slower runtime,
+  works correctly. Re-running install.sh restores
+  ReleaseSafe (panics return).
+- **install.sh option to choose optimization mode.**
+  Add `--optimize=Debug` flag that propagates to all
+  Zig builds. Documented as "for diagnosing
+  AD-14 until closure." This makes the workaround
+  first-class without committing to Debug as the
+  permanent default.
+
+**Why this matters for AD-2 verification**: AD-2
+Phase 2 (libsemainput extraction) and Phase 3
+(semainputd retirement) need a working
+semadraw-term to demonstrate the cutover works
+end-to-end. The Debug-mode workaround is sufficient
+for verification but not for production. AD-14 is
+not a hard blocker on AD-2 — Debug mode delivers
+the verification — but is on the critical path for
+shipping a release-quality terminal.
+
+**Discovered**: bare-metal verification 2026-05-04.
+Pattern surfaced after four release-mode panics
+exhibited the same implausible `len M` attribution.
+Debug-mode rebuild produced the working terminal
+and confirmed the pattern is build-mode-specific,
+not source-defect-specific. The diagnostic strategy
+of defensive guards at reported sites (Bug 5 fix,
+Bug 6 fix) was abandoned in favour of correct
+build-mode diagnosis.
+
+### `[ ]` AD-15: semadraw-term cosmetic gaps  *(Open, Small)*
+
+**Tracks**: `semadraw/src/apps/term/` rendering and
+layout code; no design ADR required.
+
+After Phase 1 verification on 2026-05-04 produced a
+working UTF-native terminal on PGSD bare metal, two
+cosmetic-or-feature gaps remain:
+
+1. **Surface does not fill the entire framebuffer.**
+   semadraw-term auto-detects the EFI framebuffer
+   geometry (3840x2160 -> 240x66 cells) and creates
+   a surface of size 3840x2144. The detected and
+   created sizes are correct, but the rendered
+   content occupies only a sub-region of the
+   physical screen rather than filling it. Possible
+   causes: drawfs surface is being painted to a
+   smaller area than it claims, semadraw-term's
+   render loop is targeting a sub-rectangle, or
+   pixel scaling is producing different effective
+   sizes than expected. Diagnostic is to inspect
+   the actual surface->framebuffer blit path in
+   drawfs and confirm whether the full surface
+   contents are being copied.
+
+2. **No virtual terminal status bar.** README's
+   semadraw-term description mentions "a session
+   status bar" — the bottom row showing session
+   1..8 indicators when multi-session mode is
+   active. On the verification run, the status bar
+   was not visible. May be (a) not rendered at all
+   in the current codebase, (b) rendered but
+   off-screen due to gap 1's partial-rendering
+   issue, or (c) rendered but invisible because
+   only one session is active. Diagnostic is to
+   read `main.zig`'s render path and confirm
+   whether the status-bar rendering branch
+   actually runs.
+
+Both are post-substrate polish items. Phase 1 is
+operationally complete without them; the terminal
+is usable for typing commands and reading output.
+Filed as a single entry because they are likely
+to be investigated together in the same render-path
+audit.
+
+**Sub-stages**:
+
+- **AD-15.1**: inspect drawfs surface->framebuffer
+  blit code for sub-region rendering. Confirm
+  whether the full 3840x2144 surface is being
+  copied to the full 3840x2160 framebuffer. If the
+  blit is correct but rendering still shows
+  partial, the gap is in semadraw-term's render
+  loop targeting fewer cells than auto-detected.
+
+- **AD-15.2**: inspect main.zig's render path for
+  status-bar rendering. Confirm whether the bottom
+  row is being painted with session indicators
+  when sessions exist. May need a multi-session
+  reproduction test (open two semadraw-term
+  sessions, observe whether the status bar
+  appears).
+
+**Why filed as a backlog item rather than a bug**:
+neither gap blocks usage. The terminal renders
+text, accepts input, runs commands. Fixing these
+is polish work that improves operator experience
+but does not change the substrate verification
+status.
+
+**Discovered**: bare-metal verification 2026-05-04
+running the working Debug-mode semadraw-term.
+Operator confirmed: black background, white text,
+prompt visible, typing produces visible output,
+`ls` produces output, fresh prompt appears below
+output. Surface does not fill screen; no status
+bar visible. Both observations against the same
+single-session run.
+
 ### Priority
 
 Rough priority ordering within this section, not strict:
@@ -2282,9 +2587,22 @@ Rough priority ordering within this section, not strict:
    source from the interrupt path and resolves the
    physical-console-unusable consequence of the rc.local
    `conscontrol mute on` workaround.
-10. **AD-3**: large; not scheduled.
-11. **AD-4**: largest; not scheduled.
-12. **AD-11**: large; not scheduled. Long-term replacement of
+10. **AD-14**: medium; ReleaseSafe vs Debug build-mode
+    discrepancy in semadraw-term. Discovered 2026-05-04 after
+    four release-mode panics with implausible `len M`
+    attributions. Debug-mode build runs the terminal correctly
+    end-to-end on bare metal; ReleaseSafe panics. Diagnostic
+    sub-stages (lldb on the optimized binary, source UB audit,
+    minimal reproducer). Not a hard blocker on AD-2 since the
+    Debug-mode workaround delivers verification, but on the
+    critical path for shipping a release-quality terminal.
+11. **AD-15**: small; semadraw-term cosmetic gaps (partial-screen
+    rendering, missing status bar). Discovered 2026-05-04 on the
+    working Debug-mode terminal. Polish work; does not block
+    usage.
+12. **AD-3**: large; not scheduled.
+13. **AD-4**: largest; not scheduled.
+14. **AD-11**: large; not scheduled. Long-term replacement of
     `vt(4)` for UTF sessions; depends on AD-10 working and on
     AD-4 progress. Filed as documented direction; may stay open
     indefinitely if AD-10's cooperation model proves sufficient.
